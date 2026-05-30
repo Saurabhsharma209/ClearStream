@@ -67,6 +67,9 @@ type Session struct {
 	pipeline *audio.Pipeline
 	lastGood []int16 // last clean frame for PLC (packet loss concealment)
 
+	currentSSRC uint32
+	ssrcSet     bool
+
 	mu      sync.Mutex
 	stats   Stats
 	cancel  context.CancelFunc
@@ -201,6 +204,19 @@ func (s *Session) handlePacket(raw []byte) error {
 	if err != nil {
 		return err
 	}
+
+	// Detect SSRC change (new call leg)
+	if s.ssrcSet && header.SSRC != s.currentSSRC {
+		s.logger.Info("SSRC changed — resetting session",
+			zap.Uint32("old_ssrc", s.currentSSRC),
+			zap.Uint32("new_ssrc", header.SSRC),
+		)
+		s.jitter.Reset()
+		s.pipeline.Reset()
+		s.lastGood = nil
+	}
+	s.currentSSRC = header.SSRC
+	s.ssrcSet = true
 
 	// Push into jitter buffer
 	ready := s.jitter.Push(header.SequenceNumber, header.Timestamp, payload)
@@ -422,14 +438,12 @@ func decodeG711U(payload []byte) []int16 {
 
 func ulawToLinear(ulaw byte) int16 {
 	ulaw = ^ulaw
-	sign := ulaw & 0x80
-	exponent := (ulaw >> 4) & 0x07
-	mantissa := ulaw & 0x0F
-	sample := int16((int(mantissa)<<3+132)<<int(exponent)) - 132
-	if sign != 0 {
-		return -sample
+	t := int32((ulaw&0x0F)<<3) + 132
+	t <<= (ulaw & 0x70) >> 4
+	if ulaw&0x80 != 0 {
+		return int16(132 - t)
 	}
-	return sample
+	return int16(t - 132)
 }
 
 // G.711 A-law (PCMA) decoder — RFC 3551
@@ -443,19 +457,20 @@ func decodeG711A(payload []byte) []int16 {
 
 func alawToLinear(alaw byte) int16 {
 	alaw ^= 0x55
-	sign := alaw & 0x80
+	sign := int16(1)
+	if alaw&0x80 != 0 {
+		sign = -1
+		alaw &^= 0x80
+	}
 	exponent := (alaw >> 4) & 0x07
 	mantissa := alaw & 0x0F
-	var sample int16
+	var t int16
 	if exponent == 0 {
-		sample = int16(mantissa<<1 | 1)
+		t = int16(mantissa)<<1 | 1
 	} else {
-		sample = int16((int(mantissa)|0x10)<<uint(exponent-1+1)) | (1 << uint(exponent-1))
+		t = (int16(mantissa)|0x10)<<uint(exponent) | (1 << uint(exponent-1))
 	}
-	if sign == 0 {
-		return -sample
-	}
-	return sample
+	return sign * t * 8
 }
 
 // G.711 µ-law encoder
@@ -477,15 +492,27 @@ func linearToUlaw(sample int16) byte {
 	if sample > 32635 {
 		sample = 32635
 	}
-	sample += bias
-	exp := byte(7)
-	for i := 0; i < 7; i++ {
-		if int(sample) >= (1 << uint(8-i)) {
-			break
-		}
-		exp--
+	s := int(sample) + bias
+	var exp byte
+	switch {
+	case s&0x4000 != 0:
+		exp = 7
+	case s&0x2000 != 0:
+		exp = 6
+	case s&0x1000 != 0:
+		exp = 5
+	case s&0x0800 != 0:
+		exp = 4
+	case s&0x0400 != 0:
+		exp = 3
+	case s&0x0200 != 0:
+		exp = 2
+	case s&0x0100 != 0:
+		exp = 1
+	default:
+		exp = 0
 	}
-	mantissa := byte((sample >> uint(exp+3)) & 0x0F)
+	mantissa := byte((s >> uint(exp+3)) & 0x0F)
 	return ^(sign | (exp << 4) | mantissa)
 }
 
@@ -499,24 +526,36 @@ func encodeG711A(pcm []int16) []byte {
 }
 
 func linearToAlaw(sample int16) byte {
-	sign := byte(0x80)
+	sign := byte(0x80) // positive
 	if sample < 0 {
 		sample = -sample
-		sign = 0
+		sign = 0x00 // negative
 	}
-	if sample > 32767 {
-		sample = 32767
+	t := int(sample) / 8
+	if t > 0x0FFF {
+		t = 0x0FFF
 	}
 	var exp, mantissa byte
-	if sample >= 256 {
-		for exp = 1; exp < 7; exp++ {
-			if int(sample) < (1 << uint(exp+8)) {
-				break
-			}
+	if t >= 32 {
+		// find exponent: smallest exp >= 1 such that (0x10 << exp) > t
+		// equivalently: exp = bit_length(t) - 5
+		bl := 0
+		for v := t; v > 0; v >>= 1 {
+			bl++
 		}
-		mantissa = byte((int(sample) >> uint(exp+4)) & 0x0F)
+		exp = byte(bl - 5)
+		if exp < 1 {
+			exp = 1
+		}
+		if exp > 7 {
+			exp = 7
+		}
+		mantissa = byte((t >> uint(exp)) & 0x0F)
 	} else {
-		mantissa = byte(int(sample) >> 4)
+		exp = 0
+		if t > 0 {
+			mantissa = byte((t - 1) >> 1)
+		}
 	}
 	return (sign | (exp << 4) | mantissa) ^ 0x55
 }
