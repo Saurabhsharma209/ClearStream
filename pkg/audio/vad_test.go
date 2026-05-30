@@ -72,3 +72,33 @@ func TestRMSEnergy(t *testing.T) {
 		t.Errorf("expected rms=1000 for constant frame, got %.2f", rms)
 	}
 }
+
+func TestAdaptiveVADCalibration(t *testing.T) {
+	v := DefaultAdaptiveVAD()
+	// Feed 50 silence frames to trigger calibration
+	silence := make([]int16, FrameSizeSamples)
+	for i := 0; i < 50; i++ {
+		v.IsSpeech(silence)
+	}
+	if !v.IsCalibrated() {
+		t.Error("should be calibrated after 50 frames")
+	}
+	if v.NoiseFloor() != 0 {
+		t.Logf("noise floor: %.2f", v.NoiseFloor())
+	}
+}
+
+func TestAdaptiveVADDetectsAfterCalibration(t *testing.T) {
+	v := DefaultAdaptiveVAD()
+	silence := make([]int16, FrameSizeSamples)
+	for i := 0; i < 50; i++ {
+		v.IsSpeech(silence)
+	}
+	speech := make([]int16, FrameSizeSamples)
+	for i := range speech {
+		speech[i] = 5000
+	}
+	if !v.IsSpeech(speech) {
+		t.Error("should detect speech after calibration")
+	}
+}

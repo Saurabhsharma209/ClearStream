@@ -3,6 +3,8 @@ package audio
 import (
 	"fmt"
 	"io"
+	"sync"
+	"time"
 
 	"github.com/exotel/clearstream/pkg/model"
 	"go.uber.org/zap"
@@ -26,14 +28,29 @@ type PipelineConfig struct {
 	VAD *VAD
 }
 
+// PipelineStats holds real-time pipeline quality metrics.
+type PipelineStats struct {
+	FramesProcessed  uint64  // total frames through pipeline
+	FramesSuppressed uint64  // frames sent through AI suppressor (non-silent)
+	FramesSilent     uint64  // frames bypassed via VAD
+	AvgLatencyMs     float64 // exponential moving average of per-frame latency
+	SuppressRatio    float64 // FramesSuppressed / FramesProcessed (0-1)
+}
+
 // Pipeline processes raw 16kHz mono PCM frames through the AI suppressor.
 // Feed frames via Write; read clean frames via Read.
 // This is the inner loop used by both the file processor and RTP session.
 type Pipeline struct {
 	cfg    PipelineConfig
-	buf    []byte  // partial frame accumulator
+	buf    []byte // partial frame accumulator
 	vad    *VAD
 	logger *zap.Logger
+
+	statsMu          sync.Mutex
+	framesProcessed  uint64
+	framesSuppressed uint64
+	framesSilent     uint64
+	latencyEMA       float64
 }
 
 // NewPipeline creates a new Pipeline.
@@ -59,10 +76,12 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 		frame := data[offset : offset+FrameSizeBytes]
 		offset += FrameSizeBytes
 
+		start := time.Now()
+
 		// Convert bytes -> int16 samples
 		samples := bytesToInt16(frame)
-
 		var cleaned []int16
+		usedSuppressor := false
 		if p.vad != nil && !p.vad.IsSpeech(samples) {
 			// silence -- pass through without suppression (saves CPU)
 			cleaned = samples
@@ -72,7 +91,20 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 			if err != nil {
 				return fmt.Errorf("pipeline: suppress frame: %w", err)
 			}
+			usedSuppressor = true
 		}
+
+		elapsed := time.Since(start).Seconds() * 1000
+
+		p.statsMu.Lock()
+		p.framesProcessed++
+		if usedSuppressor {
+			p.framesSuppressed++
+		} else {
+			p.framesSilent++
+		}
+		p.latencyEMA = p.latencyEMA*0.95 + elapsed*0.05
+		p.statsMu.Unlock()
 
 		// Write cleaned frame
 		if _, err := out.Write(int16ToBytes(cleaned)); err != nil {
@@ -97,7 +129,6 @@ func (p *Pipeline) Flush(out io.Writer) error {
 	frame := make([]byte, FrameSizeBytes)
 	copy(frame, p.buf)
 	p.buf = p.buf[:0]
-
 	samples := bytesToInt16(frame)
 	cleaned, err := p.cfg.Suppressor.Process(samples)
 	if err != nil {
@@ -107,6 +138,23 @@ func (p *Pipeline) Flush(out io.Writer) error {
 	return err
 }
 
+// Stats returns a snapshot of pipeline metrics.
+func (p *Pipeline) Stats() PipelineStats {
+	p.statsMu.Lock()
+	defer p.statsMu.Unlock()
+	ratio := float64(0)
+	if p.framesProcessed > 0 {
+		ratio = float64(p.framesSuppressed) / float64(p.framesProcessed)
+	}
+	return PipelineStats{
+		FramesProcessed:  p.framesProcessed,
+		FramesSuppressed: p.framesSuppressed,
+		FramesSilent:     p.framesSilent,
+		AvgLatencyMs:     p.latencyEMA,
+		SuppressRatio:    ratio,
+	}
+}
+
 // Reset clears internal state (call when starting a new stream/file).
 func (p *Pipeline) Reset() {
 	p.buf = p.buf[:0]
@@ -114,6 +162,12 @@ func (p *Pipeline) Reset() {
 	if p.vad != nil {
 		p.vad.Reset()
 	}
+	p.statsMu.Lock()
+	p.framesProcessed = 0
+	p.framesSuppressed = 0
+	p.framesSilent = 0
+	p.latencyEMA = 0
+	p.statsMu.Unlock()
 }
 
 // ---- helpers ----------------------------------------------------------------
