@@ -23,6 +23,7 @@ import (
 
 	"github.com/exotel/clearstream"
 	"github.com/exotel/clearstream/pkg/audio"
+	"github.com/exotel/clearstream/pkg/file"
 	rtppkg "github.com/exotel/clearstream/pkg/rtp"
 )
 
@@ -31,7 +32,6 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
-
 	switch os.Args[1] {
 	case "file":
 		runFile(os.Args[2:])
@@ -40,7 +40,7 @@ func main() {
 	case "probe":
 		runProbe(os.Args[2:])
 	case "version":
-		fmt.Println("clearstream v0.1.0 (ClearStream Audio Enhancement SDK)")
+		fmt.Printf("clearstream v%s (ClearStream Audio Enhancement SDK)\n", clearstream.Version)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		printUsage()
@@ -73,13 +73,11 @@ func runFile(args []string) {
 	must("init clearstream", err)
 	defer cs.Close()
 
-	fmt.Printf("Processing %s → %s (model: %s)\n", *input, *output, *modelBackend)
+	fmt.Printf("Processing %s \u2192 %s (model: %s)\n", *input, *output, *modelBackend)
 	start := time.Now()
-
-	err = cs.ProcessFileWithOptions(*input, *output, clearstream.FileOptions(*audioOnly))
+	err = cs.ProcessFileWithOptions(*input, *output, file.Options{AudioOnly: *audioOnly})
 	must("process file", err)
-
-	fmt.Printf("Done in %.1fs → %s\n", time.Since(start).Seconds(), *output)
+	fmt.Printf("Done in %.1fs \u2192 %s\n", time.Since(start).Seconds(), *output)
 }
 
 func runRTP(args []string) {
@@ -117,22 +115,20 @@ func runRTP(args []string) {
 				s.PacketsReceived, s.PacketsSent, s.PacketsLost, s.LatencyAvgMs)
 		},
 	}
-
 	if *codec != "auto" {
 		rtpCfg.Codec = audio.Codec(*codec)
 	}
 
 	session, err := cs.NewRTPSession(rtpCfg)
 	must("create RTP session", err)
-
 	session.Start()
-	fmt.Printf("ClearStream RTP running: %s → [suppress] → %s\n", *listen, *forward)
+
+	fmt.Printf("ClearStream RTP running: %s \u2192 [suppress] \u2192 %s\n", *listen, *forward)
 	fmt.Println("Press Ctrl+C to stop.")
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
-
 	fmt.Println("\nShutting down...")
 	session.Stop()
 
@@ -148,7 +144,6 @@ func runProbe(args []string) {
 	}
 	info, err := audio.Probe("ffmpeg", args[0])
 	must("probe", err)
-
 	fmt.Printf("File:        %s\n", args[0])
 	fmt.Printf("Container:   %s\n", info.ContainerFormat)
 	fmt.Printf("Has video:   %v\n", info.HasVideo)
@@ -182,10 +177,4 @@ Examples:
   clearstream file -i call.wav -o clean.wav --model deepfilter --model-path ./deepfilter.onnx
   clearstream rtp --listen :5004 --forward 10.0.0.2:5004
   clearstream probe recording.mp3`)
-}
-
-// FileOptions is a helper to build file.Options from CLI flags.
-// Kept here to avoid import cycle; production code would use file.Options directly.
-func init() {
-	// Register as clearstream.FileOptions for CLI use
 }
