@@ -1,3 +1,5 @@
+//go:build cgo
+
 package model
 
 /*
@@ -12,6 +14,7 @@ static float process(DenoiseState *st, float *out, const float *in) {
 }
 */
 import "C"
+
 import (
 	"fmt"
 	"sync"
@@ -19,6 +22,7 @@ import (
 )
 
 const rnnoiseFrameSize = 480 // RNNoise requires exactly 480 samples @ 48kHz
+
 // Our pipeline uses 16kHz/160 samples; we upsample before RNNoise and downsample after.
 // For simplicity in R&D: use 48kHz internally when RNNoise is active.
 
@@ -47,10 +51,10 @@ func (r *RNNoise) Process(frame []int16) ([]int16, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Upsample 160 @ 16kHz → 480 @ 48kHz (3x linear)
+	// Upsample 160 @ 16kHz -> 480 @ 48kHz (3x linear)
 	up := upsample3x(frame)
 
-	// Convert int16 → float32 in RNNoise range
+	// Convert int16 -> float32 in RNNoise range
 	fin := make([]C.float, rnnoiseFrameSize)
 	fout := make([]C.float, rnnoiseFrameSize)
 	for i, s := range up {
@@ -64,7 +68,7 @@ func (r *RNNoise) Process(frame []int16) ([]int16, error) {
 		(*C.float)(unsafe.Pointer(&fin[0])),
 	)
 
-	// Convert back float32 → int16
+	// Convert back float32 -> int16
 	out48 := make([]int16, rnnoiseFrameSize)
 	for i, f := range fout {
 		v := int32(f)
@@ -76,7 +80,7 @@ func (r *RNNoise) Process(frame []int16) ([]int16, error) {
 		out48[i] = int16(v)
 	}
 
-	// Downsample 480 @ 48kHz → 160 @ 16kHz (1/3)
+	// Downsample 480 @ 48kHz -> 160 @ 16kHz (1/3)
 	return downsample3x(out48), nil
 }
 
@@ -106,23 +110,27 @@ func (r *RNNoise) Name() string { return "rnnoise" }
 
 // ---- helpers ----------------------------------------------------------------
 
-// upsample3x converts 16kHz (160 samples) to 48kHz (480 samples) by repetition.
-// For better quality, use a proper anti-aliasing FIR filter.
+// upsample3x converts 16kHz (160 samples) to 48kHz (480 samples) using linear interpolation.
 func upsample3x(in []int16) []int16 {
 	out := make([]int16, len(in)*3)
 	for i, s := range in {
-		out[i*3] = s
-		out[i*3+1] = s
-		out[i*3+2] = s
+		next := s
+		if i+1 < len(in) {
+			next = in[i+1]
+		}
+		out[i*3]   = s
+		out[i*3+1] = int16((int32(s)*2 + int32(next)) / 3)
+		out[i*3+2] = int16((int32(s) + int32(next)*2) / 3)
 	}
 	return out
 }
 
-// downsample3x converts 48kHz (480 samples) to 16kHz (160 samples) by decimation.
+// downsample3x converts 48kHz (480 samples) to 16kHz (160 samples) by averaging.
 func downsample3x(in []int16) []int16 {
 	out := make([]int16, len(in)/3)
 	for i := range out {
-		out[i] = in[i*3]
+		avg := (int32(in[i*3]) + int32(in[i*3+1]) + int32(in[i*3+2])) / 3
+		out[i] = int16(avg)
 	}
 	return out
 }
