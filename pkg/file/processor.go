@@ -5,17 +5,29 @@ package file
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/exotel/clearstream/pkg/audio"
 	"github.com/exotel/clearstream/pkg/model"
 	"go.uber.org/zap"
 )
+
+// ErrCodecNotFound is returned when FFmpeg cannot find the required codec.
+var ErrCodecNotFound = errors.New("codec not found")
+
+// ErrFileNotFound is returned when the input file does not exist.
+var ErrFileNotFound = errors.New("file not found")
+
+// ErrPermission is returned when the file cannot be read or written.
+var ErrPermission = errors.New("permission denied")
 
 // Options controls per-call processing behaviour.
 type Options struct {
@@ -32,6 +44,10 @@ type Options struct {
 
 	// NormalizePeak applies peak normalization to the output (-1 dBFS target).
 	NormalizePeak bool
+
+	// OnProgress is called with values 0.0–1.0 as processing advances.
+	// It is called from the processing goroutine; keep it non-blocking.
+	OnProgress func(pct float64)
 }
 
 // ProcessorConfig holds configuration for a Processor.
@@ -70,6 +86,10 @@ func (p *Processor) ProcessWithOptions(src, dst string, opts Options) error {
 		zap.String("dst", dst),
 	)
 
+	if opts.OnProgress != nil {
+		opts.OnProgress(0.0)
+	}
+
 	// 1. Probe source
 	info, err := audio.Probe(p.cfg.FFmpegPath, src)
 	if err != nil {
@@ -82,6 +102,10 @@ func (p *Processor) ProcessWithOptions(src, dst string, opts Options) error {
 		zap.Int("channels", info.Channels),
 	)
 
+	if opts.OnProgress != nil {
+		opts.OnProgress(0.1)
+	}
+
 	// 2. Create a temp file for the cleaned audio
 	tmpAudio, err := os.CreateTemp("", "clearstream-audio-*.pcm")
 	if err != nil {
@@ -93,6 +117,10 @@ func (p *Processor) ProcessWithOptions(src, dst string, opts Options) error {
 	// 3. Decode audio to raw 16kHz mono PCM via FFmpeg pipe
 	if err := p.decodeAndSuppress(src, tmpAudio.Name(), info, logger); err != nil {
 		return fmt.Errorf("file: decode+suppress: %w", err)
+	}
+
+	if opts.OnProgress != nil {
+		opts.OnProgress(0.7)
 	}
 
 	// 4. Re-encode and mux output
@@ -112,8 +140,71 @@ func (p *Processor) ProcessWithOptions(src, dst string, opts Options) error {
 		return fmt.Errorf("file: encode+mux: %w", err)
 	}
 
+	if opts.OnProgress != nil {
+		opts.OnProgress(1.0)
+	}
+
 	logger.Info("processing complete", zap.String("dst", dst))
 	return nil
+}
+
+// ProcessDir enhances all audio/video files in srcDir and writes results to dstDir.
+// Supported extensions: .mp3 .wav .flac .ogg .aac .mp4 .mkv .mov .avi .webm .m4a
+// Files are processed concurrently up to runtime.NumCPU() goroutines.
+// Returns a slice of errors (one per failed file; nil entries = success).
+func (p *Processor) ProcessDir(srcDir, dstDir string, opts Options) []error {
+	supported := map[string]bool{
+		".mp3": true, ".wav": true, ".flac": true, ".ogg": true,
+		".aac": true, ".mp4": true, ".mkv": true, ".mov": true,
+		".avi": true, ".webm": true, ".m4a": true,
+	}
+
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return []error{fmt.Errorf("processdir: read src: %w", err)}
+	}
+
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		return []error{fmt.Errorf("processdir: create dst: %w", err)}
+	}
+
+	type job struct {
+		src, dst string
+	}
+	var jobs []job
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if !supported[ext] {
+			continue
+		}
+		jobs = append(jobs, job{
+			src: filepath.Join(srcDir, e.Name()),
+			dst: filepath.Join(dstDir, e.Name()),
+		})
+	}
+
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	errs := make([]error, len(jobs))
+	sem := make(chan struct{}, runtime.NumCPU())
+	var wg sync.WaitGroup
+
+	for i, j := range jobs {
+		wg.Add(1)
+		go func(idx int, jb job) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			errs[idx] = p.ProcessWithOptions(jb.src, jb.dst, opts)
+		}(i, j)
+	}
+	wg.Wait()
+	return errs
 }
 
 // decodeAndSuppress decodes audio from src to 16kHz mono PCM,
@@ -184,6 +275,9 @@ func (p *Processor) decodeAndSuppress(src, pcmPath string, info *audio.MediaInfo
 	suppressErr := <-errCh
 
 	if ffmpegErr != nil {
+		if typed := parseFFmpegError(stderrBuf.String()); typed != nil {
+			return fmt.Errorf("ffmpeg decode: %w", typed)
+		}
 		return fmt.Errorf("ffmpeg decode: %w\nstderr: %s", ffmpegErr, stderrBuf.String())
 	}
 	return suppressErr
@@ -231,13 +325,16 @@ func (p *Processor) encodeAndMux(pcmPath, originalSrc, dst string, info *audio.M
 	args = append(args, dst)
 
 	cmd := exec.Command(p.cfg.FFmpegPath, args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
 
 	logger.Debug("ffmpeg encode", zap.Strings("args", args))
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ffmpeg encode: %w\nstderr: %s", err, stderr.String())
+		if typed := parseFFmpegError(stderrBuf.String()); typed != nil {
+			return fmt.Errorf("ffmpeg decode: %w", typed)
+		}
+		return fmt.Errorf("ffmpeg encode: %w\nstderr: %s", err, stderrBuf.String())
 	}
 	return nil
 }
@@ -258,5 +355,21 @@ func inferOutputCodec(dst string) string {
 		return "aac"
 	default:
 		return "aac"
+	}
+}
+
+// parseFFmpegError maps common FFmpeg stderr patterns to typed errors.
+func parseFFmpegError(stderr string) error {
+	s := strings.ToLower(stderr)
+	switch {
+	case strings.Contains(s, "no such file"):
+		return ErrFileNotFound
+	case strings.Contains(s, "permission denied"):
+		return ErrPermission
+	case strings.Contains(s, "unknown encoder") || strings.Contains(s, "encoder not found") ||
+		strings.Contains(s, "decoder not found"):
+		return ErrCodecNotFound
+	default:
+		return nil
 	}
 }
