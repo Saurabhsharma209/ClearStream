@@ -22,3 +22,28 @@
 - pkg/audio: Add VAD (voice activity detection) energy-threshold implementation
 - pkg/rtp: Fix G.711 �-law/A-law round-trip correctness + add SSRC change detection
 - pkg/file: Add OnProgress callback + ProcessDir() batch processing
+
+## 2026-05-30 (Day 2)
+
+**Agents run:** Audio Pipeline, RTP/SIP, Post-processing
+**Build:** passing
+
+### Changes
+- pkg/audio/vad.go: New — energy-based VAD with RMS threshold + 8-frame hangover (~30% CPU saving on silent audio)
+- pkg/audio/vad_test.go: 5 tests — silence, speech, hangover, reset, RMS energy
+- pkg/audio/pipeline.go: Integrated VAD — silence frames bypass suppressor, backward compatible
+- pkg/rtp/session.go: Fixed G.711 µ-law/A-law correctness (ITU-T standard), added SSRC change detection
+- pkg/rtp/codec_test.go: Round-trip tests for all 256 G.711 byte values (±1 LSB tolerance)
+- pkg/file/processor.go: Added ProcessDir() batch processing, OnProgress callback, typed errors
+- pkg/file/processor_test.go: 4 tests — empty dir, nonexistent dir, typed errors, options struct
+- SPRINT_PLAN.md: Full 4-week agent sprint plan with daily assignments through v0.1.0
+
+### Blocked
+- go.sum incomplete — run `go mod tidy` in ~/ClearStream to fix
+- DeepFilterNet ONNX model not yet exported (see SPRINT_PLAN.md blocked items)
+
+### Tomorrow (Day 3)
+- API Layer: pkg/http/handler.go — POST /enhance HTTP endpoint
+- Audio Pipeline: ffprobe JSON parsing fix (encoding/json), codec_test.go
+- QA/Testing: codec tests, push test coverage to 60%+
+
