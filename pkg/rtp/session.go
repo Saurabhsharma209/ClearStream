@@ -1,0 +1,600 @@
+package rtp
+
+import (
+	"bytes"
+	"context"
+	"encoding/binary"
+	"fmt"
+	"net"
+	"os/exec"
+	"sync"
+	"time"
+
+	"github.com/exotel/clearstream/pkg/audio"
+	"github.com/exotel/clearstream/pkg/model"
+	"go.uber.org/zap"
+)
+
+// Config holds configuration for a live RTP session.
+type Config struct {
+	// ListenAddr is the UDP address to receive RTP packets (e.g. ":5004").
+	ListenAddr string
+
+	// ForwardAddr is the UDP address to send clean RTP packets to (e.g. "10.0.0.2:5004").
+	ForwardAddr string
+
+	// Codec is the expected RTP audio codec. Default: auto-detect from payload type.
+	Codec audio.Codec
+
+	// PayloadType is the RTP payload type number (e.g. 0=PCMU, 8=PCMA, 111=Opus).
+	// Used when Codec is not specified.
+	PayloadType uint8
+
+	// JitterDepth is the number of frames to buffer. Default: 4 (~40ms).
+	JitterDepth int
+
+	// FFmpegPath is used for codec transcoding (G.729, G.722, etc.).
+	FFmpegPath string
+
+	// SampleRate is set by ClearStream (do not set manually).
+	SampleRate int
+
+	// Suppressor is set by ClearStream (do not set manually).
+	Suppressor model.Suppressor
+
+	// Logger is set by ClearStream (do not set manually).
+	Logger *zap.Logger
+
+	// OnStats is an optional callback called every second with session statistics.
+	OnStats func(Stats)
+}
+
+// Stats holds per-second session statistics.
+type Stats struct {
+	PacketsReceived uint64
+	PacketsSent     uint64
+	PacketsLost     uint64
+	LatencyAvgMs    float64
+}
+
+// Session is a live RTP interception session.
+// It reads RTP from ListenAddr, suppresses noise, forwards to ForwardAddr.
+type Session struct {
+	cfg      Config
+	conn     *net.UDPConn
+	fwdAddr  *net.UDPAddr
+	jitter   *JitterBuffer
+	pipeline *audio.Pipeline
+	lastGood []int16 // last clean frame for PLC (packet loss concealment)
+
+	mu      sync.Mutex
+	stats   Stats
+	cancel  context.CancelFunc
+	done    chan struct{}
+	logger  *zap.Logger
+}
+
+// NewSession creates (but does not start) an RTP session.
+func NewSession(cfg Config) (*Session, error) {
+	if cfg.ListenAddr == "" {
+		return nil, fmt.Errorf("rtp: ListenAddr required")
+	}
+	if cfg.ForwardAddr == "" {
+		return nil, fmt.Errorf("rtp: ForwardAddr required")
+	}
+
+	fwdAddr, err := net.ResolveUDPAddr("udp", cfg.ForwardAddr)
+	if err != nil {
+		return nil, fmt.Errorf("rtp: resolve ForwardAddr: %w", err)
+	}
+
+	listenAddr, err := net.ResolveUDPAddr("udp", cfg.ListenAddr)
+	if err != nil {
+		return nil, fmt.Errorf("rtp: resolve ListenAddr: %w", err)
+	}
+
+	conn, err := net.ListenUDP("udp", listenAddr)
+	if err != nil {
+		return nil, fmt.Errorf("rtp: listen %s: %w", cfg.ListenAddr, err)
+	}
+
+	if cfg.Codec == "" {
+		cfg.Codec = payloadTypeToCodec(cfg.PayloadType)
+	}
+
+	pipe := audio.NewPipeline(audio.PipelineConfig{
+		SampleRate: cfg.SampleRate,
+		Channels:   1,
+		Suppressor: cfg.Suppressor,
+		Logger:     cfg.Logger,
+	})
+
+	return &Session{
+		cfg:      cfg,
+		conn:     conn,
+		fwdAddr:  fwdAddr,
+		jitter:   NewJitterBuffer(cfg.JitterDepth),
+		pipeline: pipe,
+		done:     make(chan struct{}),
+		logger:   cfg.Logger,
+	}, nil
+}
+
+// Start begins processing RTP packets. Non-blocking; runs in background goroutines.
+func (s *Session) Start() {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
+
+	go s.receiveLoop(ctx)
+	if s.cfg.OnStats != nil {
+		go s.statsLoop(ctx)
+	}
+
+	s.logger.Info("RTP session started",
+		zap.String("listen", s.cfg.ListenAddr),
+		zap.String("forward", s.cfg.ForwardAddr),
+		zap.String("codec", string(s.cfg.Codec)),
+	)
+}
+
+// Stop gracefully shuts down the session.
+func (s *Session) Stop() {
+	if s.cancel != nil {
+		s.cancel()
+	}
+	s.conn.Close()
+	<-s.done
+	s.logger.Info("RTP session stopped")
+}
+
+// Stats returns a snapshot of current session statistics.
+func (s *Session) Stats() Stats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stats
+}
+
+// receiveLoop is the main packet processing loop.
+func (s *Session) receiveLoop(ctx context.Context) {
+	defer close(s.done)
+
+	buf := make([]byte, 4096)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		s.conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		n, _, err := s.conn.ReadFromUDP(buf)
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			s.logger.Error("rtp read error", zap.Error(err))
+			return
+		}
+
+		start := time.Now()
+		if err := s.handlePacket(buf[:n]); err != nil {
+			s.logger.Warn("packet processing error", zap.Error(err))
+		}
+
+		latency := time.Since(start).Seconds() * 1000
+		s.mu.Lock()
+		s.stats.PacketsReceived++
+		// Simple exponential moving average for latency
+		s.stats.LatencyAvgMs = s.stats.LatencyAvgMs*0.9 + latency*0.1
+		s.mu.Unlock()
+	}
+}
+
+// handlePacket parses an RTP packet, suppresses noise, and forwards it.
+func (s *Session) handlePacket(raw []byte) error {
+	if len(raw) < 12 {
+		return fmt.Errorf("packet too short: %d bytes", len(raw))
+	}
+
+	// Parse RTP header (RFC 3550)
+	header, payload, err := parseRTPHeader(raw)
+	if err != nil {
+		return err
+	}
+
+	// Push into jitter buffer
+	ready := s.jitter.Push(header.SequenceNumber, header.Timestamp, payload)
+	if !ready {
+		return nil // still buffering
+	}
+
+	// Pop next frame
+	frame, ok := s.jitter.Pop()
+	if !ok {
+		return nil
+	}
+
+	var pcm []int16
+
+	if frame == nil {
+		// Packet loss — use last good frame (PLC)
+		if s.lastGood != nil {
+			pcm = s.lastGood
+		} else {
+			pcm = make([]int16, audio.FrameSizeSamples)
+		}
+		s.mu.Lock()
+		s.stats.PacketsLost++
+		s.mu.Unlock()
+	} else {
+		// Decode payload to 16kHz mono PCM
+		pcm, err = s.decodeToPCM(frame, header.PayloadType)
+		if err != nil {
+			return fmt.Errorf("decode payload: %w", err)
+		}
+	}
+
+	// Run suppressor
+	var cleanBuf bytes.Buffer
+	rawBytes := make([]byte, len(pcm)*2)
+	for i, v := range pcm {
+		rawBytes[2*i] = byte(v)
+		rawBytes[2*i+1] = byte(v >> 8)
+	}
+	if err := s.pipeline.ProcessFrames(rawBytes, &cleanBuf); err != nil {
+		return fmt.Errorf("suppress: %w", err)
+	}
+
+	cleanPCM := bytesToInt16Slice(cleanBuf.Bytes())
+	if len(cleanPCM) > 0 {
+		s.lastGood = cleanPCM
+	}
+
+	// Re-encode to original codec
+	outPayload, err := s.encodeFromPCM(cleanPCM, header.PayloadType)
+	if err != nil {
+		return fmt.Errorf("encode: %w", err)
+	}
+
+	// Rebuild and forward RTP packet
+	outRaw := buildRTPPacket(header, outPayload)
+	if _, err := s.conn.WriteToUDP(outRaw, s.fwdAddr); err != nil {
+		return fmt.Errorf("forward: %w", err)
+	}
+
+	s.mu.Lock()
+	s.stats.PacketsSent++
+	s.mu.Unlock()
+
+	return nil
+}
+
+// decodeToPCM decodes a codec-specific RTP payload to 16kHz mono int16 PCM.
+func (s *Session) decodeToPCM(payload []byte, pt uint8) ([]int16, error) {
+	codec := s.cfg.Codec
+	if codec == audio.CodecUnknown {
+		codec = payloadTypeToCodec(pt)
+	}
+
+	switch codec {
+	case audio.CodecG711U:
+		return decodeG711U(payload), nil
+	case audio.CodecG711A:
+		return decodeG711A(payload), nil
+	case audio.CodecPCM:
+		return bytesToInt16Slice(payload), nil
+	case audio.CodecOpus, audio.CodecG722, audio.CodecG729:
+		// Use FFmpeg for complex codecs: write payload → temp file → decode → PCM
+		return decodeViaFFmpeg(s.cfg.FFmpegPath, payload, codec, s.cfg.SampleRate)
+	default:
+		// Best effort: treat as raw PCM
+		return bytesToInt16Slice(payload), nil
+	}
+}
+
+// encodeFromPCM encodes 16kHz PCM back to the original codec payload.
+func (s *Session) encodeFromPCM(pcm []int16, pt uint8) ([]byte, error) {
+	codec := s.cfg.Codec
+	if codec == audio.CodecUnknown {
+		codec = payloadTypeToCodec(pt)
+	}
+
+	switch codec {
+	case audio.CodecG711U:
+		return encodeG711U(pcm), nil
+	case audio.CodecG711A:
+		return encodeG711A(pcm), nil
+	case audio.CodecPCM:
+		return int16SliceToBytes(pcm), nil
+	case audio.CodecOpus, audio.CodecG722, audio.CodecG729:
+		return encodeViaFFmpeg(s.cfg.FFmpegPath, pcm, codec, s.cfg.SampleRate)
+	default:
+		return int16SliceToBytes(pcm), nil
+	}
+}
+
+func (s *Session) statsLoop(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			snap := s.stats
+			s.mu.Unlock()
+			s.cfg.OnStats(snap)
+		}
+	}
+}
+
+// ---- RTP header parsing -----------------------------------------------------
+
+type rtpHeader struct {
+	Version        uint8
+	Padding        bool
+	Extension      bool
+	CSRCCount      uint8
+	Marker         bool
+	PayloadType    uint8
+	SequenceNumber uint16
+	Timestamp      uint32
+	SSRC           uint32
+	CSRCs          []uint32
+}
+
+func parseRTPHeader(raw []byte) (rtpHeader, []byte, error) {
+	if len(raw) < 12 {
+		return rtpHeader{}, nil, fmt.Errorf("rtp: packet too short")
+	}
+
+	h := rtpHeader{}
+	h.Version = (raw[0] >> 6) & 0x3
+	h.Padding = (raw[0]>>5)&0x1 == 1
+	h.Extension = (raw[0]>>4)&0x1 == 1
+	h.CSRCCount = raw[0] & 0xF
+	h.Marker = (raw[1]>>7)&0x1 == 1
+	h.PayloadType = raw[1] & 0x7F
+	h.SequenceNumber = binary.BigEndian.Uint16(raw[2:4])
+	h.Timestamp = binary.BigEndian.Uint32(raw[4:8])
+	h.SSRC = binary.BigEndian.Uint32(raw[8:12])
+
+	offset := 12 + int(h.CSRCCount)*4
+	if h.Extension && len(raw) > offset+4 {
+		extLen := int(binary.BigEndian.Uint16(raw[offset+2:offset+4])) * 4
+		offset += 4 + extLen
+	}
+
+	if offset > len(raw) {
+		return h, nil, fmt.Errorf("rtp: header exceeds packet length")
+	}
+
+	return h, raw[offset:], nil
+}
+
+func buildRTPPacket(h rtpHeader, payload []byte) []byte {
+	buf := make([]byte, 12+len(payload))
+	buf[0] = (h.Version << 6) | (boolByte(h.Padding) << 5) | (boolByte(h.Extension) << 4) | h.CSRCCount
+	buf[1] = (boolByte(h.Marker) << 7) | h.PayloadType
+	binary.BigEndian.PutUint16(buf[2:4], h.SequenceNumber)
+	binary.BigEndian.PutUint32(buf[4:8], h.Timestamp)
+	binary.BigEndian.PutUint32(buf[8:12], h.SSRC)
+	copy(buf[12:], payload)
+	return buf
+}
+
+func boolByte(b bool) byte {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// ---- Codec helpers ----------------------------------------------------------
+
+// payloadTypeToCodec maps IANA RTP payload type numbers to Codec constants.
+func payloadTypeToCodec(pt uint8) audio.Codec {
+	switch pt {
+	case 0:
+		return audio.CodecG711U // PCMU
+	case 8:
+		return audio.CodecG711A // PCMA
+	case 9:
+		return audio.CodecG722
+	case 18:
+		return audio.CodecG729
+	case 111, 120: // common dynamic type for Opus
+		return audio.CodecOpus
+	default:
+		return audio.CodecG711U // safest fallback for telephony
+	}
+}
+
+// G.711 µ-law (PCMU) decoder — RFC 3551
+func decodeG711U(payload []byte) []int16 {
+	out := make([]int16, len(payload))
+	for i, b := range payload {
+		out[i] = ulawToLinear(b)
+	}
+	return out
+}
+
+func ulawToLinear(ulaw byte) int16 {
+	ulaw = ^ulaw
+	sign := ulaw & 0x80
+	exponent := (ulaw >> 4) & 0x07
+	mantissa := ulaw & 0x0F
+	sample := int16((int(mantissa)<<3+132)<<int(exponent)) - 132
+	if sign != 0 {
+		return -sample
+	}
+	return sample
+}
+
+// G.711 A-law (PCMA) decoder — RFC 3551
+func decodeG711A(payload []byte) []int16 {
+	out := make([]int16, len(payload))
+	for i, b := range payload {
+		out[i] = alawToLinear(b)
+	}
+	return out
+}
+
+func alawToLinear(alaw byte) int16 {
+	alaw ^= 0x55
+	sign := alaw & 0x80
+	exponent := (alaw >> 4) & 0x07
+	mantissa := alaw & 0x0F
+	var sample int16
+	if exponent == 0 {
+		sample = int16(mantissa<<1 | 1)
+	} else {
+		sample = int16((int(mantissa)|0x10)<<uint(exponent-1+1)) | (1 << uint(exponent-1))
+	}
+	if sign == 0 {
+		return -sample
+	}
+	return sample
+}
+
+// G.711 µ-law encoder
+func encodeG711U(pcm []int16) []byte {
+	out := make([]byte, len(pcm))
+	for i, s := range pcm {
+		out[i] = linearToUlaw(s)
+	}
+	return out
+}
+
+func linearToUlaw(sample int16) byte {
+	const bias = 0x84
+	sign := byte(0)
+	if sample < 0 {
+		sample = -sample
+		sign = 0x80
+	}
+	if sample > 32635 {
+		sample = 32635
+	}
+	sample += bias
+	exp := byte(7)
+	for i := 0; i < 7; i++ {
+		if int(sample) >= (1 << uint(8-i)) {
+			break
+		}
+		exp--
+	}
+	mantissa := byte((sample >> uint(exp+3)) & 0x0F)
+	return ^(sign | (exp << 4) | mantissa)
+}
+
+// G.711 A-law encoder
+func encodeG711A(pcm []int16) []byte {
+	out := make([]byte, len(pcm))
+	for i, s := range pcm {
+		out[i] = linearToAlaw(s)
+	}
+	return out
+}
+
+func linearToAlaw(sample int16) byte {
+	sign := byte(0x80)
+	if sample < 0 {
+		sample = -sample
+		sign = 0
+	}
+	if sample > 32767 {
+		sample = 32767
+	}
+	var exp, mantissa byte
+	if sample >= 256 {
+		for exp = 1; exp < 7; exp++ {
+			if int(sample) < (1 << uint(exp+8)) {
+				break
+			}
+		}
+		mantissa = byte((int(sample) >> uint(exp+4)) & 0x0F)
+	} else {
+		mantissa = byte(int(sample) >> 4)
+	}
+	return (sign | (exp << 4) | mantissa) ^ 0x55
+}
+
+// decodeViaFFmpeg decodes complex codec payloads (Opus, G.722, G.729) to PCM
+// by writing the payload to a temp pipe and letting FFmpeg decode it.
+func decodeViaFFmpeg(ffmpegPath string, payload []byte, codec audio.Codec, sampleRate int) ([]int16, error) {
+	// Map codec to ffmpeg input format
+	var inputFmt string
+	switch codec {
+	case audio.CodecOpus:
+		inputFmt = "opus"
+	case audio.CodecG722:
+		inputFmt = "g722"
+	case audio.CodecG729:
+		inputFmt = "g729"
+	default:
+		inputFmt = "s16le"
+	}
+
+	cmd := exec.Command(ffmpegPath,
+		"-f", inputFmt,
+		"-i", "pipe:0",
+		"-ar", fmt.Sprintf("%d", sampleRate),
+		"-ac", "1",
+		"-f", "s16le",
+		"pipe:1",
+	)
+	cmd.Stdin = bytes.NewReader(payload)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("ffmpeg decode %s: %w", codec, err)
+	}
+	return bytesToInt16Slice(out), nil
+}
+
+// encodeViaFFmpeg encodes PCM to a complex codec (Opus, G.722, G.729).
+func encodeViaFFmpeg(ffmpegPath string, pcm []int16, codec audio.Codec, sampleRate int) ([]byte, error) {
+	var outputFmt string
+	switch codec {
+	case audio.CodecOpus:
+		outputFmt = "opus"
+	case audio.CodecG722:
+		outputFmt = "g722"
+	case audio.CodecG729:
+		outputFmt = "g729"
+	default:
+		outputFmt = "s16le"
+	}
+
+	cmd := exec.Command(ffmpegPath,
+		"-f", "s16le",
+		"-ar", fmt.Sprintf("%d", sampleRate),
+		"-ac", "1",
+		"-i", "pipe:0",
+		"-f", outputFmt,
+		"pipe:1",
+	)
+	cmd.Stdin = bytes.NewReader(int16SliceToBytes(pcm))
+	return cmd.Output()
+}
+
+// ---- byte/int16 helpers -----------------------------------------------------
+
+func bytesToInt16Slice(b []byte) []int16 {
+	n := len(b) / 2
+	out := make([]int16, n)
+	for i := range out {
+		out[i] = int16(b[2*i]) | int16(b[2*i+1])<<8
+	}
+	return out
+}
+
+func int16SliceToBytes(s []int16) []byte {
+	out := make([]byte, len(s)*2)
+	for i, v := range s {
+		out[2*i] = byte(v)
+		out[2*i+1] = byte(v >> 8)
+	}
+	return out
+}
