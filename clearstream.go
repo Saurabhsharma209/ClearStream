@@ -1,64 +1,65 @@
-// Package clearstream provides the ClearStream audio enhancement SDK.
-// It supports noise suppression for audio files, live RTP streams, and raw PCM pipelines.
+// Package clearstream provides a codec-agnostic audio enhancement SDK.
+// It supports real-time RTP stream processing and post-processing of
+// audio/video files using AI-based noise suppression.
+//
+// Quick start — file cleanup:
+//
+//	cs, _ := clearstream.New(clearstream.DefaultConfig())
+//	err := cs.ProcessFile("noisy.mp4", "clean.mp4")
+//
+// Quick start — live RTP:
+//
+//	cs, _ := clearstream.New(clearstream.DefaultConfig())
+//	session, _ := cs.NewRTPSession(clearstream.RTPConfig{
+//	    ListenAddr: ":5004",
+//	    ForwardAddr: "10.0.0.2:5004",
+//	})
+//	session.Start()
 package clearstream
 
 import (
 	"fmt"
 
+	"net/http"
+
 	"github.com/exotel/clearstream/pkg/audio"
+	cshttp "github.com/exotel/clearstream/pkg/http"
 	"github.com/exotel/clearstream/pkg/file"
 	"github.com/exotel/clearstream/pkg/model"
 	"github.com/exotel/clearstream/pkg/rtp"
 	"go.uber.org/zap"
 )
 
-// Version is the current ClearStream SDK version.
-const Version = "0.1.0"
-
-// ClearStream is the main SDK entry point. Create one via New().
+// ClearStream is the main SDK entry point.
 type ClearStream struct {
 	cfg    Config
 	model  model.Suppressor
 	logger *zap.Logger
 }
 
-// Config holds the configuration for a ClearStream instance.
+// Config holds top-level SDK configuration.
 type Config struct {
-	// Model selects the noise-suppression backend: "rnnoise", "deepfilter", or "passthrough".
+	// Model selects the noise suppression backend.
+	// Options: "rnnoise" (default, CPU, no deps), "deepfilter" (ONNX, higher quality)
 	Model string
-	// ModelPath is the path to the ONNX model file (required for deepfilter).
+
+	// ModelPath is the path to the ONNX model file (required for "deepfilter").
 	ModelPath string
-	// SampleRate is the audio sample rate in Hz. Must be one of 8000, 16000, 44100, or 48000.
+
+	// SampleRate is the internal processing sample rate. Default: 16000.
 	SampleRate int
-	// Channels is the number of audio channels. Must be 1 (mono) or 2 (stereo).
+
+	// Channels for processing. Default: 1 (mono).
 	Channels int
-	// FFmpegPath is the path or name of the ffmpeg binary. Defaults to "ffmpeg".
+
+	// FFmpegPath overrides the ffmpeg binary location. Default: "ffmpeg" (PATH).
 	FFmpegPath string
-	// Logger is an optional zap logger. If nil, a production logger is created.
+
+	// Logger is an optional zap logger. If nil, production logger is used.
 	Logger *zap.Logger
 }
 
-// Validate checks that the Config fields are within acceptable ranges.
-// It returns an error describing the first invalid field found.
-func (c Config) Validate() error {
-	validRates := map[int]bool{8000: true, 16000: true, 44100: true, 48000: true}
-	if !validRates[c.SampleRate] {
-		return fmt.Errorf("clearstream: SampleRate %d is not supported; use 8000, 16000, 44100, or 48000", c.SampleRate)
-	}
-	if c.Channels != 1 && c.Channels != 2 {
-		return fmt.Errorf("clearstream: Channels must be 1 or 2, got %d", c.Channels)
-	}
-	if c.FFmpegPath == "" {
-		return fmt.Errorf("clearstream: FFmpegPath must not be empty")
-	}
-	validModels := map[string]bool{"rnnoise": true, "deepfilter": true, "passthrough": true}
-	if !validModels[c.Model] {
-		return fmt.Errorf("clearstream: Model %q is not supported; use rnnoise, deepfilter, or passthrough", c.Model)
-	}
-	return nil
-}
-
-// DefaultConfig returns a Config pre-populated with sensible defaults.
+// DefaultConfig returns a sensible out-of-the-box configuration.
 func DefaultConfig() Config {
 	return Config{
 		Model:      "rnnoise",
@@ -68,8 +69,7 @@ func DefaultConfig() Config {
 	}
 }
 
-// New creates and initialises a new ClearStream instance from the provided Config.
-// It validates the config, sets up logging, and loads the noise-suppression model.
+// New creates a ClearStream instance with the given config.
 func New(cfg Config) (*ClearStream, error) {
 	if cfg.SampleRate == 0 {
 		cfg.SampleRate = 16000
@@ -80,12 +80,7 @@ func New(cfg Config) (*ClearStream, error) {
 	if cfg.FFmpegPath == "" {
 		cfg.FFmpegPath = "ffmpeg"
 	}
-	if cfg.Model == "" {
-		cfg.Model = "rnnoise"
-	}
-	if err := cfg.Validate(); err != nil {
-		return nil, err
-	}
+
 	logger := cfg.Logger
 	if logger == nil {
 		var err error
@@ -94,6 +89,7 @@ func New(cfg Config) (*ClearStream, error) {
 			return nil, fmt.Errorf("clearstream: init logger: %w", err)
 		}
 	}
+
 	sup, err := model.NewSuppressor(model.SuppressorConfig{
 		Backend:   cfg.Model,
 		ModelPath: cfg.ModelPath,
@@ -101,11 +97,18 @@ func New(cfg Config) (*ClearStream, error) {
 	if err != nil {
 		return nil, fmt.Errorf("clearstream: init model: %w", err)
 	}
-	return &ClearStream{cfg: cfg, model: sup, logger: logger}, nil
+
+	return &ClearStream{
+		cfg:    cfg,
+		model:  sup,
+		logger: logger,
+	}, nil
 }
 
-// ProcessFile suppresses noise in the audio track of src and writes the result to dst.
-// Both src and dst may be any format supported by ffmpeg.
+// ProcessFile enhances audio in src and writes the result to dst.
+// Both audio files (mp3, wav, flac, ogg, aac) and video files
+// (mp4, mkv, mov, avi, webm) are supported. The audio track is
+// cleaned and muxed back into the container transparently.
 func (cs *ClearStream) ProcessFile(src, dst string) error {
 	fp := file.NewProcessor(file.ProcessorConfig{
 		FFmpegPath: cs.cfg.FFmpegPath,
@@ -117,8 +120,7 @@ func (cs *ClearStream) ProcessFile(src, dst string) error {
 	return fp.Process(src, dst)
 }
 
-// ProcessFileWithOptions is like ProcessFile but accepts additional file.Options,
-// such as stripping the video track from the output.
+// ProcessFileWithOptions is like ProcessFile but accepts per-call options.
 func (cs *ClearStream) ProcessFileWithOptions(src, dst string, opts file.Options) error {
 	fp := file.NewProcessor(file.ProcessorConfig{
 		FFmpegPath: cs.cfg.FFmpegPath,
@@ -130,8 +132,9 @@ func (cs *ClearStream) ProcessFileWithOptions(src, dst string, opts file.Options
 	return fp.ProcessWithOptions(src, dst, opts)
 }
 
-// NewRTPSession creates a live RTP interception session that applies noise suppression
-// to each incoming packet and forwards the cleaned audio to a downstream address.
+// NewRTPSession creates a live RTP interception session.
+// The session reads RTP packets from ListenAddr, suppresses noise,
+// and forwards clean packets to ForwardAddr.
 func (cs *ClearStream) NewRTPSession(cfg rtp.Config) (*rtp.Session, error) {
 	cfg.SampleRate = cs.cfg.SampleRate
 	cfg.Suppressor = cs.model
@@ -139,8 +142,8 @@ func (cs *ClearStream) NewRTPSession(cfg rtp.Config) (*rtp.Session, error) {
 	return rtp.NewSession(cfg)
 }
 
-// Pipeline returns a raw audio.Pipeline for low-level frame-by-frame processing.
-// Use this when you need direct control over PCM data ingestion and retrieval.
+// Pipeline returns a low-level audio processing pipeline for advanced use.
+// Use this when you want to feed raw PCM frames directly.
 func (cs *ClearStream) Pipeline() *audio.Pipeline {
 	return audio.NewPipeline(audio.PipelineConfig{
 		SampleRate: cs.cfg.SampleRate,
@@ -150,6 +153,19 @@ func (cs *ClearStream) Pipeline() *audio.Pipeline {
 	})
 }
 
-// Close releases all resources held by the ClearStream instance, including the
-// loaded noise-suppression model. Always call Close when done.
-func (cs *ClearStream) Close() error { return cs.model.Close() }
+// Close releases resources held by the SDK (model handles, etc.).
+func (cs *ClearStream) Close() error {
+	return cs.model.Close()
+}
+
+// NewHTTPHandler returns an http.Handler exposing the ClearStream API.
+// AgentStream integrates via POST /enhance, GET /health, GET /metrics.
+// Mount it: http.Handle("/", cs.NewHTTPHandler())
+func (cs *ClearStream) NewHTTPHandler() http.Handler {
+	return cshttp.NewHandler(cshttp.HandlerConfig{
+		Suppressor: cs.model,
+		FFmpegPath: cs.cfg.FFmpegPath,
+		SampleRate: cs.cfg.SampleRate,
+		Logger:     cs.logger,
+	})
+}
