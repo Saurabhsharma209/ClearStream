@@ -576,10 +576,10 @@ func encodeG711A(pcm []int16) []byte {
 }
 
 func linearToAlaw(sample int16) byte {
-	sign := byte(0x80) // positive
+	sign := byte(0x00) // positive: bit 7 clear (decoder reads bit7=0 as positive)
 	if sample < 0 {
 		sample = -sample
-		sign = 0x00 // negative
+		sign = 0x80 // negative: bit 7 set (decoder reads bit7=1 as negative)
 	}
 	t := int(sample) / 8
 	if t > 0x0FFF {

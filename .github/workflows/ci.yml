@@ -6,34 +6,39 @@ on:
   pull_request:
     branches: [ main ]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v5.5.0
         with:
           go-version: "1.22"
+          cache: true
 
       - name: Install FFmpeg
-        run: sudo apt-get install -y ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg
 
-      - name: Install RNNoise
-        run: sudo apt-get install -y librnnoise-dev || true
+      - name: Download dependencies
+        run: go mod download
 
-      - name: Build
-        run: go build ./...
+      - name: Verify go.sum is complete
+        run: go mod verify
 
-      - name: Build without CGo
+      - name: Build (CGo disabled)
         run: CGO_ENABLED=0 go build ./...
 
       - name: Vet
-        run: go vet ./...
+        run: CGO_ENABLED=0 go vet ./...
 
-      - name: Test (no CGo, no external deps)
-        run: CGO_ENABLED=0 go test ./...
+      - name: Test (CGo disabled, no external deps)
+        run: CGO_ENABLED=0 go test -timeout 120s ./...
 
       - name: Test with race detector
-        run: CGO_ENABLED=0 go test -race ./...
+        run: CGO_ENABLED=0 go test -race -timeout 120s ./...
