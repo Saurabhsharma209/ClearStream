@@ -1,4 +1,4 @@
-# ClearStream — Business Case
+# ClearStream √ë Business Case
 
 **Version:** 1.0 | **Date:** 2026-05-30 | **Author:** Saurabh Sharma, Exotel
 
@@ -10,14 +10,14 @@ ClearStream is an AI-powered, codec-agnostic audio enhancement SDK that removes
 background noise, echo, and artifacts from live telephony streams and recorded
 audio/video files in real time. Built natively for Exotel's infrastructure, it
 addresses a critical gap: Voice AI and contact center products are only as good
-as the audio they receive — and telephony audio today is hostile to AI.
+as the audio they receive √ë and telephony audio today is hostile to AI.
 
 ClearStream turns this liability into a product advantage. By cleaning audio
 before it reaches STT, NLU, and voice bots, Exotel can deliver measurably
-better AI accuracy without changing the AI models — just the input quality.
+better AI accuracy without changing the AI models √ë just the input quality.
 
 **Ask:** 2 engineers * 4 months (~?40L all-in) to reach a shippable v1.0.
-**Return:** Conservative ?8–12 Cr ARR within 18 months, with a long-term moat
+**Return:** Conservative ?8√ê12 Cr ARR within 18 months, with a long-term moat
 as the only Indian contact center platform with native real-time audio enhancement.
 
 ---
@@ -29,14 +29,14 @@ as the only Indian contact center platform with native real-time audio enhanceme
 | Issue | Impact on Voice AI |
 |---|---|
 | G.711 codec compresses to 8kHz | STT models trained on 16kHz+ audio perform poorly |
-| Background noise (floors, WFH, street) | 20–40% higher word error rate |
+| Background noise (floors, WFH, street) | 20√ê40% higher word error rate |
 | Echo from speakerphones | False barge-in triggers, missed commands |
 | Network jitter and packet loss | Mid-sentence artifacts break NLU context |
 | Multiple codec hops (carrier ? platform) | Cumulative quality degradation |
 
 STT models like Whisper and Deepgram are trained on clean studio audio. When
-fed noisy 8kHz telephony, word error rates jump 20–40%. Every downstream AI
-system — intent detection, sentiment analysis, bot response — inherits these
+fed noisy 8kHz telephony, word error rates jump 20√ê40%. Every downstream AI
+system √ë intent detection, sentiment analysis, bot response √ë inherits these
 errors and compounds them.
 
 ### The Cost Is Measurable
@@ -55,18 +55,18 @@ This is before counting customer frustration, CSAT impact, and escalation costs.
 
 ## Solution: ClearStream
 
-ClearStream sits transparently in the audio path — between the carrier RTP
-stream and Exotel's AI stack — and cleans audio in real time with <20ms latency.
+ClearStream sits transparently in the audio path √ë between the carrier RTP
+stream and Exotel's AI stack √ë and cleans audio in real time with <20ms latency.
 
 ```
 Caller (noisy)
     ? G.711/Opus RTP
 Exotel Media Server
     ?
-[ClearStream — intercepts RTP]
-  • Decode G.711 ? 16kHz PCM
-  • AI noise suppression (RNNoise / DeepFilterNet)
-  • Re-encode ? forward clean stream
+[ClearStream √ë intercepts RTP]
+  ¬• Decode G.711 ? 16kHz PCM
+  ¬• AI noise suppression (RNNoise / DeepFilterNet)
+  ¬• Re-encode ? forward clean stream
     ?
 STT ? NLU ? Voice Bot / Agent Desktop
     ?
@@ -78,24 +78,22 @@ to transcription, analytics, or compliance review pipelines.
 
 ### Key Technical Properties
 
-- **Codec-agnostic:** G.711 (µ-law/A-law), G.722, G.729, Opus, AAC, MP3, FLAC
+- **Codec-agnostic:** G.711 (¬µ-law/A-law), G.722, G.729, Opus, AAC, MP3, FLAC
 - **Dual mode:** Real-time RTP interception + post-processing of audio/video files
 - **Sub-20ms latency:** Suitable for live call paths (target: <15ms)
 - **Transparent:** No SIP re-INVITE required; intercepts at RTP level
 - **Scalable:** Stateless per-session design; horizontal scaling with existing infra
 - **Open-source AI core:** Built on RNNoise (Xiph/Mozilla) and DeepFilterNet
-  (Microsoft) — production-proven, no licensing cost
-- **Language:** Go — consistent with Exotel's existing media stack
+  (Microsoft) √ë production-proven, no licensing cost
+- **Language:** Go √ë consistent with Exotel's existing media stack
 
 ---
 
 ## Market Opportunity
 
-### Krisp's Proof of Market
+### Proof of Market
 
-Krisp (the closest comparable product) raised $9M Series A in 2020 and is
-valued at ~$150M today. They charge $8–14/user/month to end users — on top
-of existing communication tools. Their entire value proposition is a software
+Entire value proposition is a software
 layer that cleans audio. ClearStream replicates this capability natively,
 eliminating the need for Exotel's customers to pay a third party.
 
@@ -103,8 +101,8 @@ eliminating the need for Exotel's customers to pay a third party.
 
 | Segment | Opportunity |
 |---|---|
-| ECC (Contact Center) customers | Bundle ClearStream as a premium add-on: ?200–500/agent/month |
-| Platform API customers | Charge per-minute for enhanced audio: ?0.02–0.05/min premium |
+| ECC (Contact Center) customers | Bundle ClearStream as a premium add-on: ?200√ê500/agent/month |
+| Platform API customers | Charge per-minute for enhanced audio: ?0.02√ê0.05/min premium |
 | Voice AI / bot customers | Required for reliable bot performance; included in AI tier |
 | Third-party SaaS (SDK licensing) | License ClearStream SDK to other Indian voice platforms |
 
@@ -112,9 +110,9 @@ eliminating the need for Exotel's customers to pay a third party.
 - 500 ECC agents on enhanced plan * ?300/month = ?18L/month
 - 10M enhanced minutes/month * ?0.03/min = ?30L/month
 - 2 SDK licensing deals = ?50L/year
-- **Total: ~?8–10 Cr ARR by month 18**
+- **Total: ~?8√ê10 Cr ARR by month 18**
 
-This is deliberately conservative — it assumes no new customer wins, only
+This is deliberately conservative √ë it assumes no new customer wins, only
 upsell to existing base.
 
 ---
@@ -122,7 +120,7 @@ upsell to existing base.
 ## Use Cases
 
 ### 1. Voice AI & Bots (Highest ROI)
-Clean audio fed to STT/NLU improves accuracy 20–40% on noisy telephony.
+Clean audio fed to STT/NLU improves accuracy 20√ê40% on noisy telephony.
 Fewer misheard words ? fewer repeat loops ? shorter calls ? lower cost.
 Reduces false barge-ins. Enables reliable real-time sentiment detection.
 
@@ -137,7 +135,7 @@ compliance review, QA scoring, and coaching insights. AI analytics that
 previously had 70% accuracy on raw recordings can reach 90%+ on clean audio.
 
 ### 4. IVR / DTMF / Speech Recognition
-"Press 1 or say Yes" — background noise causes false positives and missed
+"Press 1 or say Yes" √ë background noise causes false positives and missed
 detections. Clean audio dramatically reduces IVR failure rates, a top customer
 complaint.
 
@@ -146,11 +144,11 @@ Pre-recorded messages and TTS responses sound cleaner. Customer responses are
 better understood. Conversion rates on voice campaigns improve.
 
 ### 6. Video Call Recording Cleanup
-Meeting recordings, video interviews, training sessions — ClearStream strips
+Meeting recordings, video interviews, training sessions √ë ClearStream strips
 background noise from any video file while leaving the video track untouched.
 
 ### 7. Compliance & Legal
-Court-admissible recordings, regulatory compliance calls — clean audio is
+Court-admissible recordings, regulatory compliance calls √ë clean audio is
 required. Currently many companies pay third-party transcription services to
 clean audio manually. ClearStream automates this.
 
@@ -168,16 +166,16 @@ clean audio manually. ClearStream automates this.
 
 **ClearStream's differentiation:**
 - Only solution purpose-built for carrier-grade RTP interception
-- Works at the infrastructure level — no client-side software required
-- On-premises deployable — data never leaves customer environment (critical for BFSI, healthcare)
-- Codec-agnostic — handles the full range of telephony codecs
-- Part of Exotel's platform — one vendor, one contract, one support relationship
+- Works at the infrastructure level √ë no client-side software required
+- On-premises deployable √ë data never leaves customer environment (critical for BFSI, healthcare)
+- Codec-agnostic √ë handles the full range of telephony codecs
+- Part of Exotel's platform √ë one vendor, one contract, one support relationship
 
 ---
 
 ## Investment Required
 
-### Phase 1: MVP (Months 1–4) — ?40L
+### Phase 1: MVP (Months 1√ê4) √ë ?40L
 
 | Resource | Cost |
 |---|---|
@@ -191,7 +189,7 @@ clean audio manually. ClearStream automates this.
 - Integration with ECC agent desktop
 - Fine-tuned model on Indian English + call center noise profiles
 
-### Phase 2: Scale (Months 5–8) — ?25L
+### Phase 2: Scale (Months 5√ê8) √ë ?25L
 
 | Resource | Cost |
 |---|---|
@@ -215,9 +213,9 @@ clean audio manually. ClearStream automates this.
 | Metric | Value |
 |---|---|
 | Total investment (8 months) | ?65L |
-| ARR at Month 18 | ?8–10 Cr |
+| ARR at Month 18 | ?8√ê10 Cr |
 | Payback period | ~14 months |
-| 3-year cumulative revenue | ?30–40 Cr |
+| 3-year cumulative revenue | ?30√ê40 Cr |
 | Strategic value | Defensible moat; no Indian competitor has this |
 
 ---
@@ -239,8 +237,8 @@ clean audio manually. ClearStream automates this.
 **Proceed with Phase 1 immediately.**
 
 The technical foundation (ClearStream SDK) is already built and on GitHub.
-The market is proven (Krisp's success). The problem is acute for Exotel's
-customers and getting worse as voice AI adoption grows — every new bot
+The market is proven. The problem is acute for Exotel's
+customers and getting worse as voice AI adoption grows √ë every new bot
 deployment makes audio quality a more critical bottleneck.
 
 The question is not whether to build this, but whether Exotel builds it
