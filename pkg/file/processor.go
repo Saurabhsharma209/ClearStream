@@ -373,3 +373,48 @@ func parseFFmpegError(stderr string) error {
 		return nil
 	}
 }
+
+
+// StreamProcess reads raw 16kHz mono PCM from r, applies noise suppression,
+// and writes clean PCM to w. No temp files are used.
+// opts.Suppressor must be set; opts.Logger is optional.
+func StreamProcess(ctx context.Context, r io.Reader, w io.Writer, opts Options) error {
+	logger := opts.Logger
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
+	pipe := audio.NewPipeline(audio.PipelineConfig{
+		SampleRate: 16000,
+		Channels:   1,
+		Suppressor: opts.Suppressor,
+		Logger:     logger,
+	})
+
+	buf := make([]byte, audio.FrameSizeBytes*64)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		n, err := r.Read(buf)
+		if n > 0 {
+			if perr := pipe.ProcessFrames(buf[:n], w); perr != nil {
+				return fmt.Errorf("stream: process frames: %w", perr)
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("stream: read: %w", err)
+		}
+	}
+
+	if ferr := pipe.Flush(w); ferr != nil {
+		return fmt.Errorf("stream: flush: %w", ferr)
+	}
+	return nil
+}
