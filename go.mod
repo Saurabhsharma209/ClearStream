@@ -1,11 +1,12 @@
 module github.com/exotel/clearstream
 
-go 1.22
+go 1.17
+
+require go.uber.org/zap v1.24.0
 
 require (
-	github.com/pion/rtp v1.8.6
-	github.com/pion/rtcp v1.2.13
-	github.com/pion/webrtc/v3 v3.2.40
-	github.com/orcaman/writerseeker v0.0.0-20200621085525-1d3f536ff85e
-	go.uber.org/zap v1.27.0
+	github.com/stretchr/testify v1.9.0 // indirect
+	go.uber.org/atomic v1.7.0 // indirect
+	go.uber.org/multierr v1.6.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
 )
