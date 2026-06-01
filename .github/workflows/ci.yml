@@ -19,28 +19,31 @@ jobs:
           go-version: "1.22"
           cache: true
 
-      - name: Install FFmpeg
-        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg librnnoise-dev
 
-      - name: Download dependencies
-        run: CGO_ENABLED=0 go mod download
+      - name: Download Go modules
+        run: go mod download
 
-      - name: Build
+      - name: Build (CGO disabled — no external libs needed)
         run: CGO_ENABLED=0 go build ./...
 
       - name: Vet
         run: CGO_ENABLED=0 go vet ./...
 
-      - name: Test
-        run: CGO_ENABLED=0 go test -timeout 120s ./...
+      - name: Test (CGO disabled)
+        run: CGO_ENABLED=0 go test -timeout 120s -count=1 ./...
 
-      - name: Race detector
-        # race detector requires CGO; exclude packages with no tests to keep this fast
+      - name: Test with race detector (CGO enabled, librnnoise present)
         run: |
-          go test -race -timeout 120s \
+          go test -race -timeout 120s -count=1 \
             ./pkg/audio/... \
-            ./pkg/model/... \
             ./pkg/file/... \
             ./pkg/http/... \
             ./pkg/sip/... \
             ./pkg/websocket/...
+
+      - name: Build with CGO (RNNoise enabled)
+        run: go build ./...
