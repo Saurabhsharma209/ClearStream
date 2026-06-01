@@ -9,6 +9,9 @@
 //	# Live RTP interception
 //	clearstream rtp --listen :5004 --forward 10.0.0.2:5004 --codec pcmu
 //
+//	# HTTP server mode (for Docker / POC)
+//	clearstream server --http :8080
+//
 //	# Probe a file (show codec info without processing)
 //	clearstream probe recording.mp4
 package main
@@ -16,6 +19,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -39,13 +43,64 @@ func main() {
 		runRTP(os.Args[2:])
 	case "probe":
 		runProbe(os.Args[2:])
+	case "server":
+		runServer(os.Args[2:])
 	case "version":
-		fmt.Printf("clearstream v%s (ClearStream Audio Enhancement SDK)\n", clearstream.Version)
+		fmt.Printf("clearstream v%s (ClearStream Audio Enhancement SDK)
+", clearstream.Version)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command: %s
+", os.Args[1])
 		printUsage()
 		os.Exit(1)
 	}
+}
+
+func runServer(args []string) {
+	fs := flag.NewFlagSet("server", flag.ExitOnError)
+	httpAddr := fs.String("http", ":8080", "HTTP listen address")
+	modelBackend := fs.String("model", "passthrough", "Model backend: rnnoise | deepfilter | passthrough")
+	modelPath := fs.String("model-path", "", "Path to ONNX model file (deepfilter only)")
+	fs.Parse(args)
+
+	// Allow env overrides for Docker deployments
+	if envModel := os.Getenv("CLEARSTREAM_MODEL"); envModel != "" {
+		*modelBackend = envModel
+	}
+
+	cfg := clearstream.DefaultConfig()
+	cfg.Model = *modelBackend
+	cfg.ModelPath = *modelPath
+
+	cs, err := clearstream.New(cfg)
+	must("init clearstream", err)
+	defer cs.Close()
+
+	handler := cs.NewHTTPHandler()
+
+	srv := &http.Server{
+		Addr:         *httpAddr,
+		Handler:      handler,
+		ReadTimeout:  10 * time.Minute,
+		WriteTimeout: 10 * time.Minute,
+	}
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		fmt.Printf("ClearStream HTTP server listening on %s (model: %s)
+", *httpAddr, *modelBackend)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "server error: %v
+", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-sig
+	fmt.Println("
+Shutting down...")
 }
 
 func runFile(args []string) {
@@ -73,11 +128,13 @@ func runFile(args []string) {
 	must("init clearstream", err)
 	defer cs.Close()
 
-	fmt.Printf("Processing %s \u2192 %s (model: %s)\n", *input, *output, *modelBackend)
+	fmt.Printf("Processing %s -> %s (model: %s)
+", *input, *output, *modelBackend)
 	start := time.Now()
 	err = cs.ProcessFileWithOptions(*input, *output, file.Options{AudioOnly: *audioOnly})
 	must("process file", err)
-	fmt.Printf("Done in %.1fs \u2192 %s\n", time.Since(start).Seconds(), *output)
+	fmt.Printf("Done in %.1fs -> %s
+", time.Since(start).Seconds(), *output)
 }
 
 func runRTP(args []string) {
@@ -111,7 +168,7 @@ func runRTP(args []string) {
 		JitterDepth: *jitterDepth,
 		PayloadType: uint8(*pt),
 		OnStats: func(s rtppkg.Stats) {
-			fmt.Printf("\r[stats] rx=%d tx=%d lost=%d latency=%.1fms   ",
+			fmt.Printf("[stats] rx=%d tx=%d lost=%d latency=%.1fms   ",
 				s.PacketsReceived, s.PacketsSent, s.PacketsLost, s.LatencyAvgMs)
 		},
 	}
@@ -123,17 +180,20 @@ func runRTP(args []string) {
 	must("create RTP session", err)
 	session.Start()
 
-	fmt.Printf("ClearStream RTP running: %s \u2192 [suppress] \u2192 %s\n", *listen, *forward)
+	fmt.Printf("ClearStream RTP running: %s -> [suppress] -> %s
+", *listen, *forward)
 	fmt.Println("Press Ctrl+C to stop.")
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
-	fmt.Println("\nShutting down...")
+	fmt.Println("
+Shutting down...")
 	session.Stop()
-
 	stats := session.Stats()
-	fmt.Printf("\nFinal stats: rx=%d tx=%d lost=%d avg_latency=%.1fms\n",
+	fmt.Printf("
+Final stats: rx=%d tx=%d lost=%d avg_latency=%.1fms
+",
 		stats.PacketsReceived, stats.PacketsSent, stats.PacketsLost, stats.LatencyAvgMs)
 }
 
@@ -144,21 +204,30 @@ func runProbe(args []string) {
 	}
 	info, err := audio.Probe("ffmpeg", args[0])
 	must("probe", err)
-	fmt.Printf("File:        %s\n", args[0])
-	fmt.Printf("Container:   %s\n", info.ContainerFormat)
-	fmt.Printf("Has video:   %v\n", info.HasVideo)
+	fmt.Printf("File:        %s
+", args[0])
+	fmt.Printf("Container:   %s
+", info.ContainerFormat)
+	fmt.Printf("Has video:   %v
+", info.HasVideo)
 	if info.HasVideo {
-		fmt.Printf("Video codec: %s\n", info.VideoCodec)
+		fmt.Printf("Video codec: %s
+", info.VideoCodec)
 	}
-	fmt.Printf("Audio codec: %s\n", info.AudioCodec)
-	fmt.Printf("Sample rate: %d Hz\n", info.SampleRate)
-	fmt.Printf("Channels:    %d\n", info.Channels)
-	fmt.Printf("Duration:    %.1f sec\n", info.DurationSec)
+	fmt.Printf("Audio codec: %s
+", info.AudioCodec)
+	fmt.Printf("Sample rate: %d Hz
+", info.SampleRate)
+	fmt.Printf("Channels:    %d
+", info.Channels)
+	fmt.Printf("Duration:    %.1f sec
+", info.DurationSec)
 }
 
 func must(label string, err error) {
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error [%s]: %v\n", label, err)
+		fmt.Fprintf(os.Stderr, "error [%s]: %v
+", label, err)
 		os.Exit(1)
 	}
 }
@@ -169,6 +238,7 @@ func printUsage() {
 Commands:
   file    Process an audio or video file (post-processing)
   rtp     Intercept and clean a live RTP stream
+  server  Start HTTP API server (for Docker / POC)
   probe   Show codec information for a file
   version Print version
 
@@ -176,5 +246,6 @@ Examples:
   clearstream file -i noisy.mp4 -o clean.mp4
   clearstream file -i call.wav -o clean.wav --model deepfilter --model-path ./deepfilter.onnx
   clearstream rtp --listen :5004 --forward 10.0.0.2:5004
+  clearstream server --http :8080 --model passthrough
   clearstream probe recording.mp3`)
 }

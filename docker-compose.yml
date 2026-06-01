@@ -1,0 +1,38 @@
+version: "3.9"
+services:
+  clearstream:
+    build: .
+    ports:
+      - "8080:8080"
+      - "5004:5004/udp"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    environment:
+      - CLEARSTREAM_MODEL=passthrough
+      - CLEARSTREAM_SAMPLERATE=16000
+
+  poc-test:
+    image: curlimages/curl:8.6.0
+    depends_on:
+      clearstream:
+        condition: service_healthy
+    volumes:
+      - ./testdata:/testdata
+    entrypoint: sh
+    command: >
+      -c "
+        echo '=== ClearStream POC Test ===' &&
+        echo 'Health check:' &&
+        curl -sf http://clearstream:8080/health &&
+        echo '' &&
+        echo 'Sending noisy audio for enhancement...' &&
+        curl -sf -X POST http://clearstream:8080/enhance
+          -F 'audio=@/testdata/sample_noisy.wav'
+          -o /testdata/sample_clean.wav &&
+        echo 'Enhancement complete: /testdata/sample_clean.wav' &&
+        ls -lh /testdata/sample_clean.wav ||
+        echo 'Enhancement failed'
+      "
