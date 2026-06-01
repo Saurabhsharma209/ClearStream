@@ -1,4 +1,4 @@
-//go:build cgo
+//go:build rnnoise
 
 package model
 
@@ -118,7 +118,7 @@ func upsample3x(in []int16) []int16 {
 		if i+1 < len(in) {
 			next = in[i+1]
 		}
-		out[i*3]   = s
+		out[i*3] = s
 		out[i*3+1] = int16((int32(s)*2 + int32(next)) / 3)
 		out[i*3+2] = int16((int32(s) + int32(next)*2) / 3)
 	}
