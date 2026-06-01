@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ClearStream WebRTC Bridge Test</title>
+<style>
+  body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 0 16px; }
+  button { margin: 4px; padding: 8px 16px; font-size: 14px; }
+  .meter { display: inline-block; width: 200px; height: 16px; background: #eee;
+           vertical-align: middle; border-radius: 4px; overflow: hidden; }
+  .meter-bar { height: 100%; width: 0; background: #4caf50; transition: width .1s; }
+  .meter-bar.noisy { background: #f44336; }
+  pre { background: #f4f4f4; padding: 8px; font-size: 12px; border-radius: 4px; }
+  #log { height: 120px; overflow-y: auto; }
+</style>
+</head>
+<body>
+<h2>ClearStream WebRTC Bridge</h2>
+<p>Captures mic, sends raw PCM to <code>ws://localhost:8081/stream</code>, plays clean audio back.</p>
+<div>
+  <button id="btnConnect">Connect</button>
+  <button id="btnStart" disabled>Start</button>
+  <button id="btnStop" disabled>Stop</button>
+</div>
+<p>
+  Noisy: <span class="meter"><span class="meter-bar noisy" id="mNoisy"></span></span>
+  &nbsp; Clean: <span class="meter"><span class="meter-bar" id="mClean"></span></span>
+</p>
+<pre id="log"></pre>
+<script>
+const WS_URL = 'ws://localhost:8081/stream';
+const SAMPLE_RATE = 16000;
+const FRAME_SAMPLES = 320; // ~20ms at 16kHz
+
+let ws, audioCtx, sourceNode, scriptNode, gainNode;
+let cleanQueue = [], playAt = 0;
+
+function log(msg) {
+  const el = document.getElementById('log');
+  el.textContent += new Date().toISOString().slice(11,23) + ' ' + msg + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+
+function rms(buf) {
+  let s = 0;
+  for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i];
+  return Math.sqrt(s / buf.length);
+}
+
+function setMeter(id, level) {
+  document.getElementById(id).style.width = Math.min(level * 400, 100) + '%';
+}
+
+document.getElementById('btnConnect').onclick = () => {
+  ws = new WebSocket(WS_URL);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => { log('WebSocket connected'); document.getElementById('btnStart').disabled = false; };
+  ws.onclose = () => { log('WebSocket closed'); };
+  ws.onerror = e => log('WS error: ' + e);
+  ws.onmessage = e => {
+    const i16 = new Int16Array(e.data);
+    const f32 = new Float32Array(i16.length);
+    for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+    cleanQueue.push(f32);
+    setMeter('mClean', rms(f32));
+    drainQueue();
+  };
+};
+
+function drainQueue() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  if (playAt < now) playAt = now + 0.05;
+  while (cleanQueue.length > 0) {
+    const f32 = cleanQueue.shift();
+    const buf = audioCtx.createBuffer(1, f32.length, SAMPLE_RATE);
+    buf.copyToChannel(f32, 0);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(audioCtx.destination);
+    src.start(playAt);
+    playAt += f32.length / SAMPLE_RATE;
+  }
+}
+
+document.getElementById('btnStart').onclick = async () => {
+  audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  sourceNode = audioCtx.createMediaStreamSource(stream);
+  scriptNode = audioCtx.createScriptProcessor(FRAME_SAMPLES, 1, 1);
+  gainNode = audioCtx.createGain();
+  gainNode.gain.value = 0; // mute local monitor; we play the clean version
+
+  scriptNode.onaudioprocess = e => {
+    const f32 = e.inputBuffer.getChannelData(0);
+    setMeter('mNoisy', rms(f32));
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      const i16 = new Int16Array(f32.length);
+      for (let i = 0; i < f32.length; i++) i16[i] = Math.max(-32768, Math.min(32767, f32[i] * 32768));
+      ws.send(i16.buffer);
+    }
+  };
+
+  sourceNode.connect(scriptNode);
+  scriptNode.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+  document.getElementById('btnStart').disabled = true;
+  document.getElementById('btnStop').disabled = false;
+  log('Capturing mic at ' + SAMPLE_RATE + ' Hz');
+};
+
+document.getElementById('btnStop').onclick = () => {
+  if (scriptNode) scriptNode.disconnect();
+  if (sourceNode) sourceNode.disconnect();
+  if (audioCtx) audioCtx.close();
+  audioCtx = null;
+  document.getElementById('btnStart').disabled = false;
+  document.getElementById('btnStop').disabled = true;
+  log('Stopped');
+};
+</script>
+</body>
+</html>
