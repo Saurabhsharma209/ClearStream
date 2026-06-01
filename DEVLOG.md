@@ -91,3 +91,43 @@
 - Load test: 100 concurrent RTP sessions
 - ECC (Exotel Contact Center) integration hook
 - Prometheus /metrics scrape config
+
+## 2026-06-02 (Day 4 — Model Quality + Scale)
+
+**Agents run:** AI Model, RTP/SIP, QA/Testing, API/ECC Integration
+**Build:** passing (CGO_ENABLED=0)
+**Go source files:** 30 | **Test files:** 12
+
+### Changes
+- pkg/model/deepfilter.go: Real DeepFilterNet ONNX implementation behind //go:build onnx tag (float32 inference, graceful degradation)
+- pkg/model/deepfilter_stub.go: //go:build !onnx stub with clear error + rebuild instructions
+- pkg/model/interface.go: NewSuppressor factory now routes deepfilter → newDeepFilterSuppressor()
+- pkg/model/bench_test.go: BenchmarkPassthrough, BenchmarkRNNoiseFrameLatency, TestSuppressorConcurrentReset
+- pkg/rtp/jitter.go: Fade-to-silence PLC — 0.9^n decay per consecutive lost frame (no more audio looping)
+- pkg/rtp/rtcp.go: ParseRTCPReceiverReport() — parses RTCP RR packets for loss%, jitter, delay stats
+- pkg/rtp/session.go: listenRTCP() goroutine on RTP port+1, logs and stores RTCP stats
+- pkg/rtp/rtcp_test.go: 4 tests — RR parse, too-short, wrong type, PLC fade energy decrease
+- pkg/audio/codec_test.go: 6 table-driven tests — codec constants, sample rates, lossless detection
+- pkg/audio/quality_test.go: 5 new SNR tests — zero noise, low SNR, improvement, edge cases
+- pkg/http/handler.go: Prometheus metrics on GET /metrics/prometheus (reqTotal, reqOK, reqFailed, procDuration histogram)
+- examples/ecc_integration/main.go: ECC integration demo — HTTP API + SIP proxy, integration guide, graceful shutdown
+- tools/load_test/main.go: Load test harness — N concurrent pipeline sessions, real-time pacing, throughput report
+- tools/prometheus.yml: Prometheus scrape config for docker-compose
+- docker-compose.yml: Added Prometheus service (prom/prometheus:v2.51.0, port 9090)
+
+### Metrics
+- pkg/audio: 25 tests passing
+- pkg/model: benchmarks + concurrency test added
+- pkg/rtp: 4 new tests, fade PLC tested
+- Integration examples: 6 (file, rtp, webrtc, asterisk, ecc, exotel/agentstream)
+
+### Blocked
+- go mod tidy: needs manual run (cd ~/ClearStream && go mod tidy) — adds onnxruntime_go, prometheus deps to go.sum
+- DeepFilterNet inference: needs ONNX Runtime shared lib + exported model (see pkg/model/deepfilter.go comments)
+- TestAlawRoundtrip: pre-existing A-law ±128 edge case — needs fix in Day 5
+
+### Tomorrow (Day 5 — Sprint 1 Wrap)
+- QA: go mod tidy (CRITICAL), fix TestAlawRoundtrip, push test coverage to 60%+
+- Post-processing: StreamProcess (io.Reader→io.Writer) removes temp files from HTTP handler
+- API: example_test.go Go doc examples for ProcessFile and NewRTPSession
+- Audio: Kaiser-windowed FIR resampler (better 8kHz→16kHz quality for G.711 calls)
