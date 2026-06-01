@@ -23,12 +23,15 @@ import (
 	"net/http"
 
 	"github.com/exotel/clearstream/pkg/audio"
-	cshttp "github.com/exotel/clearstream/pkg/http"
 	"github.com/exotel/clearstream/pkg/file"
+	cshttp "github.com/exotel/clearstream/pkg/http"
 	"github.com/exotel/clearstream/pkg/model"
 	"github.com/exotel/clearstream/pkg/rtp"
 	"go.uber.org/zap"
 )
+
+// Version is the ClearStream SDK version.
+const Version = "0.1.0"
 
 // ClearStream is the main SDK entry point.
 type ClearStream struct {

@@ -46,11 +46,9 @@ func main() {
 	case "server":
 		runServer(os.Args[2:])
 	case "version":
-		fmt.Printf("clearstream v%s (ClearStream Audio Enhancement SDK)
-", clearstream.Version)
+		fmt.Printf("clearstream v%s (ClearStream Audio Enhancement SDK)\n", clearstream.Version)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s
-", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		printUsage()
 		os.Exit(1)
 	}
@@ -89,18 +87,15 @@ func runServer(args []string) {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		fmt.Printf("ClearStream HTTP server listening on %s (model: %s)
-", *httpAddr, *modelBackend)
+		fmt.Printf("ClearStream HTTP server listening on %s (model: %s)\n", *httpAddr, *modelBackend)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Fprintf(os.Stderr, "server error: %v
-", err)
+			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 			os.Exit(1)
 		}
 	}()
 
 	<-sig
-	fmt.Println("
-Shutting down...")
+	fmt.Println("\nShutting down...")
 }
 
 func runFile(args []string) {
@@ -128,13 +123,11 @@ func runFile(args []string) {
 	must("init clearstream", err)
 	defer cs.Close()
 
-	fmt.Printf("Processing %s -> %s (model: %s)
-", *input, *output, *modelBackend)
+	fmt.Printf("Processing %s -> %s (model: %s)\n", *input, *output, *modelBackend)
 	start := time.Now()
 	err = cs.ProcessFileWithOptions(*input, *output, file.Options{AudioOnly: *audioOnly})
 	must("process file", err)
-	fmt.Printf("Done in %.1fs -> %s
-", time.Since(start).Seconds(), *output)
+	fmt.Printf("Done in %.1fs -> %s\n", time.Since(start).Seconds(), *output)
 }
 
 func runRTP(args []string) {
@@ -180,20 +173,16 @@ func runRTP(args []string) {
 	must("create RTP session", err)
 	session.Start()
 
-	fmt.Printf("ClearStream RTP running: %s -> [suppress] -> %s
-", *listen, *forward)
+	fmt.Printf("ClearStream RTP running: %s -> [suppress] -> %s\n", *listen, *forward)
 	fmt.Println("Press Ctrl+C to stop.")
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
-	fmt.Println("
-Shutting down...")
+	fmt.Println("\nShutting down...")
 	session.Stop()
 	stats := session.Stats()
-	fmt.Printf("
-Final stats: rx=%d tx=%d lost=%d avg_latency=%.1fms
-",
+	fmt.Printf("\nFinal stats: rx=%d tx=%d lost=%d avg_latency=%.1fms\n",
 		stats.PacketsReceived, stats.PacketsSent, stats.PacketsLost, stats.LatencyAvgMs)
 }
 
@@ -204,30 +193,21 @@ func runProbe(args []string) {
 	}
 	info, err := audio.Probe("ffmpeg", args[0])
 	must("probe", err)
-	fmt.Printf("File:        %s
-", args[0])
-	fmt.Printf("Container:   %s
-", info.ContainerFormat)
-	fmt.Printf("Has video:   %v
-", info.HasVideo)
+	fmt.Printf("File:        %s\n", args[0])
+	fmt.Printf("Container:   %s\n", info.ContainerFormat)
+	fmt.Printf("Has video:   %v\n", info.HasVideo)
 	if info.HasVideo {
-		fmt.Printf("Video codec: %s
-", info.VideoCodec)
+		fmt.Printf("Video codec: %s\n", info.VideoCodec)
 	}
-	fmt.Printf("Audio codec: %s
-", info.AudioCodec)
-	fmt.Printf("Sample rate: %d Hz
-", info.SampleRate)
-	fmt.Printf("Channels:    %d
-", info.Channels)
-	fmt.Printf("Duration:    %.1f sec
-", info.DurationSec)
+	fmt.Printf("Audio codec: %s\n", info.AudioCodec)
+	fmt.Printf("Sample rate: %d Hz\n", info.SampleRate)
+	fmt.Printf("Channels:    %d\n", info.Channels)
+	fmt.Printf("Duration:    %.1f sec\n", info.DurationSec)
 }
 
 func must(label string, err error) {
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error [%s]: %v
-", label, err)
+		fmt.Fprintf(os.Stderr, "error [%s]: %v\n", label, err)
 		os.Exit(1)
 	}
 }

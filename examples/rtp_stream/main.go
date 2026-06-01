@@ -23,6 +23,7 @@ import (
 	"syscall"
 
 	"github.com/exotel/clearstream"
+	"github.com/exotel/clearstream/pkg/audio"
 	rtppkg "github.com/exotel/clearstream/pkg/rtp"
 )
 
@@ -50,7 +51,7 @@ func main() {
 		},
 	}
 	if *codec != "auto" {
-		rtpCfg.Codec = rtppkg.CodecFromString(*codec)
+		rtpCfg.Codec = audio.Codec(*codec)
 	}
 
 	session, err := cs.NewRTPSession(rtpCfg)
