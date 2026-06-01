@@ -2,6 +2,7 @@
 package rtp
 
 import (
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -24,12 +25,14 @@ type jitterEntry struct {
 // JitterBuffer smooths out packet arrival variance for real-time audio.
 // It reorders out-of-order packets and conceals loss.
 type JitterBuffer struct {
-	mu       sync.Mutex
-	buf      []jitterEntry
-	nextSeq  uint16
-	depth    int // target buffer depth (frames)
-	maxDepth int
-	primed   bool
+	mu              sync.Mutex
+	buf             []jitterEntry
+	nextSeq         uint16
+	depth           int // target buffer depth (frames)
+	maxDepth        int
+	primed          bool
+	consecutiveLoss int     // count of consecutive lost frames
+	lastGoodFrame   []int16 // last successfully received frame (decoded PCM)
 }
 
 // NewJitterBuffer creates a jitter buffer with the given target depth.
@@ -103,6 +106,30 @@ func (j *JitterBuffer) Pop() ([]byte, bool) {
 	return nil, true // nil payload = packet loss; caller should repeat last good frame
 }
 
+// generatePLC produces a packet-loss-concealment frame using fade-to-silence.
+// Each consecutive lost frame is multiplied by 0.9 so audio decays gracefully
+// rather than looping the last good frame indefinitely.
+// Must be called with j.mu held OR from a single-threaded context.
+func (j *JitterBuffer) generatePLC() []int16 {
+	j.consecutiveLoss++
+	if j.lastGoodFrame == nil {
+		return make([]int16, 160) // silence
+	}
+	decayFactor := math.Pow(0.9, float64(j.consecutiveLoss))
+	result := make([]int16, len(j.lastGoodFrame))
+	for i, s := range j.lastGoodFrame {
+		result[i] = int16(float64(s) * decayFactor)
+	}
+	return result
+}
+
+// onGoodPacket resets the consecutive-loss counter and saves the decoded frame
+// for future PLC use. Call this after successfully decoding a received packet.
+func (j *JitterBuffer) onGoodPacket(frame []int16) {
+	j.consecutiveLoss = 0
+	j.lastGoodFrame = frame
+}
+
 // Reset clears the buffer state (call on session restart or SSRC change).
 func (j *JitterBuffer) Reset() {
 	j.mu.Lock()
@@ -110,6 +137,8 @@ func (j *JitterBuffer) Reset() {
 	j.buf = j.buf[:0]
 	j.primed = false
 	j.nextSeq = 0
+	j.consecutiveLoss = 0
+	j.lastGoodFrame = nil
 }
 
 // seqLess compares RTP sequence numbers accounting for 16-bit wraparound.

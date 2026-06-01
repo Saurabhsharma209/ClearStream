@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"strconv"
 	"sync"
 	"time"
 
@@ -65,16 +66,17 @@ type Session struct {
 	fwdAddr  *net.UDPAddr
 	jitter   *JitterBuffer
 	pipeline *audio.Pipeline
-	lastGood []int16 // last clean frame for PLC (packet loss concealment)
 
 	currentSSRC uint32
 	ssrcSet     bool
 
-	mu      sync.Mutex
-	stats   Stats
-	cancel  context.CancelFunc
-	done    chan struct{}
-	logger  *zap.Logger
+	mu        sync.Mutex
+	stats     Stats
+	RTCPStats RTCPReceiverReport // most recent RTCP RR stats
+	rtcpConn  *net.UDPConn
+	cancel    context.CancelFunc
+	done      chan struct{}
+	logger    *zap.Logger
 }
 
 // NewSession creates (but does not start) an RTP session.
@@ -129,6 +131,7 @@ func (s *Session) Start() {
 	s.cancel = cancel
 
 	go s.receiveLoop(ctx)
+	go s.listenRTCP()
 	if s.cfg.OnStats != nil {
 		go s.statsLoop(ctx)
 	}
@@ -146,6 +149,9 @@ func (s *Session) Stop() {
 		s.cancel()
 	}
 	s.conn.Close()
+	if s.rtcpConn != nil {
+		s.rtcpConn.Close()
+	}
 	<-s.done
 	s.logger.Info("RTP session stopped")
 }
@@ -213,7 +219,6 @@ func (s *Session) handlePacket(raw []byte) error {
 		)
 		s.jitter.Reset()
 		s.pipeline.Reset()
-		s.lastGood = nil
 	}
 	s.currentSSRC = header.SSRC
 	s.ssrcSet = true
@@ -233,12 +238,8 @@ func (s *Session) handlePacket(raw []byte) error {
 	var pcm []int16
 
 	if frame == nil {
-		// Packet loss — use last good frame (PLC)
-		if s.lastGood != nil {
-			pcm = s.lastGood
-		} else {
-			pcm = make([]int16, audio.FrameSizeSamples)
-		}
+		// Packet loss — fade-to-silence PLC (0.9x decay per consecutive loss)
+		pcm = s.jitter.generatePLC()
 		s.mu.Lock()
 		s.stats.PacketsLost++
 		s.mu.Unlock()
@@ -263,7 +264,7 @@ func (s *Session) handlePacket(raw []byte) error {
 
 	cleanPCM := bytesToInt16Slice(cleanBuf.Bytes())
 	if len(cleanPCM) > 0 {
-		s.lastGood = cleanPCM
+		s.jitter.onGoodPacket(cleanPCM)
 	}
 
 	// Re-encode to original codec
@@ -326,6 +327,55 @@ func (s *Session) encodeFromPCM(pcm []int16, pt uint8) ([]byte, error) {
 		return encodeViaFFmpeg(s.cfg.FFmpegPath, pcm, codec, s.cfg.SampleRate)
 	default:
 		return int16SliceToBytes(pcm), nil
+	}
+}
+
+// listenRTCP listens on ListenAddr port+1 for RTCP Receiver Reports.
+func (s *Session) listenRTCP() {
+	host, portStr, err := net.SplitHostPort(s.cfg.ListenAddr)
+	if err != nil {
+		return
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return
+	}
+	rtcpAddr := net.JoinHostPort(host, strconv.Itoa(port+1))
+
+	addr, err := net.ResolveUDPAddr("udp", rtcpAddr)
+	if err != nil {
+		return
+	}
+
+	conn, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		return
+	}
+	s.rtcpConn = conn
+	defer conn.Close()
+
+	buf := make([]byte, 1500)
+	for {
+		n, _, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			return
+		}
+
+		rr, err := ParseRTCPReceiverReport(buf[:n])
+		if err != nil {
+			s.logger.Warn("rtcp parse error", zap.Error(err))
+			continue
+		}
+		if rr != nil {
+			s.mu.Lock()
+			s.RTCPStats = *rr
+			s.mu.Unlock()
+			s.logger.Info("RTCP receiver report",
+				zap.Float64("loss_pct", rr.FractionLost*100),
+				zap.Int32("cumulative_lost", rr.CumulativeLost),
+				zap.Uint32("jitter_samples", rr.Jitter),
+			)
+		}
 	}
 }
 
