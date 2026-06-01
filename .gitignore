@@ -1,0 +1,16 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+clearstream
+
+# Test output
+*.test
+*.out
+
+# Generated audio test data (keep .gitkeep)
+testdata/*.wav
+testdata/*.pcm
+testdata/*.mp3
+testdata/*.mp4
