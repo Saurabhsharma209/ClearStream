@@ -14,6 +14,16 @@ services:
       - CLEARSTREAM_MODEL=passthrough
       - CLEARSTREAM_SAMPLERATE=16000
 
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./tools/prometheus.yml:/etc/prometheus/prometheus.yml
+    depends_on:
+      clearstream:
+        condition: service_healthy
+
   poc-test:
     image: curlimages/curl:8.6.0
     depends_on:

@@ -13,6 +13,9 @@ import (
 
 	"github.com/exotel/clearstream/pkg/file"
 	"github.com/exotel/clearstream/pkg/model"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 )
 
@@ -24,21 +27,28 @@ const (
 // Handler is the ClearStream HTTP API handler.
 // Mount it on your HTTP mux with http.Handle("/", handler).
 type Handler struct {
-	suppressor model.Suppressor
-	ffmpegPath string
-	sampleRate int
-	logger     *zap.Logger
-	metrics    *Metrics
+	suppressor  model.Suppressor
+	ffmpegPath  string
+	sampleRate  int
+	logger      *zap.Logger
+	metrics     *Metrics
+	promHandler http.Handler
+
+	// Prometheus metrics
+	reqTotal     prometheus.Counter
+	reqOK        prometheus.Counter
+	reqFailed    prometheus.Counter
+	procDuration prometheus.Histogram
 }
 
 // Metrics holds real-time API metrics.
 type Metrics struct {
-	RequestsTotal   int64     `json:"requests_total"`
-	RequestsOK      int64     `json:"requests_ok"`
-	RequestsFailed  int64     `json:"requests_failed"`
-	AvgProcessingMs float64   `json:"avg_processing_ms"`
-	ActiveSessions  int       `json:"active_sessions"`
-	Uptime          string    `json:"uptime"`
+	RequestsTotal   int64   `json:"requests_total"`
+	RequestsOK      int64   `json:"requests_ok"`
+	RequestsFailed  int64   `json:"requests_failed"`
+	AvgProcessingMs float64 `json:"avg_processing_ms"`
+	ActiveSessions  int     `json:"active_sessions"`
+	Uptime          string  `json:"uptime"`
 	startTime       time.Time
 }
 
@@ -58,7 +68,9 @@ func NewHandler(cfg HandlerConfig) *Handler {
 	if cfg.SampleRate == 0 {
 		cfg.SampleRate = 16000
 	}
-	return &Handler{
+
+	reg := prometheus.NewRegistry()
+	h := &Handler{
 		suppressor: cfg.Suppressor,
 		ffmpegPath: cfg.FFmpegPath,
 		sampleRate: cfg.SampleRate,
@@ -67,6 +79,25 @@ func NewHandler(cfg HandlerConfig) *Handler {
 			startTime: time.Now(),
 		},
 	}
+	h.reqTotal = promauto.With(reg).NewCounter(prometheus.CounterOpts{
+		Name: "clearstream_requests_total",
+		Help: "Total HTTP enhancement requests",
+	})
+	h.reqOK = promauto.With(reg).NewCounter(prometheus.CounterOpts{
+		Name: "clearstream_requests_ok_total",
+		Help: "Successful enhancements",
+	})
+	h.reqFailed = promauto.With(reg).NewCounter(prometheus.CounterOpts{
+		Name: "clearstream_requests_failed_total",
+		Help: "Failed enhancements",
+	})
+	h.procDuration = promauto.With(reg).NewHistogram(prometheus.HistogramOpts{
+		Name:    "clearstream_processing_duration_seconds",
+		Help:    "Audio enhancement processing time",
+		Buckets: []float64{0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0},
+	})
+	h.promHandler = promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
+	return h
 }
 
 // ServeHTTP routes requests to the appropriate handler.
@@ -81,6 +112,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleHealth(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/metrics":
 		h.handleMetrics(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/metrics/prometheus":
+		h.promHandler.ServeHTTP(w, r)
+		return
 	default:
 		writeError(w, http.StatusNotFound, "endpoint not found")
 	}
@@ -93,10 +127,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	h.metrics.RequestsTotal++
+	h.reqTotal.Inc()
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		h.metrics.RequestsFailed++
+		h.reqFailed.Inc()
 		writeError(w, http.StatusBadRequest, "failed to parse form: "+err.Error())
 		return
 	}
@@ -104,6 +140,7 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	f, header, err := r.FormFile("audio")
 	if err != nil {
 		h.metrics.RequestsFailed++
+		h.reqFailed.Inc()
 		writeError(w, http.StatusBadRequest, "missing audio field")
 		return
 	}
@@ -119,6 +156,7 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	tmpIn, err := os.CreateTemp("", "cs-in-*"+ext)
 	if err != nil {
 		h.metrics.RequestsFailed++
+		h.reqFailed.Inc()
 		writeError(w, http.StatusInternalServerError, "temp file error")
 		return
 	}
@@ -127,6 +165,7 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := io.Copy(tmpIn, f); err != nil {
 		h.metrics.RequestsFailed++
+		h.reqFailed.Inc()
 		writeError(w, http.StatusInternalServerError, "upload read error")
 		return
 	}
@@ -136,6 +175,7 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	tmpOut, err := os.CreateTemp("", "cs-out-*"+ext)
 	if err != nil {
 		h.metrics.RequestsFailed++
+		h.reqFailed.Inc()
 		writeError(w, http.StatusInternalServerError, "temp file error")
 		return
 	}
@@ -158,6 +198,7 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 
 	if err := proc.ProcessWithOptions(tmpIn.Name(), tmpOut.Name(), opts); err != nil {
 		h.metrics.RequestsFailed++
+		h.reqFailed.Inc()
 		h.logger.Error("enhance failed", zap.Error(err))
 		writeError(w, http.StatusInternalServerError, "enhancement failed: "+err.Error())
 		return
@@ -167,6 +208,7 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	outFile, err := os.Open(tmpOut.Name())
 	if err != nil {
 		h.metrics.RequestsFailed++
+		h.reqFailed.Inc()
 		writeError(w, http.StatusInternalServerError, "output read error")
 		return
 	}
@@ -182,6 +224,8 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	elapsed := time.Since(start).Seconds() * 1000
 	h.metrics.RequestsOK++
 	h.metrics.AvgProcessingMs = h.metrics.AvgProcessingMs*0.9 + elapsed*0.1
+	h.reqOK.Inc()
+	h.procDuration.Observe(time.Since(start).Seconds())
 
 	h.logger.Info("enhanced audio",
 		zap.String("file", header.Filename),

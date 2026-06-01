@@ -1,0 +1,8 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: clearstream
+    static_configs:
+      - targets: ['clearstream:8080']
+    metrics_path: /metrics/prometheus
