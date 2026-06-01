@@ -5,6 +5,7 @@ package file
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -45,6 +46,11 @@ type Options struct {
 	// NormalizePeak applies peak normalization to the output (-1 dBFS target).
 	NormalizePeak bool
 
+	// Suppressor is the noise suppressor used by StreamProcess.
+	// If nil, StreamProcess will return an error.
+	Suppressor model.Suppressor
+	// Logger is used by StreamProcess. If nil, a nop logger is used.
+	Logger *zap.Logger
 	// OnProgress is called with values 0.0–1.0 as processing advances.
 	// It is called from the processing goroutine; keep it non-blocking.
 	OnProgress func(pct float64)
@@ -213,11 +219,11 @@ func (p *Processor) decodeAndSuppress(src, pcmPath string, info *audio.MediaInfo
 	// FFmpeg decode command: any input → 16kHz mono signed 16-bit PCM on stdout
 	decodeCmd := exec.Command(p.cfg.FFmpegPath,
 		"-i", src,
-		"-vn",                                        // drop video
-		"-ar", fmt.Sprintf("%d", p.cfg.SampleRate),  // resample to 16kHz
-		"-ac", fmt.Sprintf("%d", p.cfg.Channels),    // mono
-		"-f", "s16le",                                // raw signed 16-bit little-endian PCM
-		"-",                                          // pipe to stdout
+		"-vn",                                      // drop video
+		"-ar", fmt.Sprintf("%d", p.cfg.SampleRate), // resample to 16kHz
+		"-ac", fmt.Sprintf("%d", p.cfg.Channels), // mono
+		"-f", "s16le", // raw signed 16-bit little-endian PCM
+		"-", // pipe to stdout
 	)
 
 	// Open output PCM file
@@ -373,7 +379,6 @@ func parseFFmpegError(stderr string) error {
 		return nil
 	}
 }
-
 
 // StreamProcess reads raw 16kHz mono PCM from r, applies noise suppression,
 // and writes clean PCM to w. No temp files are used.

@@ -1,10 +1,13 @@
 package file_test
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/exotel/clearstream/pkg/audio"
 	"github.com/exotel/clearstream/pkg/file"
 	"github.com/exotel/clearstream/pkg/model"
 	"go.uber.org/zap"
@@ -82,5 +85,27 @@ func TestProcessDirCreatesDestDir(t *testing.T) {
 	}
 	if _, err := os.Stat(dst); os.IsNotExist(err) {
 		t.Error("expected dst dir to be created")
+	}
+}
+
+func TestStreamProcess(t *testing.T) {
+	// Synthetic PCM: 10 frames of silence (all zeros)
+	frameCount := 10
+	inputPCM := make([]byte, audio.FrameSizeBytes*frameCount)
+
+	r := bytes.NewReader(inputPCM)
+	var w bytes.Buffer
+
+	opts := file.Options{
+		Suppressor: model.NewPassthrough(),
+		Logger:     zap.NewNop(),
+	}
+
+	if err := file.StreamProcess(context.Background(), r, &w, opts); err != nil {
+		t.Fatalf("StreamProcess failed: %v", err)
+	}
+
+	if w.Len() != len(inputPCM) {
+		t.Errorf("output length %d != input length %d", w.Len(), len(inputPCM))
 	}
 }
