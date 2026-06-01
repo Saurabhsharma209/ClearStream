@@ -152,3 +152,23 @@
 - API: Add example_test.go Go doc examples for ProcessFile and NewRTPSession
 - RTP: Add SSRC change detection test + session_test.go loopback UDP test
 - Audio: Add resample_test.go with SNR comparison linear vs Kaiser
+
+## 2026-06-02 (Day 6)
+
+**Agents run:** RTP/SIP, API Layer, Audio Pipeline
+**Build:** passing (CGO_ENABLED=0)
+
+### Changes
+- pkg/rtp/session_test.go: loopback UDP test for RTP session
+- example_test.go: Go doc examples for exported SDK symbols
+- pkg/audio/resample_test.go: ratio correctness tests + Kaiser vs linear SNR comparison
+
+### Blocked
+- Local go test: dyld LC_UUID crash (Go 1.17 + macOS 15) — pre-existing, CI green
+- DeepFilterNet ONNX: needs manual ONNX Runtime setup
+
+### Tomorrow (Day 7)
+- Audio: integrate VAD threshold tuning (configurable energy threshold via PipelineConfig)
+- Model: add MockSuppressor to pkg/model/mock_test.go for deterministic pipeline tests
+- Post-processing: StreamProcess benchmark test
+- RTP: SSRC change detection unit test
