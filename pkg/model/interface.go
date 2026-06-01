@@ -2,7 +2,11 @@
 // concrete implementations (RNNoise, DeepFilterNet, passthrough).
 package model
 
-import "fmt"
+import (
+	"fmt"
+
+	"go.uber.org/zap"
+)
 
 // Suppressor is the core AI interface. All backends implement this.
 // It receives raw 16kHz mono int16 PCM frames and returns cleaned frames.
@@ -40,7 +44,8 @@ func NewSuppressor(cfg SuppressorConfig) (Suppressor, error) {
 		if cfg.ModelPath == "" {
 			return nil, fmt.Errorf("model: deepfilter requires ModelPath")
 		}
-		return NewDeepFilter(cfg.ModelPath)
+		logger, _ := zap.NewProduction()
+		return newDeepFilterSuppressor(cfg.ModelPath, logger)
 	case "passthrough":
 		return NewPassthrough(), nil
 	default:

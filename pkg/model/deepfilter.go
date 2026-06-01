@@ -1,96 +1,112 @@
+//go:build onnx
+
 package model
-
-/*
-DeepFilterNet integration via ONNX Runtime Go bindings.
-
-Setup:
-  1. Export the DeepFilterNet model to ONNX:
-       pip install deepfilternet
-       python -c "from df.enhance import init_df; m,_,_ = init_df(); m.export_onnx('deepfilter.onnx')"
-  2. Install ONNX Runtime:
-       https://github.com/microsoft/onnxruntime/releases
-  3. Add Go binding:
-       go get github.com/yalue/onnxruntime_go
-
-This file provides the interface binding. The actual onnxruntime_go import
-is gated so the SDK compiles without ONNX Runtime installed (falls back to RNNoise).
-*/
 
 import (
 	"fmt"
 	"sync"
+
+	ort "github.com/yalue/onnxruntime_go"
+	"go.uber.org/zap"
 )
 
-// DeepFilter wraps a DeepFilterNet ONNX model for high-quality suppression.
-// Quality is noticeably better than RNNoise, especially for music and complex noise.
-// Requires ~20ms on a modern CPU per 20ms frame (real-time capable).
-type DeepFilter struct {
+// deepFilterSuppressor runs DeepFilterNet inference via ONNX Runtime.
+// Build with: CGO_ENABLED=1 go build -tags onnx ./...
+// Export model: python -c "from df.enhance import init_df; m,_,_=init_df(); m.export_onnx('deepfilter.onnx')"
+type deepFilterSuppressor struct {
 	mu        sync.Mutex
+	session   *ort.DynamicAdvancedSession
 	modelPath string
-	// session onnxruntime_go.Session  // uncomment when ONNX Runtime is installed
-	// inputName  string
-	// outputName string
-	sampleRate int
-	frameSize  int
+	logger    *zap.Logger
 }
 
-// NewDeepFilter loads a DeepFilterNet ONNX model from modelPath.
-func NewDeepFilter(modelPath string) (*DeepFilter, error) {
-	// TODO: Initialize ONNX Runtime session.
-	// Uncomment and complete when onnxruntime_go is integrated:
-	//
-	// ort.InitializeEnvironment()
-	// session, err := ort.NewSession(modelPath, inputNames, outputNames, inputShapes, outputShapes)
-	// if err != nil {
-	//     return nil, fmt.Errorf("deepfilter: load model %q: %w", modelPath, err)
-	// }
-	//
-	// For now, return a stub that logs a warning and passes audio through.
-	// Replace with real ONNX session above.
+func newDeepFilterSuppressor(modelPath string, logger *zap.Logger) (Suppressor, error) {
+	if modelPath == "" {
+		return nil, fmt.Errorf("deepfilter: ModelPath is required")
+	}
 
-	fmt.Printf("[clearstream] WARNING: DeepFilterNet ONNX Runtime not compiled in. "+
-		"Model path %q noted but suppression is passthrough. "+
-		"See pkg/model/deepfilter.go for integration instructions.\n", modelPath)
+	// Initialize ONNX Runtime (idempotent)
+	if !ort.IsInitialized() {
+		if err := ort.InitializeEnvironment(); err != nil {
+			return nil, fmt.Errorf("deepfilter: init onnx env: %w", err)
+		}
+	}
 
-	return &DeepFilter{
-		modelPath:  modelPath,
-		sampleRate: 48000,
-		frameSize:  480, // 10ms @ 48kHz
-	}, nil
+	// Load model — use DynamicAdvancedSession for variable input shapes
+	session, err := ort.NewDynamicAdvancedSession(
+		modelPath,
+		[]string{"input"},  // DeepFilterNet input node name
+		[]string{"output"}, // DeepFilterNet output node name
+		nil,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("deepfilter: load model %q: %w", modelPath, err)
+	}
+
+	logger.Info("DeepFilterNet model loaded", zap.String("path", modelPath))
+	return &deepFilterSuppressor{session: session, modelPath: modelPath, logger: logger}, nil
 }
 
-// Process runs the DeepFilterNet inference on a 16kHz 160-sample frame.
-// Currently a passthrough stub — replace with real ONNX inference.
-func (d *DeepFilter) Process(frame []int16) ([]int16, error) {
+// Process suppresses noise in a 16kHz mono int16 PCM frame using DeepFilterNet.
+func (d *deepFilterSuppressor) Process(frame []int16) ([]int16, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// TODO: Replace with actual ONNX inference:
-	// 1. Resample frame to 48kHz
-	// 2. Convert to float32, normalize to [-1, 1]
-	// 3. Run ONNX session
-	// 4. Convert output back to int16 @ 16kHz
+	// Convert int16 -> float32 normalized [-1, 1]
+	floats := make([]float32, len(frame))
+	for i, s := range frame {
+		floats[i] = float32(s) / 32768.0
+	}
 
-	// Passthrough until ONNX Runtime is wired in
-	out := make([]int16, len(frame))
-	copy(out, frame)
-	return out, nil
+	// Create input tensor
+	inputTensor, err := ort.NewTensor(ort.NewShape(1, int64(len(floats))), floats)
+	if err != nil {
+		return frame, fmt.Errorf("deepfilter: input tensor: %w", err)
+	}
+	defer inputTensor.Destroy()
+
+	// Run inference
+	outputs, err := d.session.Run([]ort.ArbitraryTensor{inputTensor})
+	if err != nil {
+		// Graceful degradation: return original frame on error
+		d.logger.Warn("deepfilter inference failed, passing through", zap.Error(err))
+		return frame, nil
+	}
+	defer func() {
+		for _, o := range outputs {
+			o.Destroy()
+		}
+	}()
+
+	// Convert output float32 -> int16
+	outTensor, ok := outputs[0].(*ort.Tensor[float32])
+	if !ok {
+		return frame, fmt.Errorf("deepfilter: unexpected output type")
+	}
+	outData := outTensor.GetData()
+
+	result := make([]int16, len(outData))
+	for i, f := range outData {
+		if f > 1.0 {
+			f = 1.0
+		}
+		if f < -1.0 {
+			f = -1.0
+		}
+		result[i] = int16(f * 32767)
+	}
+	return result, nil
 }
 
-// Reset clears any stateful buffers in the model.
-func (d *DeepFilter) Reset() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	// Reset ONNX session state if applicable
-}
+func (d *deepFilterSuppressor) Name() string { return "deepfilter" }
+func (d *deepFilterSuppressor) Reset()        {} // stateless per-frame
 
-// Close releases the ONNX session.
-func (d *DeepFilter) Close() error {
+func (d *deepFilterSuppressor) Close() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	// session.Destroy()
+	if d.session != nil {
+		d.session.Destroy()
+		d.session = nil
+	}
 	return nil
 }
-
-// Name returns the backend identifier.
-func (d *DeepFilter) Name() string { return "deepfilter" }

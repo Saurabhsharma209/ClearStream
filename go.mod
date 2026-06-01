@@ -2,7 +2,10 @@ module github.com/exotel/clearstream
 
 go 1.17
 
-require go.uber.org/zap v1.24.0
+require (
+	github.com/yalue/onnxruntime_go v1.10.0
+	go.uber.org/zap v1.24.0
+)
 
 require (
 	github.com/gorilla/websocket v1.5.0 // indirect
