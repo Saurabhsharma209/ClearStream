@@ -5,11 +5,16 @@ package model
 import (
 	"fmt"
 	"os"
+	"sync"
 )
 
-// NewRNNoise returns an error when CGo is not available,
-// causing NewSuppressor to fall back to passthrough.
+var warnOnce sync.Once
+
+// NewRNNoise returns a passthrough suppressor when rnnoise is not built in.
+// A one-time warning is printed to stderr so pool creation doesn't spam logs.
 func NewRNNoise() (*Passthrough, error) {
-	fmt.Fprintln(os.Stderr, "[clearstream] CGo not available: using passthrough suppressor (no noise reduction)")
+	warnOnce.Do(func() {
+		fmt.Fprintln(os.Stderr, "[clearstream] rnnoise not built in: using passthrough suppressor (build with -tags rnnoise for real noise reduction)")
+	})
 	return NewPassthrough(), nil
 }

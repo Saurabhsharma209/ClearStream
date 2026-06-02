@@ -9,10 +9,11 @@ import (
 // Each caller acquires one Suppressor for a call leg, then releases it back.
 // This avoids per-session allocation for stateful backends like RNNoise.
 type SuppressorPool struct {
-	pool chan Suppressor
-	cfg  SuppressorConfig
-	mu   sync.Mutex
-	size int
+	pool      chan Suppressor
+	cfg       SuppressorConfig
+	mu        sync.Mutex
+	size      int
+	closeOnce sync.Once
 }
 
 // NewSuppressorPool creates a pool of n Suppressors using the given config.
@@ -45,14 +46,16 @@ func (p *SuppressorPool) Release(s Suppressor) { p.pool <- s }
 // Size returns the pool capacity.
 func (p *SuppressorPool) Size() int { return p.size }
 
-// Close shuts down all pooled Suppressors. Do not use after Close.
+// Close shuts down all pooled Suppressors. Safe to call more than once.
 func (p *SuppressorPool) Close() error {
-	close(p.pool)
 	var firstErr error
-	for s := range p.pool {
-		if err := s.Close(); err != nil && firstErr == nil {
-			firstErr = err
+	p.closeOnce.Do(func() {
+		close(p.pool)
+		for s := range p.pool {
+			if err := s.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
-	}
+	})
 	return firstErr
 }

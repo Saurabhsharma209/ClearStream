@@ -299,3 +299,31 @@
 - Real RNNoise test with librnnoise if available
 - Load test: 50 concurrent RTP sessions via tools/load_test
 - HTTP /enhance with real WAV file (not just PCM bytes)
+
+## 2026-06-02 (Days 14 & 15 — Load Testing + POC Integration)
+
+**Agents run:** SDK, Audio, HTTP, QA/Load, Compat, Exotel
+**Build:** passing | **Tests:** 10 packages green (-race)
+
+### Changes
+- clearstream.go: MaxConcurrentSessions field (default 32); SuppressorPool created in New(); NewRTPSession() acquires per-session suppressor from pool; PoolSize() method; Close() releases pool
+- pkg/model/pool.go: sync.Once guard on Close() — safe to call multiple times (fixes double-close panic)
+- pkg/model/rnnoise_nocgo.go: sync.Once on warning — prints only once instead of N×pool-size times
+- pkg/audio/agc_test.go: 5 tests — amplification (gain rises to cap), attenuation (gain pulls back), MaxGainCap (no int16 overflow), Reset (fresh state), pipeline+AGC end-to-end (RMS grows toward TargetRMS)
+- pkg/http/handler_test.go: TestEnhanceWithWAVFile (real 44-byte RIFF header + sine PCM), TestEnhanceResponseHeaders (X-ClearStream-Model, X-ClearStream-Duration-Ms), TestCORSPreflightHeaders
+- pkg/loadtest/loadtest.go: in-process load test runner — N concurrent pipeline sessions via semaphore, atomic frame/error counters, FPS metric
+- pkg/loadtest/loadtest_test.go: TestLoadTest10Sessions (1000 frames, 0 errors), TestLoadTest50Sessions (2500 frames, 0 errors), BenchmarkPipeline; observed 1.6M FPS on passthrough
+- pkg/compat/compat_test.go: 13 tests covering all platforms — Asterisk/FreeSWITCH/Kamailio/RTPEngine/Janus/Exotel/WSS/RTP; version parsing, GTE comparison, Recommend() for each platform
+- examples/exotel_poc/main.go: runnable Exotel vSIP POC — RTP session (PCMA, JitterDepth=4), HTTP webhook stub, /health with pipeline stats, graceful shutdown with final stats
+
+### Metrics
+- Concurrent pipeline throughput: **1.6M frames/sec** (passthrough, 50 sessions)
+- Pool size: 32 sessions by default (configurable via MaxConcurrentSessions)
+- Test packages: 10 | Test files: 25+
+
+### Blocked
+- Real RNNoise: requires CGO + librnnoise (brew install rnnoise)
+- DeepFilterNet: requires ONNX Runtime + exported model
+
+### POC command
+    go run examples/exotel_poc/main.go --rtp-listen :5004 --rtp-forward AGENT:5004 --http :8080
