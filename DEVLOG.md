@@ -259,3 +259,43 @@
 - Model: BenchmarkDeepFilterNet stub + ONNX session lifecycle test
 - RTP: jitter buffer wraparound test (seqnum 65535→0)
 - Audio: resample_test.go — verify Kaiser FIR output SNR > linear for a synthetic chirp signal
+
+## 2026-06-02 (Days 12 & 13 — POC Readiness)
+
+**Agents run:** RTP/SIP, AI Model, CLI, HTTP API, QA, Audio Pipeline
+**Build:** passing | **Tests:** all 8 packages green (-race)
+
+### Changes
+- pkg/rtp/jitter_test.go: TestJitterBufferSeqWrapAround, TestJitterBufferReorderRecovery, TestJitterBufferDuplicateDrop, TestJitterBufferReset
+- pkg/model/pool.go: SuppressorPool — buffered-channel pool of N Suppressors for concurrent RTP sessions; Acquire/Release/Close/Size
+- pkg/model/pool_test.go: 5 tests — basic, concurrent (8 goroutines/pool-4), invalid size, close, reset-on-acquire
+- cmd/clearstream/main.go: 'dir' batch subcommand (ProcessDir, configurable workers, per-file status output); .gitignore scoped to /clearstream binary only
+- demo/poc_demo.sh: POC demo script — build, version, HTTP smoke test, lists all integration paths
+- pkg/http/handler.go: JSON health response with uptime_sec, CORS headers (Allow-Origin/*), OPTIONS preflight, GET /info endpoint, X-ClearStream-Model + X-ClearStream-Duration-Ms response headers on /enhance
+- pkg/http/handler_test.go: TestHealthEndpointJSON, TestInfoEndpoint, TestCORSHeaders, TestOPTIONSPreflight
+- clearstream.go: EnableVAD/AdaptiveVAD/VADThreshold fields on Config; PipelineStats() convenience method; VAD wired in New() based on config
+- pkg/audio/pipeline.go: PipelineStats.String() for human-readable logging
+- clearstream_integration_test.go: TestSDKLifecycle, TestSDKHTTPEndToEnd, TestSDKValidationIntegration, TestSDKConcurrentHealth
+- clearstream_vad_test.go: TestSDKWithVAD, TestSDKWithAdaptiveVAD, TestPipelineStatsString
+- pkg/audio/resample_test.go: TestKaiserFIRSNRVsLinear — Kaiser=76dB SNR vs Linear=39dB (Kaiser wins by 37dB)
+
+### Metrics
+- Kaiser FIR resampler SNR: 76.1 dB (vs 39.5 dB linear) — validated
+- Test files: 22 | Packages with tests: 8/8 | Race detector: clean
+
+### Blocked
+- DeepFilterNet ONNX: needs manual ONNX Runtime setup
+- Real noise suppression: requires CGO + librnnoise (passthrough used for all tests)
+
+### POC Ready — integration paths
+1. clearstream file -i noisy.wav -o clean.wav
+2. clearstream dir -i ./recordings/ -o ./clean/ --workers 8
+3. clearstream rtp --listen :5004 --forward HOST:5004
+4. clearstream server --http :8080  (JSON /health, /info, /enhance, /metrics/prometheus)
+5. make poc (Docker)
+6. bash demo/poc_demo.sh
+
+### Tomorrow (Day 14 — POC hardening)
+- Real RNNoise test with librnnoise if available
+- Load test: 50 concurrent RTP sessions via tools/load_test
+- HTTP /enhance with real WAV file (not just PCM bytes)

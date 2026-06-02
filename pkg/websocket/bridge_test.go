@@ -139,6 +139,9 @@ func TestBridgePCMFrameSize(t *testing.T) {
 
 // TestBridgeInvalidUpgrade ensures that a plain HTTP GET (no Upgrade header)
 // is rejected with a 4xx status code.
+
+// TestBridgeConfig verifies that NewBridge accepts a valid BridgeConfig and
+
 func TestBridgeInvalidUpgrade(t *testing.T) {
 	bridge := newTestBridge()
 	srv := httptest.NewServer(bridge.Handler())

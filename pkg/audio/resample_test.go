@@ -186,3 +186,4 @@ func computeSNR(samples []int16, freq, sampleRate float64) float64 {
 	}
 	return 10 * math.Log10(sigPower/noisePower)
 }
+
