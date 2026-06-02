@@ -72,8 +72,30 @@ func DefaultConfig() Config {
 	}
 }
 
+// Validate checks Config fields and returns an error describing the first
+// invalid value found. Call before New() to get clear error messages.
+func (c *Config) Validate() error {
+	if c.SampleRate != 0 && (c.SampleRate < 8000 || c.SampleRate > 48000) {
+		return fmt.Errorf("clearstream: SampleRate %d out of range [8000, 48000]", c.SampleRate)
+	}
+	if c.Channels != 0 && (c.Channels < 1 || c.Channels > 2) {
+		return fmt.Errorf("clearstream: Channels %d out of range [1, 2]", c.Channels)
+	}
+	validModels := map[string]bool{"": true, "rnnoise": true, "deepfilter": true, "passthrough": true}
+	if !validModels[c.Model] {
+		return fmt.Errorf("clearstream: unknown Model %q (valid: rnnoise, deepfilter, passthrough)", c.Model)
+	}
+	if c.Model == "deepfilter" && c.ModelPath == "" {
+		return fmt.Errorf("clearstream: Model \"deepfilter\" requires ModelPath")
+	}
+	return nil
+}
+
 // New creates a ClearStream instance with the given config.
 func New(cfg Config) (*ClearStream, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	if cfg.SampleRate == 0 {
 		cfg.SampleRate = 16000
 	}
