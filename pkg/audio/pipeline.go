@@ -45,6 +45,13 @@ type PipelineConfig struct {
 	// Use DefaultAGCConfig() as a starting point for telephony calls.
 	// Set to nil to disable (default).
 	AGC *AGCConfig
+
+	// InputSampleRate is the sample rate of incoming PCM audio in Hz.
+	// When 0, defaults to 8000 (narrowband, backward-compatible with Indian PSTN).
+	// The suppressor always operates at ProcessorSampleRate (16kHz); the pipeline
+	// resamples the input before suppression and back to InputSampleRate afterward.
+	// If InputSampleRate == ProcessorSampleRate (16000), no resampling is done.
+	InputSampleRate int
 }
 
 // PipelineStats holds real-time pipeline quality metrics.
@@ -99,31 +106,68 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 	}
 }
 
+// inputRate returns the effective input sample rate, defaulting to 8000 for
+// backward compatibility with narrowband Indian PSTN callers.
+func (p *Pipeline) inputRate() int {
+	if p.cfg.InputSampleRate <= 0 {
+		return 8000
+	}
+	return p.cfg.InputSampleRate
+}
+
 // ProcessFrames reads all available complete frames from in, runs suppression,
 // and writes clean PCM to out. Partial trailing data is buffered for the next call.
 // If VAD is configured, silence frames bypass suppression to save CPU.
+//
+// Resampling behaviour (governed by InputSampleRate):
+//   - 0 or 8000  → upsample 8kHz→16kHz before suppression, downsample back after
+//   - 16000      → no resampling (suppressor native rate)
+//   - >16000     → downsample to 16kHz before suppression, upsample back after
 func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
+	inRate := p.inputRate()
+
 	// Prepend any leftover bytes from last call
 	data := append(p.buf, in...)
 	p.buf = p.buf[:0]
 
+	// Frame size in bytes for the input rate. At 16kHz, 10ms = 160 samples = 320 bytes.
+	// At other rates, scale proportionally.
+	inputFrameBytes := FrameSizeBytes
+	if inRate != ProcessorSampleRate {
+		inputFrameBytes = FrameSizeSamples * inRate / ProcessorSampleRate * 2
+		if inputFrameBytes <= 0 {
+			inputFrameBytes = FrameSizeBytes
+		}
+	}
+
 	offset := 0
-	for offset+FrameSizeBytes <= len(data) {
-		frame := data[offset : offset+FrameSizeBytes]
-		offset += FrameSizeBytes
+	for offset+inputFrameBytes <= len(data) {
+		frame := data[offset : offset+inputFrameBytes]
+		offset += inputFrameBytes
 
 		start := time.Now()
 
 		// Convert bytes -> int16 samples
 		samples := bytesToInt16(frame)
+
+		// Resample to ProcessorSampleRate (16kHz) if needed.
+		processSamples := samples
+		if inRate != ProcessorSampleRate {
+			var err error
+			processSamples, err = Resample(samples, inRate, ProcessorSampleRate)
+			if err != nil {
+				return fmt.Errorf("pipeline: resample input %d→%d: %w", inRate, ProcessorSampleRate, err)
+			}
+		}
+
 		var cleaned []int16
 		usedSuppressor := false
-		if p.vad != nil && !p.vad.IsSpeech(samples) {
+		if p.vad != nil && !p.vad.IsSpeech(processSamples) {
 			// silence -- pass through without suppression (saves CPU)
-			cleaned = samples
+			cleaned = processSamples
 		} else {
 			var err error
-			cleaned, err = p.cfg.Suppressor.Process(samples)
+			cleaned, err = p.cfg.Suppressor.Process(processSamples)
 			if err != nil {
 				return fmt.Errorf("pipeline: suppress frame: %w", err)
 			}
@@ -133,6 +177,16 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 		// AGC: adaptive gain applied after suppression (speech frames only)
 		if p.agc != nil {
 			cleaned = p.agc.Process(cleaned)
+		}
+
+		// Resample back to the original input rate if needed.
+		outSamples := cleaned
+		if inRate != ProcessorSampleRate {
+			var err error
+			outSamples, err = Resample(cleaned, ProcessorSampleRate, inRate)
+			if err != nil {
+				return fmt.Errorf("pipeline: resample output %d→%d: %w", ProcessorSampleRate, inRate, err)
+			}
 		}
 
 		elapsed := time.Since(start).Seconds() * 1000
@@ -148,7 +202,7 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 		p.statsMu.Unlock()
 
 		// Write cleaned frame
-		if _, err := out.Write(int16ToBytes(cleaned)); err != nil {
+		if _, err := out.Write(int16ToBytes(outSamples)); err != nil {
 			return fmt.Errorf("pipeline: write frame: %w", err)
 		}
 	}

@@ -45,7 +45,7 @@ func DefaultAGCConfig() AGCConfig {
 // Use it post-suppression to even out level differences between speakers and
 // compensate for network path loss on RTP streams.
 type AGC struct {
-	cfg        AGCConfig
+	cfg         AGCConfig
 	currentGain float64 // current linear gain applied to output
 	attackCoef  float64 // per-sample smoothing coefficient (gain rise)
 	releaseCoef float64 // per-sample smoothing coefficient (gain fall)
