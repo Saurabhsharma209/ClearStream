@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -15,6 +16,14 @@ import (
 	"github.com/exotel/clearstream/pkg/model"
 	"go.uber.org/zap"
 )
+
+// requireFFmpeg skips the test if ffmpeg is not in PATH.
+func requireFFmpeg(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not found in PATH — skipping test that requires it")
+	}
+}
 
 func newTestProcessor() *file.Processor {
 	return file.NewProcessor(file.ProcessorConfig{
@@ -162,6 +171,7 @@ func TestStreamProcessLargeInput(t *testing.T) {
 }
 
 func TestErrFileNotFoundWrapping(t *testing.T) {
+	requireFFmpeg(t)
 	p := newTestProcessor()
 	err := p.Process("/tmp/clearstream_nonexistent_12345.wav", filepath.Join(t.TempDir(), "out.wav"))
 	if err == nil {
