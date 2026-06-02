@@ -297,6 +297,36 @@ func TestCORSPreflightHeaders(t *testing.T) {
 	}
 }
 
+// TestEnhanceStreamEndpoint posts 3200 bytes of raw PCM (silence) to
+// /enhance/stream and verifies a 200 response with body length == 3200.
+func TestEnhanceStreamEndpoint(t *testing.T) {
+	h := newTestHandler()
+	pcm := make([]byte, 3200) // silence: 10 frames × 160 samples × 2 bytes
+	req := httptest.NewRequest(http.MethodPost, "/enhance/stream", bytes.NewReader(pcm))
+	req.Header.Set("Content-Type", "audio/pcm")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+	if w.Body.Len() != 3200 {
+		t.Errorf("expected 3200 bytes in response, got %d", w.Body.Len())
+	}
+}
+
+// TestEnhanceStreamMethodNotAllowed verifies that GET /enhance/stream returns 405.
+func TestEnhanceStreamMethodNotAllowed(t *testing.T) {
+	h := newTestHandler()
+	req := httptest.NewRequest(http.MethodGet, "/enhance/stream", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
 // TestPrometheusMetricsEndpoint verifies GET /metrics/prometheus returns 200
 // and a body containing the clearstream_ metric prefix.
 func TestPrometheusMetricsEndpoint(t *testing.T) {

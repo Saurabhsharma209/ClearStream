@@ -124,6 +124,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/enhance":
 		h.handleEnhance(w, r)
+	case r.URL.Path == "/enhance/stream":
+		h.handleStream(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/health":
 		h.handleHealth(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/info":
@@ -314,11 +316,43 @@ func (h *Handler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(h.metrics) //nolint:errcheck
 }
 
+// handleStream processes POST /enhance/stream.
+// Accepts raw 16kHz mono PCM in the request body and streams enhanced PCM back
+// chunk-by-chunk using Transfer-Encoding: chunked.
+func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	if r.Method != http.MethodPost {
+		writeJSONError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	w.Header().Set("Content-Type", "audio/pcm")
+	w.Header().Set("X-ClearStream-Model", h.suppressor.Name())
+	flusher, canFlush := w.(http.Flusher)
+
+	opts := file.Options{Suppressor: h.suppressor, Logger: h.logger}
+	if err := file.StreamProcess(r.Context(), r.Body, w, opts); err != nil {
+		// Can't write error header after streaming has started.
+		h.logger.Error("stream enhance failed", zap.Error(err))
+		return
+	}
+	if canFlush {
+		flusher.Flush()
+	}
+	h.reqOK.Inc()
+	elapsed := time.Since(start).Milliseconds()
+	_ = elapsed
+}
+
 // ---- helpers ----------------------------------------------------------------
 
-func writeError(w http.ResponseWriter, code int, msg string) {
+func writeJSONError(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg}) //nolint:errcheck
+	fmt.Fprintf(w, `{"error":%q,"code":%d}`, msg, code) //nolint:errcheck
+}
+
+func writeError(w http.ResponseWriter, code int, msg string) {
+	writeJSONError(w, code, msg)
 }
 
 func extToMIME(ext string) string {
