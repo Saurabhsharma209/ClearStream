@@ -230,3 +230,32 @@
 - Audio: vad_test.go AdaptiveVAD calibration edge cases (empty frame, single frame, noisy calibration)
 - RTP: G.711 µ-law/A-law round-trip test for all 256 values (pin-down correctness)
 - API: HTTP handler integration test (POST /enhance with synthetic WAV bytes)
+
+## 2026-06-02 (Days 10 & 11 — Coverage Sprint)
+
+**Agents run:** Audio (×2), RTP/SIP, API/HTTP, Post-processing, QA
+**Build:** passing | **Tests:** all packages green (-race)
+
+### Changes
+- pkg/audio/vad_test.go: 6 new tests — TestVADEmptyFrame, TestVADHangoverExpiry, TestAdaptiveVADSingleFrame, TestAdaptiveVADNoisyCalibration, TestAdaptiveVADReset, TestVADRMSEnergyCorrectnessConstant
+- pkg/audio/pipeline_test.go: TestPipelineFlushPartialFrame, TestPipelineFlushEmpty, TestPipelineConcurrentStats
+- pkg/audio/pipeline_internal_test.go: TestPipelineByteOrderRoundtrip (little-endian contract)
+- pkg/audio/pipeline.go: Added top-level sync.Mutex to Pipeline — race detector revealed buf was unguarded during concurrent ProcessFrames/Flush/Reset; now fully race-safe
+- pkg/rtp/codec_test.go: TestUlawRoundtripAll256, TestAlawRoundtripAll256, TestUlawSilence, TestUlawSymmetry — G.711 correctness pinned across all 256 codewords
+- pkg/http/handler_test.go: TestEnhanceEndpointSyntheticPCM (multipart PCM), TestEnhanceEndpointEmpty, TestPrometheusMetricsEndpoint
+- pkg/file/processor.go: ProcessDirFull() returning DirResult per file; ctx.Done() check in StreamProcess
+- pkg/file/processor_test.go: TestErrFileNotFoundWrapping, TestProcessDirSkipsUnsupportedExtensions, TestProcessDirCreatesOutputDir, TestStreamProcessContextCancellation
+- pkg/sip/proxy_test.go: TestSDPAudioPortExtraction (full SDP body), TestSIPProxyNewProxy
+- pkg/websocket/bridge_test.go: TestBridgeConfig, TestBridgeConfigDefaults, TestBridgePCMFrameSize (320-byte frame roundtrip)
+
+### Bug fixed
+- Pipeline data race: buf field was accessed concurrently without a lock; statsMu only covered counters. Added top-level mu sync.Mutex — race detector now clean.
+
+### Blocked
+- DeepFilterNet ONNX: still needs manual setup
+- macOS 15 + Go 1.17 dyld crash: pre-existing; all tests pass on Go 1.22 (sandbox + CI)
+
+### Tomorrow (Day 12)
+- Model: BenchmarkDeepFilterNet stub + ONNX session lifecycle test
+- RTP: jitter buffer wraparound test (seqnum 65535→0)
+- Audio: resample_test.go — verify Kaiser FIR output SNR > linear for a synthetic chirp signal

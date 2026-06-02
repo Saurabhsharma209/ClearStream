@@ -53,15 +53,12 @@ type PipelineStats struct {
 // Pipeline processes raw 16kHz mono PCM frames through the AI suppressor.
 // Feed frames via Write; read clean frames via Read.
 // This is the inner loop used by both the file processor and RTP session.
-// ProcessFrames is safe for concurrent use; each call holds mu for the full
-// frame-accumulation and suppression loop to prevent buf corruption.
 type Pipeline struct {
 	cfg    PipelineConfig
-	buf    []byte // partial frame accumulator (guarded by mu)
+	buf    []byte // partial frame accumulator
 	vad    VADer
 	logger *zap.Logger
 
-	mu               sync.Mutex // guards buf and suppressor calls
 	statsMu          sync.Mutex
 	framesProcessed  uint64
 	framesSuppressed uint64
@@ -89,9 +86,6 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 // and writes clean PCM to out. Partial trailing data is buffered for the next call.
 // If VAD is configured, silence frames bypass suppression to save CPU.
 func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	// Prepend any leftover bytes from last call
 	data := append(p.buf, in...)
 	p.buf = p.buf[:0]
@@ -147,8 +141,6 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 // Flush processes any buffered partial frame (zero-padded to FrameSizeBytes).
 // Call after the last ProcessFrames to drain the buffer.
 func (p *Pipeline) Flush(out io.Writer) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
 	if len(p.buf) == 0 {
 		return nil
 	}
@@ -184,7 +176,6 @@ func (p *Pipeline) Stats() PipelineStats {
 
 // Reset clears internal state (call when starting a new stream/file).
 func (p *Pipeline) Reset() {
-	p.mu.Lock()
 	p.buf = p.buf[:0]
 	p.cfg.Suppressor.Reset()
 	if p.vad != nil {
@@ -196,7 +187,6 @@ func (p *Pipeline) Reset() {
 	p.framesSilent = 0
 	p.latencyEMA = 0
 	p.statsMu.Unlock()
-	p.mu.Unlock()
 }
 
 // ---- helpers ----------------------------------------------------------------

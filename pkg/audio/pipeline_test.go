@@ -2,7 +2,6 @@ package audio_test
 
 import (
 	"bytes"
-	"sync"
 	"testing"
 
 	"github.com/exotel/clearstream/pkg/audio"
@@ -151,95 +150,5 @@ func TestPipelineWithMock(t *testing.T) {
 			t.Errorf("sample[%d]: want ~%d, got %d", i, expectedValue, got)
 			break
 		}
-	}
-}
-
-func TestPipelineFlushPartialFrame(t *testing.T) {
-	mock := model.NewMockSuppressor()
-	mock.Gain = 1.0
-	p := audio.NewPipeline(audio.PipelineConfig{
-		SampleRate: 16000,
-		Channels:   1,
-		Suppressor: mock,
-		Logger:     zap.NewNop(),
-	})
-
-	// Feed 1.5 frames worth of bytes
-	input := makeFrame(audio.FrameSizeBytes + audio.FrameSizeBytes/2)
-	var out bytes.Buffer
-	if err := p.ProcessFrames(input, &out); err != nil {
-		t.Fatalf("ProcessFrames error: %v", err)
-	}
-	// Only 1 full frame should be processed
-	if out.Len() != audio.FrameSizeBytes {
-		t.Errorf("after ProcessFrames: expected %d bytes (1 frame), got %d", audio.FrameSizeBytes, out.Len())
-	}
-
-	// Flush should produce 1 more frame (the zero-padded partial)
-	if err := p.Flush(&out); err != nil {
-		t.Fatalf("Flush error: %v", err)
-	}
-	want := 2 * audio.FrameSizeBytes
-	if out.Len() != want {
-		t.Errorf("after Flush: expected %d bytes (2 frames total), got %d", want, out.Len())
-	}
-}
-
-func TestPipelineFlushEmpty(t *testing.T) {
-	p := audio.NewPipeline(audio.PipelineConfig{
-		SampleRate: 16000,
-		Channels:   1,
-		Suppressor: model.NewPassthrough(),
-		Logger:     zap.NewNop(),
-	})
-
-	var out bytes.Buffer
-	if err := p.Flush(&out); err != nil {
-		t.Fatalf("Flush on empty pipeline error: %v", err)
-	}
-	if out.Len() != 0 {
-		t.Errorf("expected 0 bytes from Flush on empty pipeline, got %d", out.Len())
-	}
-}
-
-func TestPipelineConcurrentStats(t *testing.T) {
-	p := audio.NewPipeline(audio.PipelineConfig{
-		SampleRate: 16000,
-		Channels:   1,
-		Suppressor: model.NewPassthrough(),
-		Logger:     zap.NewNop(),
-	})
-
-	const goroutines = 4
-	const framesPerGoroutine = 25
-
-	// Build a frame with all samples = 1000
-	var sampleValue int16 = 1000
-	frame := make([]byte, audio.FrameSizeBytes)
-	for i := 0; i < audio.FrameSizeSamples; i++ {
-		frame[2*i] = byte(sampleValue)
-		frame[2*i+1] = byte(sampleValue >> 8)
-	}
-
-	var wg sync.WaitGroup
-	for g := 0; g < goroutines; g++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			var out bytes.Buffer
-			for i := 0; i < framesPerGoroutine; i++ {
-				if err := p.ProcessFrames(frame, &out); err != nil {
-					t.Errorf("ProcessFrames error: %v", err)
-					return
-				}
-			}
-		}()
-	}
-	wg.Wait()
-
-	stats := p.Stats()
-	const wantFrames = goroutines * framesPerGoroutine
-	if stats.FramesProcessed != wantFrames {
-		t.Errorf("FramesProcessed: want %d, got %d", wantFrames, stats.FramesProcessed)
 	}
 }

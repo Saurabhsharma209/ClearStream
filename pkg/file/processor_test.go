@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -157,5 +158,82 @@ func TestStreamProcessLargeInput(t *testing.T) {
 
 	if w.Len() != len(inputPCM) {
 		t.Errorf("output length %d != input length %d", w.Len(), len(inputPCM))
+	}
+}
+
+func TestErrFileNotFoundWrapping(t *testing.T) {
+	p := newTestProcessor()
+	err := p.Process("/tmp/clearstream_nonexistent_12345.wav", filepath.Join(t.TempDir(), "out.wav"))
+	if err == nil {
+		t.Fatal("expected error for nonexistent file, got nil")
+	}
+	if !errors.Is(err, file.ErrFileNotFound) {
+		t.Errorf("expected error to wrap ErrFileNotFound, got: %v", err)
+	}
+}
+
+func TestProcessDirSkipsUnsupportedExtensions(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	for _, name := range []string{"test.wav", "test.mp3", "test.txt", "test.pdf", "test.json"} {
+		if err := os.WriteFile(filepath.Join(src, name), []byte("dummy"), 0644); err != nil {
+			t.Fatalf("failed to create test file %s: %v", name, err)
+		}
+	}
+
+	p := newTestProcessor()
+	results := p.ProcessDirFull(src, dst, file.Options{Suppressor: model.NewPassthrough(), Logger: zap.NewNop()})
+
+	skipped := 0
+	notSkipped := 0
+	for _, r := range results {
+		if r.Skipped {
+			skipped++
+		} else {
+			notSkipped++
+		}
+	}
+
+	if skipped != 3 {
+		t.Errorf("expected 3 skipped files (.txt, .pdf, .json), got %d", skipped)
+	}
+	if notSkipped != 2 {
+		t.Errorf("expected 2 non-skipped files (.wav, .mp3), got %d", notSkipped)
+	}
+}
+
+func TestProcessDirCreatesOutputDir(t *testing.T) {
+	src := t.TempDir()
+	dst := filepath.Join(t.TempDir(), "output", "nested")
+
+	if err := os.WriteFile(filepath.Join(src, "test.wav"), []byte("dummy"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	p := newTestProcessor()
+	p.ProcessDir(src, dst, file.Options{Suppressor: model.NewPassthrough(), Logger: zap.NewNop()})
+
+	if _, err := os.Stat(dst); os.IsNotExist(err) {
+		t.Error("expected dstDir to be created, but it does not exist")
+	}
+}
+
+func TestStreamProcessContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	inputPCM := make([]byte, audio.FrameSizeBytes*100)
+	r := bytes.NewReader(inputPCM)
+	var w bytes.Buffer
+
+	opts := file.Options{
+		Suppressor: model.NewPassthrough(),
+		Logger:     zap.NewNop(),
+	}
+
+	err := file.StreamProcess(ctx, r, &w, opts)
+	if err == nil {
+		t.Error("expected error from StreamProcess with cancelled context, got nil")
 	}
 }

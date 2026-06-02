@@ -83,7 +83,8 @@ func (p *Processor) Process(src, dst string) error {
 // ProcessWithOptions enhances audio in src and writes the result to dst.
 //
 // Pipeline:
-//   src → ffmpeg decode → 16kHz PCM → AI suppress → re-encode → mux → dst
+//
+//	src → ffmpeg decode → 16kHz PCM → AI suppress → re-encode → mux → dst
 //
 // For video files, the video track passes through untouched.
 func (p *Processor) ProcessWithOptions(src, dst string, opts Options) error {
@@ -422,4 +423,64 @@ func StreamProcess(ctx context.Context, r io.Reader, w io.Writer, opts Options) 
 		return fmt.Errorf("stream: flush: %w", ferr)
 	}
 	return nil
+}
+
+// DirResult holds the outcome of processing a single file inside ProcessDirFull.
+type DirResult struct {
+	Src     string
+	Dst     string
+	Skipped bool // true when the file extension is not supported
+	Err     error
+}
+
+// ProcessDirFull is like ProcessDir but returns a DirResult for every file
+// in srcDir (including unsupported files, which are marked Skipped=true).
+func (p *Processor) ProcessDirFull(srcDir, dstDir string, opts Options) []DirResult {
+	supported := map[string]bool{
+		".mp3": true, ".wav": true, ".flac": true, ".ogg": true,
+		".aac": true, ".mp4": true, ".mkv": true, ".mov": true,
+		".avi": true, ".webm": true, ".m4a": true,
+	}
+
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return []DirResult{{Err: fmt.Errorf("processdir: read src: %w", err)}}
+	}
+
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		return []DirResult{{Err: fmt.Errorf("processdir: create dst: %w", err)}}
+	}
+
+	var results []DirResult
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		src := filepath.Join(srcDir, e.Name())
+		dst := filepath.Join(dstDir, e.Name())
+		if !supported[ext] {
+			results = append(results, DirResult{Src: src, Dst: dst, Skipped: true})
+			continue
+		}
+		results = append(results, DirResult{Src: src, Dst: dst, Skipped: false})
+	}
+
+	// Process non-skipped files concurrently.
+	sem := make(chan struct{}, runtime.NumCPU())
+	var wg sync.WaitGroup
+	for i := range results {
+		if results[i].Skipped {
+			continue
+		}
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			results[idx].Err = p.ProcessWithOptions(results[idx].Src, results[idx].Dst, opts)
+		}(i)
+	}
+	wg.Wait()
+	return results
 }
