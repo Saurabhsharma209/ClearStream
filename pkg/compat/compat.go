@@ -22,12 +22,12 @@ type Platform string
 const (
 	PlatformAsterisk   Platform = "asterisk"
 	PlatformFreeSWITCH Platform = "freeswitch"
-	PlatformKamailio   Platform = "kamailio"   // usually paired with RTPEngine
-	PlatformRTPEngine  Platform = "rtpengine"  // Sipwise rtpengine standalone
-	PlatformJanus      Platform = "janus"      // Meetecho Janus WebRTC gateway
-	PlatformExotel     Platform = "exotel"     // Exotel vSIP / media gateway
-	PlatformGenericWSS Platform = "wss"        // any WSS media server
-	PlatformGenericRTP Platform = "rtp"        // raw RTP (no SIP signalling)
+	PlatformKamailio   Platform = "kamailio"  // usually paired with RTPEngine
+	PlatformRTPEngine  Platform = "rtpengine" // Sipwise rtpengine standalone
+	PlatformJanus      Platform = "janus"     // Meetecho Janus WebRTC gateway
+	PlatformExotel     Platform = "exotel"    // Exotel vSIP / media gateway
+	PlatformGenericWSS Platform = "wss"       // any WSS media server
+	PlatformGenericRTP Platform = "rtp"       // raw RTP (no SIP signalling)
 )
 
 // Version represents a semver-style version number.
@@ -284,7 +284,7 @@ func recommendKamailio(p *IntegrationProfile, v Version) (*IntegrationProfile, e
 func recommendJanus(p *IntegrationProfile, v Version) (*IntegrationProfile, error) {
 	p.SupportedCodecs = []audio.Codec{audio.CodecOpus}
 	p.PreferredCodec = audio.CodecOpus
-	p.SampleRate = 48000 // Opus native rate; ClearStream resamples 48k→16k→48k
+	p.SampleRate = 48000    // Opus native rate; ClearStream resamples 48k→16k→48k
 	p.AGCRecommended = true // WebRTC paths have widely variable mic levels
 	p.IntegrationPath = "Janus AudioBridge plugin WebSocket or RTP forwarder"
 	p.Notes = []string{
