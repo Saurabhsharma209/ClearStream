@@ -37,6 +37,7 @@ const Version = "0.1.0"
 type ClearStream struct {
 	cfg    Config
 	model  model.Suppressor
+	pool   *model.SuppressorPool
 	logger *zap.Logger
 }
 
@@ -60,6 +61,11 @@ type Config struct {
 
 	// Logger is an optional zap logger. If nil, production logger is used.
 	Logger *zap.Logger
+
+	// MaxConcurrentSessions is the size of the SuppressorPool used for RTP sessions.
+	// Each concurrent RTP session acquires one slot from this pool.
+	// Default: 32.
+	MaxConcurrentSessions int
 
 	// EnableVAD enables Voice Activity Detection to skip suppression on silence
 	// frames, saving ~30% CPU on typical telephony calls. Default: false.
@@ -86,10 +92,11 @@ type Config struct {
 // DefaultConfig returns a sensible out-of-the-box configuration.
 func DefaultConfig() Config {
 	return Config{
-		Model:      "rnnoise",
-		SampleRate: 16000,
-		Channels:   1,
-		FFmpegPath: "ffmpeg",
+		Model:                 "rnnoise",
+		SampleRate:            16000,
+		Channels:              1,
+		FFmpegPath:            "ffmpeg",
+		MaxConcurrentSessions: 32,
 	}
 }
 
@@ -144,9 +151,23 @@ func New(cfg Config) (*ClearStream, error) {
 		return nil, fmt.Errorf("clearstream: init model: %w", err)
 	}
 
+	poolSize := cfg.MaxConcurrentSessions
+	if poolSize <= 0 {
+		poolSize = 32
+	}
+	pool, err := model.NewSuppressorPool(model.SuppressorConfig{
+		Backend:   cfg.Model,
+		ModelPath: cfg.ModelPath,
+	}, poolSize)
+	if err != nil {
+		sup.Close() //nolint:errcheck
+		return nil, fmt.Errorf("clearstream: init pool: %w", err)
+	}
+
 	return &ClearStream{
 		cfg:    cfg,
 		model:  sup,
+		pool:   pool,
 		logger: logger,
 	}, nil
 }
@@ -199,8 +220,10 @@ func (cs *ClearStream) globalAGC() *audio.AGCConfig {
 // AGC settings are inherited. Set cfg.AGC explicitly to override per-session.
 func (cs *ClearStream) NewRTPSession(cfg rtp.Config) (*rtp.Session, error) {
 	cfg.SampleRate = cs.cfg.SampleRate
-	cfg.Suppressor = cs.model
 	cfg.Logger = cs.logger
+	if cfg.Suppressor == nil {
+		cfg.Suppressor = cs.pool.Acquire()
+	}
 	if cfg.AGC == nil {
 		cfg.AGC = cs.globalAGC()
 	}
@@ -239,9 +262,23 @@ func (cs *ClearStream) PipelineStats() audio.PipelineStats {
 	return cs.Pipeline().Stats()
 }
 
+// PoolSize returns the suppressor pool capacity (max concurrent RTP sessions).
+func (cs *ClearStream) PoolSize() int {
+	if cs.pool == nil {
+		return 0
+	}
+	return cs.pool.Size()
+}
+
 // Close releases resources held by the SDK (model handles, etc.).
 func (cs *ClearStream) Close() error {
-	return cs.model.Close()
+	err := cs.model.Close()
+	if cs.pool != nil {
+		if perr := cs.pool.Close(); perr != nil && err == nil {
+			err = perr
+		}
+	}
+	return err
 }
 
 // NewHTTPHandler returns an http.Handler exposing the ClearStream API.
@@ -253,5 +290,6 @@ func (cs *ClearStream) NewHTTPHandler() http.Handler {
 		FFmpegPath: cs.cfg.FFmpegPath,
 		SampleRate: cs.cfg.SampleRate,
 		Logger:     cs.logger,
+		PoolSize:   cs.PoolSize(),
 	})
 }

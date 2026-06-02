@@ -1,6 +1,7 @@
 package audio
 
 import (
+	"bytes"
 	"math"
 	"testing"
 )
@@ -148,6 +149,267 @@ func TestAGCMaxGainCap(t *testing.T) {
 		t.Errorf("gain %.3f exceeds MaxGain %.3f", agc.CurrentGain(), cfg.MaxGain)
 	}
 }
+
+// TestAGCAmplification verifies that a quiet signal is amplified toward TargetRMS.
+func TestAGCAmplification(t *testing.T) {
+	cfg := AGCConfig{
+		TargetRMS:  3000,
+		MaxGain:    10.0, // allow enough headroom: 100*10=1000 > 500
+		AttackMs:   20,
+		ReleaseMs:  200,
+		SampleRate: 16000,
+	}
+	agc := NewAGC(cfg)
+
+	// Quiet signal: all samples = 100, RMS ~ 100
+	frame := make([]int16, 160)
+	for i := range frame {
+		frame[i] = 100
+	}
+
+	var lastOut []int16
+	for i := 0; i < 50; i++ {
+		lastOut = agc.Process(frame)
+	}
+
+	// Compute RMS of last output frame
+	var sumSq float64
+	for _, s := range lastOut {
+		f := float64(s)
+		sumSq += f * f
+	}
+	outputRMS := math.Sqrt(sumSq / float64(len(lastOut)))
+
+	if outputRMS <= 500 {
+		t.Errorf("TestAGCAmplification: expected output RMS > 500 after 50 frames, got %.1f", outputRMS)
+	}
+	t.Logf("TestAGCAmplification: output RMS after 50 frames = %.1f (gain=%.3f)", outputRMS, agc.CurrentGain())
+}
+
+// TestAGCAttenuation verifies that a loud signal is attenuated (output RMS reduced).
+func TestAGCAttenuation(t *testing.T) {
+	cfg := AGCConfig{
+		TargetRMS:  3000,
+		MaxGain:    4.0,
+		AttackMs:   20,
+		ReleaseMs:  200,
+		SampleRate: 16000,
+	}
+	agc := NewAGC(cfg)
+
+	// Loud signal: all samples = 10000, RMS ~ 10000
+	frame := make([]int16, 160)
+	for i := range frame {
+		frame[i] = 10000
+	}
+
+	var lastOut []int16
+	for i := 0; i < 50; i++ {
+		lastOut = agc.Process(frame)
+	}
+
+	// Compute RMS of last output frame
+	var sumSq float64
+	for _, s := range lastOut {
+		f := float64(s)
+		sumSq += f * f
+	}
+	outputRMS := math.Sqrt(sumSq / float64(len(lastOut)))
+
+	if outputRMS >= 10000 {
+		t.Errorf("TestAGCAttenuation: expected output RMS < 10000 after 50 frames, got %.1f", outputRMS)
+	}
+	t.Logf("TestAGCAttenuation: output RMS after 50 frames = %.1f (gain=%.3f)", outputRMS, agc.CurrentGain())
+}
+
+// TestAGCMaxGainCapNoClip verifies that with a very high TargetRMS and low MaxGain,
+// output samples are always clamped to int16 range even as gain hits the cap.
+func TestAGCMaxGainCapNoClip(t *testing.T) {
+	cfg := AGCConfig{
+		MaxGain:    2.0,
+		TargetRMS:  32000,
+		AttackMs:   20,
+		ReleaseMs:  200,
+		SampleRate: 16000,
+	}
+	agc := NewAGC(cfg)
+
+	// Near-silence: samples=10
+	frame := make([]int16, 160)
+	for i := range frame {
+		frame[i] = 10
+	}
+
+	for i := 0; i < 200; i++ {
+		out := agc.Process(frame)
+		for j, s := range out {
+			if s > 32767 || s < -32768 {
+				t.Errorf("frame %d sample[%d]=%d overflows int16 range", i, j, s)
+				return
+			}
+		}
+	}
+
+	if agc.CurrentGain() > cfg.MaxGain+0.01 {
+		t.Errorf("TestAGCMaxGainCapNoClip: gain %.3f exceeds MaxGain %.3f", agc.CurrentGain(), cfg.MaxGain)
+	}
+	t.Logf("TestAGCMaxGainCapNoClip: final gain=%.3f (MaxGain=%.1f)", agc.CurrentGain(), cfg.MaxGain)
+}
+
+// TestAGCResetStartsFresh verifies that after Reset, the AGC behaves like a fresh instance.
+func TestAGCResetStartsFresh(t *testing.T) {
+	cfg := AGCConfig{
+		TargetRMS:  3000,
+		MaxGain:    4.0,
+		AttackMs:   20,
+		ReleaseMs:  200,
+		SampleRate: 16000,
+	}
+
+	// Process 20 loud frames to push gain down
+	agc := NewAGC(cfg)
+	loudFrame := make([]int16, 160)
+	for i := range loudFrame {
+		loudFrame[i] = 20000
+	}
+	for i := 0; i < 20; i++ {
+		agc.Process(loudFrame)
+	}
+	gainAfterLoud := agc.CurrentGain()
+	t.Logf("TestAGCResetStartsFresh: gain after 20 loud frames = %.3f", gainAfterLoud)
+
+	agc.Reset()
+
+	// Now process 20 quiet frames post-reset
+	quietFrame := make([]int16, 160)
+	for i := range quietFrame {
+		quietFrame[i] = 100
+	}
+	var firstPostResetOut []int16
+	for i := 0; i < 20; i++ {
+		firstPostResetOut = agc.Process(quietFrame)
+	}
+
+	// A fresh AGC processing the same quiet frames
+	freshAGC := NewAGC(cfg)
+	var freshOut []int16
+	for i := 0; i < 20; i++ {
+		freshOut = freshAGC.Process(quietFrame)
+	}
+
+	// Compare RMS of both outputs — should be equal (reset makes it fresh)
+	var sumSqReset, sumSqFresh float64
+	for i := range firstPostResetOut {
+		r := float64(firstPostResetOut[i])
+		f := float64(freshOut[i])
+		sumSqReset += r * r
+		sumSqFresh += f * f
+	}
+	rmsReset := math.Sqrt(sumSqReset / float64(len(firstPostResetOut)))
+	rmsFresh := math.Sqrt(sumSqFresh / float64(len(freshOut)))
+
+	t.Logf("TestAGCResetStartsFresh: post-reset RMS=%.1f, fresh RMS=%.1f", rmsReset, rmsFresh)
+
+	diff := math.Abs(rmsReset - rmsFresh)
+	if diff > 1.0 {
+		t.Errorf("post-reset output (RMS=%.1f) differs from fresh AGC (RMS=%.1f) by %.1f", rmsReset, rmsFresh, diff)
+	}
+}
+
+// TestPipelineWithAGC is an end-to-end test: Pipeline + MockSuppressor + AGC.
+// It feeds quiet frames and verifies that the AGC lifts the output RMS over time.
+func TestPipelineWithAGC(t *testing.T) {
+	agcCfg := &AGCConfig{
+		TargetRMS:  3000,
+		MaxGain:    4.0,
+		AttackMs:   20,
+		ReleaseMs:  200,
+		SampleRate: 16000,
+	}
+
+	// gainSuppressor with gain=1.0 so it's a passthrough
+	suppressor := newMockSuppressorGain1()
+
+	p := NewPipeline(PipelineConfig{
+		SampleRate: 16000,
+		Channels:   1,
+		Suppressor: suppressor,
+		AGC:        agcCfg,
+	})
+
+	// Build a quiet frame: value=200, RMS=200
+	frameBytes := make([]byte, FrameSizeBytes)
+	for i := 0; i < FrameSizeSamples; i++ {
+		v := int16(200)
+		frameBytes[2*i] = byte(v)
+		frameBytes[2*i+1] = byte(v >> 8)
+	}
+
+	type frameRMS struct {
+		rms float64
+	}
+	results := make([]frameRMS, 100)
+
+	for i := 0; i < 100; i++ {
+		var buf bytes.Buffer
+		if err := p.ProcessFrames(frameBytes, &buf); err != nil {
+			t.Fatalf("frame %d: ProcessFrames error: %v", i, err)
+		}
+		outBytes := buf.Bytes()
+		if len(outBytes) != FrameSizeBytes {
+			t.Fatalf("frame %d: expected %d output bytes, got %d", i, FrameSizeBytes, len(outBytes))
+		}
+		var sumSq float64
+		for j := 0; j < FrameSizeSamples; j++ {
+			s := int16(outBytes[2*j]) | int16(outBytes[2*j+1])<<8
+			f := float64(s)
+			sumSq += f * f
+		}
+		results[i] = frameRMS{rms: math.Sqrt(sumSq / float64(FrameSizeSamples))}
+	}
+
+	// Early frames (1-10): average RMS
+	var earlySum float64
+	for i := 0; i < 10; i++ {
+		earlySum += results[i].rms
+	}
+	earlyAvg := earlySum / 10
+
+	// Late frames (50-100): average RMS
+	var lateSum float64
+	for i := 50; i < 100; i++ {
+		lateSum += results[i].rms
+	}
+	lateAvg := lateSum / 50
+
+	t.Logf("TestPipelineWithAGC: early RMS avg (frames 1-10) = %.1f, late RMS avg (frames 50-100) = %.1f", earlyAvg, lateAvg)
+
+	if lateAvg <= earlyAvg {
+		t.Errorf("expected late RMS (%.1f) > early RMS (%.1f): AGC should be boosting signal", lateAvg, earlyAvg)
+	}
+}
+
+// newMockSuppressorGain1 returns a suppressor that passes audio through unchanged (gain=1).
+func newMockSuppressorGain1() *gainSuppressor {
+	return &gainSuppressor{gain: 1.0}
+}
+
+// gainSuppressor is a minimal Suppressor implementation for testing.
+type gainSuppressor struct {
+	gain float64
+}
+
+func (g *gainSuppressor) Process(samples []int16) ([]int16, error) {
+	out := make([]int16, len(samples))
+	for i, s := range samples {
+		out[i] = int16(float64(s) * g.gain)
+	}
+	return out, nil
+}
+
+func (g *gainSuppressor) Reset()       {}
+func (g *gainSuppressor) Close() error { return nil }
+func (g *gainSuppressor) Name() string { return "gainSuppressor" }
 
 func BenchmarkAGCProcess(b *testing.B) {
 	agc := NewAGC(DefaultAGCConfig())

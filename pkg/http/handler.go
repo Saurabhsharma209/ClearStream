@@ -32,6 +32,7 @@ type Handler struct {
 	suppressor  model.Suppressor
 	ffmpegPath  string
 	sampleRate  int
+	poolSize    int
 	logger      *zap.Logger
 	metrics     *Metrics
 	promHandler http.Handler
@@ -60,6 +61,7 @@ type HandlerConfig struct {
 	FFmpegPath string
 	SampleRate int
 	Logger     *zap.Logger
+	PoolSize   int // max concurrent RTP sessions (pool capacity)
 }
 
 // NewHandler creates a new HTTP API handler.
@@ -76,6 +78,7 @@ func NewHandler(cfg HandlerConfig) *Handler {
 		suppressor: cfg.Suppressor,
 		ffmpegPath: cfg.FFmpegPath,
 		sampleRate: cfg.SampleRate,
+		poolSize:   cfg.PoolSize,
 		logger:     cfg.Logger,
 		metrics: &Metrics{
 			startTime: time.Now(),
@@ -291,11 +294,12 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleInfo(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-		"version":            "0.1.0",
-		"model":              h.suppressor.Name(),
-		"sample_rate":        h.sampleRate,
-		"frame_size_samples": 160,
-		"supported_codecs":   []string{"pcmu", "pcma", "g722", "opus"},
+		"version":                 "0.1.0",
+		"model":                   h.suppressor.Name(),
+		"sample_rate":             h.sampleRate,
+		"frame_size_samples":      160,
+		"max_concurrent_sessions": h.poolSize,
+		"supported_codecs":        []string{"pcmu", "pcma", "g722", "opus"},
 		"endpoints": map[string]string{
 			"POST /enhance":           "Upload audio file for noise suppression",
 			"GET /health":             "Health check",

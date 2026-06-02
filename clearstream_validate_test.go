@@ -80,3 +80,27 @@ func TestValidateDeepFilterWithPath(t *testing.T) {
 		t.Fatalf("deepfilter with ModelPath should pass Validate(), got: %v", err)
 	}
 }
+
+func TestPoolSizeDefault(t *testing.T) {
+	cs, err := clearstream.New(clearstream.DefaultConfig())
+	if err != nil {
+		t.Fatalf("New(DefaultConfig()) error: %v", err)
+	}
+	defer cs.Close()
+	if got := cs.PoolSize(); got != 32 {
+		t.Errorf("PoolSize() = %d, want 32", got)
+	}
+}
+
+func TestPoolSizeCustom(t *testing.T) {
+	cfg := clearstream.DefaultConfig()
+	cfg.MaxConcurrentSessions = 8
+	cs, err := clearstream.New(cfg)
+	if err != nil {
+		t.Fatalf("New(cfg) error: %v", err)
+	}
+	defer cs.Close()
+	if got := cs.PoolSize(); got != 8 {
+		t.Errorf("PoolSize() = %d, want 8", got)
+	}
+}
