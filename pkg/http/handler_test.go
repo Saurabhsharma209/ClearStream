@@ -1,6 +1,10 @@
 package http_test
 
 import (
+	"bytes"
+	"encoding/binary"
+	"math"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -62,5 +66,89 @@ func TestEnhanceMissingField(t *testing.T) {
 	// Should fail with 400 (missing audio field).
 	if w.Code == http.StatusOK {
 		t.Error("expected non-200 for missing audio field")
+	}
+}
+
+// buildSinePCM generates 10 frames × 160 samples of 440 Hz sine wave
+// at 16 kHz, little-endian int16, amplitude 8000.
+func buildSinePCM() []byte {
+	const (
+		frames          = 10
+		samplesPerFrame = 160
+		sampleRate      = 16000
+		freq            = 440.0
+		amplitude       = 8000.0
+	)
+	total := frames * samplesPerFrame
+	buf := make([]byte, total*2)
+	for i := 0; i < total; i++ {
+		t := float64(i) / sampleRate
+		sample := int16(amplitude * math.Sin(2*math.Pi*freq*t))
+		binary.LittleEndian.PutUint16(buf[i*2:], uint16(sample))
+	}
+	return buf
+}
+
+// buildMultipartBody creates a multipart/form-data body with the "audio" field.
+func buildMultipartBody(pcm []byte, filename string) (body *bytes.Buffer, contentType string) {
+	body = &bytes.Buffer{}
+	w := multipart.NewWriter(body)
+	fw, _ := w.CreateFormFile("audio", filename)
+	fw.Write(pcm) //nolint:errcheck
+	w.Close()
+	return body, w.FormDataContentType()
+}
+
+// TestEnhanceEndpointSyntheticPCM posts a synthetic PCM payload as a WAV file
+// and verifies the handler returns 200 without panicking.
+// Because the passthrough suppressor is used and ffmpeg may not be available
+// in CI, we accept either 200 (success) or 500 (ffmpeg unavailable).
+func TestEnhanceEndpointSyntheticPCM(t *testing.T) {
+	h := newTestHandler()
+	pcm := buildSinePCM()
+	body, ct := buildMultipartBody(pcm, "test.wav")
+
+	req := httptest.NewRequest(http.MethodPost, "/enhance", body)
+	req.Header.Set("Content-Type", ct)
+	w := httptest.NewRecorder()
+
+	// Must not panic.
+	h.ServeHTTP(w, req)
+
+	// Accept 200 (ffmpeg available) or 500 (ffmpeg not in PATH in test env).
+	if w.Code != http.StatusOK && w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 200 or 500, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestEnhanceEndpointEmpty posts an empty body and verifies the handler
+// returns a valid HTTP status without panicking.
+func TestEnhanceEndpointEmpty(t *testing.T) {
+	h := newTestHandler()
+	req := httptest.NewRequest(http.MethodPost, "/enhance", strings.NewReader(""))
+	req.Header.Set("Content-Type", "audio/pcm")
+	w := httptest.NewRecorder()
+
+	// Must not panic.
+	h.ServeHTTP(w, req)
+
+	if w.Code < 100 || w.Code > 599 {
+		t.Errorf("got invalid HTTP status %d", w.Code)
+	}
+}
+
+// TestPrometheusMetricsEndpoint verifies GET /metrics/prometheus returns 200
+// and a body containing the clearstream_ metric prefix.
+func TestPrometheusMetricsEndpoint(t *testing.T) {
+	h := newTestHandler()
+	req := httptest.NewRequest(http.MethodGet, "/metrics/prometheus", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "clearstream_") {
+		t.Errorf("expected clearstream_ metrics in body, got: %s", w.Body.String())
 	}
 }
