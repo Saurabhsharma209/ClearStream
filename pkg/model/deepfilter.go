@@ -99,7 +99,7 @@ func (d *deepFilterSuppressor) Process(frame []int16) ([]int16, error) {
 }
 
 func (d *deepFilterSuppressor) Name() string { return "deepfilter" }
-func (d *deepFilterSuppressor) Reset()        {} // stateless per-frame
+func (d *deepFilterSuppressor) Reset()       {} // stateless per-frame
 
 func (d *deepFilterSuppressor) Close() error {
 	d.mu.Lock()

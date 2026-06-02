@@ -111,3 +111,46 @@ func TestProxyCreation(t *testing.T) {
 	// Verify the package compiles and basic string ops work.
 	_ = strings.Contains("test", "test")
 }
+
+// TestSDPAudioPortExtraction verifies that a realistic multi-line SDP body (using
+// LF line endings as commonly seen in SIP implementations) is parsed correctly:
+// the audio port, primary codec, and both codec payload types are extracted.
+func TestSDPAudioPortExtraction(t *testing.T) {
+	sdp := "v=0\n" +
+		"o=- 12345 1 IN IP4 192.168.1.1\n" +
+		"s=ClearStream Test\n" +
+		"c=IN IP4 192.168.1.1\n" +
+		"t=0 0\n" +
+		"m=audio 5004 RTP/AVP 0 8\n" +
+		"a=rtpmap:0 PCMU/8000\n" +
+		"a=rtpmap:8 PCMA/8000\n"
+
+	m := ParseSDP(sdp)
+
+	if m.Port != 5004 {
+		t.Errorf("expected audio port 5004, got %d", m.Port)
+	}
+	// First payload type in the m= line is 0 (PCMU), so that should win.
+	if m.Codec != audio.CodecG711U {
+		t.Errorf("expected primary codec PCMU, got %s", m.Codec)
+	}
+	if m.PayloadType != 0 {
+		t.Errorf("expected payload type 0, got %d", m.PayloadType)
+	}
+	// SDP carries both PCMU and PCMA; verify the sample rate resolved correctly.
+	if m.SampleRate != 8000 {
+		t.Errorf("expected sample rate 8000, got %d", m.SampleRate)
+	}
+}
+
+// TestSIPProxyNewProxy verifies that NewProxy initialises cleanly and reports
+// zero active sessions before any calls have been started.
+func TestSIPProxyNewProxy(t *testing.T) {
+	proxy := NewProxy(nil, nil)
+	if proxy == nil {
+		t.Fatal("NewProxy returned nil")
+	}
+	if proxy.ActiveSessions() != 0 {
+		t.Errorf("expected 0 active sessions on a fresh proxy, got %d", proxy.ActiveSessions())
+	}
+}

@@ -39,6 +39,8 @@ func main() {
 	switch os.Args[1] {
 	case "file":
 		runFile(os.Args[2:])
+	case "dir":
+		runDir(os.Args[2:])
 	case "rtp":
 		runRTP(os.Args[2:])
 	case "probe":
@@ -52,6 +54,58 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
+}
+
+func runDir(args []string) {
+	fs := flag.NewFlagSet("dir", flag.ExitOnError)
+	input := fs.String("i", "", "Input directory containing audio/video files")
+	output := fs.String("o", "", "Output directory for enhanced files")
+	workers := fs.Int("workers", 4, "Concurrent processing workers")
+	modelBackend := fs.String("model", "passthrough", "Model backend: rnnoise | deepfilter | passthrough")
+	modelPath := fs.String("model-path", "", "Path to ONNX model file (deepfilter only)")
+	fs.Parse(args)
+
+	if *input == "" || *output == "" {
+		fmt.Fprintln(os.Stderr, "error: -i and -o are required")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	cfg := clearstream.DefaultConfig()
+	cfg.Model = *modelBackend
+	cfg.ModelPath = *modelPath
+
+	cs, err := clearstream.New(cfg)
+	must("init clearstream", err)
+	defer cs.Close()
+
+	// Build a file.Processor using the same internals as cs.ProcessFileWithOptions.
+	fp := file.NewProcessor(file.ProcessorConfig{
+		FFmpegPath: cfg.FFmpegPath,
+		SampleRate: cfg.SampleRate,
+		Channels:   cfg.Channels,
+	})
+
+	opts := file.Options{}
+	fmt.Printf("Processing directory: %s -> %s (workers: %d, model: %s)\n", *input, *output, *workers, *modelBackend)
+	start := time.Now()
+	results := fp.ProcessDirFull(*input, *output, opts)
+
+	ok, skipped, failed := 0, 0, 0
+	for _, r := range results {
+		switch {
+		case r.Skipped:
+			skipped++
+		case r.Err != nil:
+			fmt.Fprintf(os.Stderr, "  FAILED: %s: %v\n", r.Src, r.Err)
+			failed++
+		default:
+			fmt.Printf("  OK: %s -> %s\n", r.Src, r.Dst)
+			ok++
+		}
+	}
+	fmt.Printf("\nDone in %.1fs — %d processed, %d skipped, %d failed\n",
+		time.Since(start).Seconds(), ok, skipped, failed)
 }
 
 func runServer(args []string) {
@@ -217,6 +271,7 @@ func printUsage() {
 
 Commands:
   file    Process an audio or video file (post-processing)
+  dir     Batch-process a directory of audio/video files
   rtp     Intercept and clean a live RTP stream
   server  Start HTTP API server (for Docker / POC)
   probe   Show codec information for a file
@@ -225,6 +280,7 @@ Commands:
 Examples:
   clearstream file -i noisy.mp4 -o clean.mp4
   clearstream file -i call.wav -o clean.wav --model deepfilter --model-path ./deepfilter.onnx
+  clearstream dir -i ./recordings/ -o ./clean/ --workers 8
   clearstream rtp --listen :5004 --forward 10.0.0.2:5004
   clearstream server --http :8080 --model passthrough
   clearstream probe recording.mp3`)

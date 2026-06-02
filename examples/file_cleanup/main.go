@@ -1,8 +1,9 @@
 // Example: post-process a noisy audio/video file.
 //
 // Run:
-//   go run main.go -i noisy.mp4 -o clean.mp4
-//   go run main.go -i call_recording.wav -o clean_recording.wav
+//
+//	go run main.go -i noisy.mp4 -o clean.mp4
+//	go run main.go -i call_recording.wav -o clean_recording.wav
 package main
 
 import (

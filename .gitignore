@@ -11,7 +11,7 @@
 *.so
 *.test
 .DS_Store
-clearstream
+/clearstream
 ecc_integration
 load_test
 snr_benchmark

@@ -60,6 +60,18 @@ type Config struct {
 
 	// Logger is an optional zap logger. If nil, production logger is used.
 	Logger *zap.Logger
+
+	// EnableVAD enables Voice Activity Detection to skip suppression on silence
+	// frames, saving ~30% CPU on typical telephony calls. Default: false.
+	EnableVAD bool
+
+	// AdaptiveVAD enables adaptive noise floor calibration instead of the
+	// static energy threshold VAD. Requires EnableVAD=true. Default: false.
+	AdaptiveVAD bool
+
+	// VADThreshold is the RMS energy threshold for static VAD (EnableVAD=true,
+	// AdaptiveVAD=false). Default: 300 (good for 16-bit telephony PCM).
+	VADThreshold float64
 }
 
 // DefaultConfig returns a sensible out-of-the-box configuration.
@@ -170,12 +182,31 @@ func (cs *ClearStream) NewRTPSession(cfg rtp.Config) (*rtp.Session, error) {
 // Pipeline returns a low-level audio processing pipeline for advanced use.
 // Use this when you want to feed raw PCM frames directly.
 func (cs *ClearStream) Pipeline() *audio.Pipeline {
+	var vad audio.VADer
+	if cs.cfg.EnableVAD {
+		if cs.cfg.AdaptiveVAD {
+			vad = audio.DefaultAdaptiveVAD()
+		} else {
+			threshold := cs.cfg.VADThreshold
+			if threshold == 0 {
+				threshold = 300
+			}
+			vad = &audio.VAD{ThresholdRMS: threshold, HangoverFrames: 8}
+		}
+	}
 	return audio.NewPipeline(audio.PipelineConfig{
 		SampleRate: cs.cfg.SampleRate,
 		Channels:   cs.cfg.Channels,
 		Suppressor: cs.model,
 		Logger:     cs.logger,
+		VAD:        vad,
 	})
+}
+
+// PipelineStats returns a snapshot of the current pipeline metrics.
+// Useful for monitoring frames processed, suppression ratio, and latency.
+func (cs *ClearStream) PipelineStats() audio.PipelineStats {
+	return cs.Pipeline().Stats()
 }
 
 // Close releases resources held by the SDK (model handles, etc.).

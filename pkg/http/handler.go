@@ -102,6 +102,17 @@ func NewHandler(cfg HandlerConfig) *Handler {
 
 // ServeHTTP routes requests to the appropriate handler.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// CORS headers on every response.
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	// Handle OPTIONS preflight immediately.
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-ClearStream-Version", "0.1.0")
 
@@ -110,6 +121,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleEnhance(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/health":
 		h.handleHealth(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/info":
+		h.handleInfo(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/metrics":
 		h.handleMetrics(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/metrics/prometheus":
@@ -214,14 +227,16 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	}
 	defer outFile.Close()
 
+	elapsed := time.Since(start).Seconds() * 1000
 	contentType := extToMIME(ext)
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="enhanced%s"`, ext))
-	w.Header().Set("X-Processing-Ms", fmt.Sprintf("%.0f", time.Since(start).Seconds()*1000))
+	w.Header().Set("X-Processing-Ms", fmt.Sprintf("%.0f", elapsed))
+	w.Header().Set("X-ClearStream-Model", h.suppressor.Name())
+	w.Header().Set("X-ClearStream-Duration-Ms", fmt.Sprintf("%.0f", elapsed))
 	w.WriteHeader(http.StatusOK)
 	io.Copy(w, outFile) //nolint:errcheck
 
-	elapsed := time.Since(start).Seconds() * 1000
 	h.metrics.RequestsOK++
 	h.metrics.AvgProcessingMs = h.metrics.AvgProcessingMs*0.9 + elapsed*0.1
 	h.reqOK.Inc()
@@ -235,11 +250,26 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-		"status":          "ok",
-		"version":         "0.1.0",
-		"model":           h.suppressor.Name(),
-		"uptime":          time.Since(h.metrics.startTime).Round(time.Second).String(),
-		"active_sessions": h.metrics.ActiveSessions,
+		"status":     "ok",
+		"version":    "0.1.0",
+		"model":      h.suppressor.Name(),
+		"uptime_sec": int64(time.Since(h.metrics.startTime).Seconds()),
+	})
+}
+
+func (h *Handler) handleInfo(w http.ResponseWriter, r *http.Request) {
+	json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+		"version":            "0.1.0",
+		"model":              h.suppressor.Name(),
+		"sample_rate":        h.sampleRate,
+		"frame_size_samples": 160,
+		"supported_codecs":   []string{"pcmu", "pcma", "g722", "opus"},
+		"endpoints": map[string]string{
+			"POST /enhance":           "Upload audio file for noise suppression",
+			"GET /health":             "Health check",
+			"GET /info":               "SDK info",
+			"GET /metrics/prometheus": "Prometheus metrics",
+		},
 	})
 }
 

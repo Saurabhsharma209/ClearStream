@@ -137,6 +137,54 @@ func TestEnhanceEndpointEmpty(t *testing.T) {
 	}
 }
 
+func TestHealthEndpointJSON(t *testing.T) {
+	h := newTestHandler()
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"status"`) || !strings.Contains(body, `"uptime_sec"`) {
+		t.Errorf("expected JSON health with uptime_sec, got: %s", body)
+	}
+}
+
+func TestInfoEndpoint(t *testing.T) {
+	h := newTestHandler()
+	req := httptest.NewRequest(http.MethodGet, "/info", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "sample_rate") || !strings.Contains(body, "supported_codecs") {
+		t.Errorf("expected info JSON, got: %s", body)
+	}
+}
+
+func TestCORSHeaders(t *testing.T) {
+	h := newTestHandler()
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("expected CORS header *, got: %s", got)
+	}
+}
+
+func TestOPTIONSPreflight(t *testing.T) {
+	h := newTestHandler()
+	req := httptest.NewRequest(http.MethodOptions, "/enhance", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for OPTIONS, got %d", w.Code)
+	}
+}
+
 // TestPrometheusMetricsEndpoint verifies GET /metrics/prometheus returns 200
 // and a body containing the clearstream_ metric prefix.
 func TestPrometheusMetricsEndpoint(t *testing.T) {

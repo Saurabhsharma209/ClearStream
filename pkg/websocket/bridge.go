@@ -9,20 +9,20 @@
 // WebSocket audio pipeline. Insert it between the Exotel WebRTC SDK and your
 // downstream STT/recording systems:
 //
-//   Browser/Exotel SDK -> wss://your-host/audio -> ClearStream bridge -> clean PCM -> STT / recording
+//	Browser/Exotel SDK -> wss://your-host/audio -> ClearStream bridge -> clean PCM -> STT / recording
 //
 // The bridge is stateless per-connection (each WebSocket connection gets its own
 // Pipeline instance), making it safe for horizontal scaling behind a load balancer.
 //
 // To place it behind nginx as a WSS endpoint, add to your nginx config:
 //
-//   location /audio {
-//       proxy_pass http://clearstream:8081;
-//       proxy_http_version 1.1;
-//       proxy_set_header Upgrade $http_upgrade;
-//       proxy_set_header Connection "upgrade";
-//       proxy_set_header Host $host;
-//   }
+//	location /audio {
+//	    proxy_pass http://clearstream:8081;
+//	    proxy_http_version 1.1;
+//	    proxy_set_header Upgrade $http_upgrade;
+//	    proxy_set_header Connection "upgrade";
+//	    proxy_set_header Host $host;
+//	}
 //
 // Protocol: clients send binary WebSocket messages containing raw 16kHz mono
 // signed 16-bit PCM (little-endian). The bridge responds with binary messages

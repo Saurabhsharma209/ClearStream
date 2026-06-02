@@ -4,14 +4,16 @@
 // Simulates a transparent in-path media proxy.
 //
 // Run:
-//   go run main.go --listen :5004 --forward localhost:5006
+//
+//	go run main.go --listen :5004 --forward localhost:5006
 //
 // Test with ffmpeg:
-//   # Send a noisy RTP stream to :5004
-//   ffmpeg -re -i noisy.wav -ar 8000 -ac 1 -f rtp rtp://localhost:5004
 //
-//   # Receive the cleaned stream on :5006
-//   ffmpeg -i rtp://localhost:5006 -f wav clean_live.wav
+//	# Send a noisy RTP stream to :5004
+//	ffmpeg -re -i noisy.wav -ar 8000 -ac 1 -f rtp rtp://localhost:5004
+//
+//	# Receive the cleaned stream on :5006
+//	ffmpeg -i rtp://localhost:5006 -f wav clean_live.wav
 package main
 
 import (

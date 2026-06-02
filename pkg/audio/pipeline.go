@@ -157,6 +157,13 @@ func (p *Pipeline) Flush(out io.Writer) error {
 	return err
 }
 
+// String returns a human-readable summary of pipeline stats.
+func (s PipelineStats) String() string {
+	return fmt.Sprintf("frames=%d suppressed=%d silent=%d ratio=%.1f%% latency=%.2fms",
+		s.FramesProcessed, s.FramesSuppressed, s.FramesSilent,
+		s.SuppressRatio*100, s.AvgLatencyMs)
+}
+
 // Stats returns a snapshot of pipeline metrics.
 func (p *Pipeline) Stats() PipelineStats {
 	p.statsMu.Lock()
