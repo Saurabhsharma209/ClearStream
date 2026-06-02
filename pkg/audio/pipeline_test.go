@@ -104,3 +104,51 @@ func TestPipelinePassthroughFidelity(t *testing.T) {
 		t.Error("passthrough pipeline modified audio samples")
 	}
 }
+
+func TestPipelineWithMock(t *testing.T) {
+	mock := model.NewMockSuppressor()
+	mock.Gain = 0.5
+
+	p := audio.NewPipeline(audio.PipelineConfig{
+		SampleRate: 16000,
+		Channels:   1,
+		Suppressor: mock,
+		Logger:     zap.NewNop(),
+	})
+
+	const numFrames = 5
+	var sampleValue int16 = 1000
+	var expectedValue int16 = 500
+
+	// Build a frame of 160 samples all equal to sampleValue
+	frame := make([]byte, audio.FrameSizeBytes)
+	for i := 0; i < audio.FrameSizeSamples; i++ {
+		frame[2*i] = byte(sampleValue)
+		frame[2*i+1] = byte(sampleValue >> 8)
+	}
+
+	var out bytes.Buffer
+	for i := 0; i < numFrames; i++ {
+		if err := p.ProcessFrames(frame, &out); err != nil {
+			t.Fatalf("frame %d: ProcessFrames error: %v", i, err)
+		}
+	}
+
+	if mock.ProcessCalls != numFrames {
+		t.Errorf("ProcessCalls: want %d, got %d", numFrames, mock.ProcessCalls)
+	}
+
+	// Verify output samples are within ±1 of expectedValue
+	outBytes := out.Bytes()
+	if len(outBytes) != numFrames*audio.FrameSizeBytes {
+		t.Fatalf("output length: want %d, got %d", numFrames*audio.FrameSizeBytes, len(outBytes))
+	}
+	for i := 0; i < numFrames*audio.FrameSizeSamples; i++ {
+		got := int16(outBytes[2*i]) | int16(outBytes[2*i+1])<<8
+		diff := got - expectedValue
+		if diff < -1 || diff > 1 {
+			t.Errorf("sample[%d]: want ~%d, got %d", i, expectedValue, got)
+			break
+		}
+	}
+}

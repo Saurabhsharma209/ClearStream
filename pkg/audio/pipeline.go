@@ -17,6 +17,14 @@ const (
 	FrameSizeBytes = FrameSizeSamples * 2
 )
 
+// VADer is the interface satisfied by both VAD and AdaptiveVAD.
+// Any type that can classify a PCM frame as speech and reset its state
+// can be used as a voice activity detector in the pipeline.
+type VADer interface {
+	IsSpeech([]int16) bool
+	Reset()
+}
+
 // PipelineConfig configures a Pipeline.
 type PipelineConfig struct {
 	SampleRate int
@@ -25,7 +33,12 @@ type PipelineConfig struct {
 	Logger     *zap.Logger
 	// VAD is an optional Voice Activity Detector. When set, silence frames
 	// bypass the suppressor entirely, saving ~30% CPU on typical calls.
-	VAD *VAD
+	// Accepts *VAD (static threshold) or *AdaptiveVAD (auto-calibrating).
+	VAD VADer
+	// UseAdaptiveVAD, when true and VAD is nil, causes NewPipeline to
+	// automatically create a DefaultAdaptiveVAD() that calibrates the noise
+	// floor over the first 500ms of audio. Set VAD explicitly to override.
+	UseAdaptiveVAD bool
 }
 
 // PipelineStats holds real-time pipeline quality metrics.
@@ -43,7 +56,7 @@ type PipelineStats struct {
 type Pipeline struct {
 	cfg    PipelineConfig
 	buf    []byte // partial frame accumulator
-	vad    *VAD
+	vad    VADer
 	logger *zap.Logger
 
 	statsMu          sync.Mutex
@@ -54,11 +67,17 @@ type Pipeline struct {
 }
 
 // NewPipeline creates a new Pipeline.
+// If cfg.UseAdaptiveVAD is true and cfg.VAD is nil, a DefaultAdaptiveVAD()
+// is created automatically to calibrate the noise floor over the first 500ms.
 func NewPipeline(cfg PipelineConfig) *Pipeline {
+	vad := cfg.VAD
+	if vad == nil && cfg.UseAdaptiveVAD {
+		vad = DefaultAdaptiveVAD()
+	}
 	return &Pipeline{
 		cfg:    cfg,
 		buf:    make([]byte, 0, FrameSizeBytes*4),
-		vad:    cfg.VAD,
+		vad:    vad,
 		logger: cfg.Logger,
 	}
 }

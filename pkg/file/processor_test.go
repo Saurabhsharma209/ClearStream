@@ -3,6 +3,8 @@ package file_test
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -92,6 +94,54 @@ func TestStreamProcess(t *testing.T) {
 	// Synthetic PCM: 10 frames of silence (all zeros)
 	frameCount := 10
 	inputPCM := make([]byte, audio.FrameSizeBytes*frameCount)
+
+	r := bytes.NewReader(inputPCM)
+	var w bytes.Buffer
+
+	opts := file.Options{
+		Suppressor: model.NewPassthrough(),
+		Logger:     zap.NewNop(),
+	}
+
+	if err := file.StreamProcess(context.Background(), r, &w, opts); err != nil {
+		t.Fatalf("StreamProcess failed: %v", err)
+	}
+
+	if w.Len() != len(inputPCM) {
+		t.Errorf("output length %d != input length %d", w.Len(), len(inputPCM))
+	}
+}
+
+func BenchmarkStreamProcess(b *testing.B) {
+	frames := b.N * 160
+	samples := make([]int16, frames)
+	for i := range samples {
+		t := float64(i) / 16000.0
+		samples[i] = int16(8000 * math.Sin(2*math.Pi*440*t))
+	}
+	buf := make([]byte, len(samples)*2)
+	for i, s := range samples {
+		binary.LittleEndian.PutUint16(buf[i*2:], uint16(s))
+	}
+
+	opts := file.Options{
+		Suppressor: model.NewPassthrough(),
+		Logger:     zap.NewNop(),
+	}
+
+	b.SetBytes(int64(frames * 320))
+	b.ResetTimer()
+
+	r := bytes.NewReader(buf)
+	var w bytes.Buffer
+	if err := file.StreamProcess(context.Background(), r, &w, opts); err != nil {
+		b.Fatalf("StreamProcess failed: %v", err)
+	}
+}
+
+func TestStreamProcessLargeInput(t *testing.T) {
+	frames := 1000
+	inputPCM := make([]byte, audio.FrameSizeBytes*frames)
 
 	r := bytes.NewReader(inputPCM)
 	var w bytes.Buffer

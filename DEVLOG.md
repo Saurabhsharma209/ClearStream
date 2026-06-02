@@ -172,3 +172,33 @@
 - Model: add MockSuppressor to pkg/model/mock_test.go for deterministic pipeline tests
 - Post-processing: StreamProcess benchmark test
 - RTP: SSRC change detection unit test
+### Blocked
+- Local go test: dyld LC_UUID crash (Go 1.17 + macOS 15) — pre-existing, CI green
+- DeepFilterNet ONNX: needs manual ONNX Runtime setup
+
+### Tomorrow (Day 7)
+- Audio: integrate VAD threshold tuning (configurable energy threshold via PipelineConfig)
+- Model: add MockSuppressor to pkg/model/mock_test.go for deterministic pipeline tests
+- Post-processing: StreamProcess benchmark test
+- RTP: SSRC change detection unit test
+
+## 2026-06-02 (Day 7)
+
+**Agents run:** Audio Pipeline, QA/Testing, Post-processing
+**Build:** passing (CGO_ENABLED=0)
+
+### Changes
+- pkg/audio/pipeline.go: Added VADer interface (IsSpeech+Reset); PipelineConfig.VAD now accepts *VAD or *AdaptiveVAD; added UseAdaptiveVAD bool field — NewPipeline() auto-creates DefaultAdaptiveVAD() when set
+- pkg/model/mock.go: New MockSuppressor with configurable gain, sample clamping, ProcessCalls/ResetCalls counters — importable by any package in tests
+- pkg/model/mock_test.go: 4 tests — passthrough, half-gain, call counts, clipping
+- pkg/audio/pipeline_test.go: TestPipelineWithMock — 5 frames at gain=0.5, verifies output+call count deterministically
+- pkg/file/processor_test.go: BenchmarkStreamProcess (sine wave, throughput reporting) + TestStreamProcessLargeInput (1000 frames, ~10s audio)
+
+### Blocked
+- go test ./... on macOS 15 + Go 1.17: dyld LC_UUID crash (pre-existing toolchain issue); tests pass in sandbox (Go 1.22)
+- DeepFilterNet ONNX: needs manual ONNX Runtime setup
+
+### Tomorrow (Day 8)
+- RTP: SSRC change detection unit test (session reset on new call leg)
+- Audio: pipeline_test.go with VADer interface — test AdaptiveVAD path end-to-end
+- API: Config.Validate() method with field range checks
