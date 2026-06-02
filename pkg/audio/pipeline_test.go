@@ -2,6 +2,7 @@ package audio_test
 
 import (
 	"bytes"
+	"math"
 	"testing"
 
 	"github.com/exotel/clearstream/pkg/audio"
@@ -150,5 +151,134 @@ func TestPipelineWithMock(t *testing.T) {
 			t.Errorf("sample[%d]: want ~%d, got %d", i, expectedValue, got)
 			break
 		}
+	}
+}
+
+// makePCMFrame builds a FrameSizeBytes frame where every int16 sample == value.
+func makePCMFrame(value int16) []byte {
+	b := make([]byte, audio.FrameSizeBytes)
+	for i := 0; i < audio.FrameSizeSamples; i++ {
+		b[2*i] = byte(value)
+		b[2*i+1] = byte(value >> 8)
+	}
+	return b
+}
+
+// TestPipelineAdaptiveVADCalibration verifies that a pipeline with
+// UseAdaptiveVAD:true produces output for every frame (calibration frames are
+// treated as silence and passed through; post-calibration frames go through the
+// suppressor). No errors must occur and total output must equal total input.
+func TestPipelineAdaptiveVADCalibration(t *testing.T) {
+	p := audio.NewPipeline(audio.PipelineConfig{
+		SampleRate:     16000,
+		Channels:       1,
+		Suppressor:     model.NewPassthrough(),
+		Logger:         zap.NewNop(),
+		UseAdaptiveVAD: true,
+	})
+
+	silenceFrame := makePCMFrame(10)   // very low energy — well below any noise floor
+	speechFrame := makePCMFrame(20000) // loud speech
+
+	var out bytes.Buffer
+
+	// Feed 50 calibration frames of silence.
+	for i := 0; i < 50; i++ {
+		if err := p.ProcessFrames(silenceFrame, &out); err != nil {
+			t.Fatalf("calibration frame %d: ProcessFrames error: %v", i, err)
+		}
+	}
+
+	// Feed 1 more silence frame (post-calibration).
+	if err := p.ProcessFrames(silenceFrame, &out); err != nil {
+		t.Fatalf("post-calibration silence: ProcessFrames error: %v", err)
+	}
+
+	// Feed 1 loud speech frame.
+	if err := p.ProcessFrames(speechFrame, &out); err != nil {
+		t.Fatalf("speech frame: ProcessFrames error: %v", err)
+	}
+
+	const totalFrames = 52
+	wantBytes := totalFrames * audio.FrameSizeBytes
+	if out.Len() != wantBytes {
+		t.Errorf("output length: want %d bytes (%d frames), got %d", wantBytes, totalFrames, out.Len())
+	}
+}
+
+// TestPipelineStatsSuppressRatio verifies FramesProcessed, FramesSilent,
+// FramesSuppressed, and SuppressRatio are correctly tracked.
+func TestPipelineStatsSuppressRatio(t *testing.T) {
+	// ThresholdRMS=500; silence samples=10 (RMS~10), speech samples=5000 (RMS~5000).
+	vad := &audio.VAD{ThresholdRMS: 500, HangoverFrames: 0}
+
+	p := audio.NewPipeline(audio.PipelineConfig{
+		SampleRate: 16000,
+		Channels:   1,
+		Suppressor: model.NewPassthrough(),
+		Logger:     zap.NewNop(),
+		VAD:        vad,
+	})
+
+	silenceFrame := makePCMFrame(10)
+	speechFrame := makePCMFrame(5000)
+
+	var out bytes.Buffer
+
+	// 10 silence frames.
+	for i := 0; i < 10; i++ {
+		if err := p.ProcessFrames(silenceFrame, &out); err != nil {
+			t.Fatalf("silence frame %d error: %v", i, err)
+		}
+	}
+	// 10 speech frames.
+	for i := 0; i < 10; i++ {
+		if err := p.ProcessFrames(speechFrame, &out); err != nil {
+			t.Fatalf("speech frame %d error: %v", i, err)
+		}
+	}
+
+	stats := p.Stats()
+
+	if stats.FramesProcessed != 20 {
+		t.Errorf("FramesProcessed: want 20, got %d", stats.FramesProcessed)
+	}
+	if stats.FramesSilent != 10 {
+		t.Errorf("FramesSilent: want 10, got %d", stats.FramesSilent)
+	}
+	if stats.FramesSuppressed != 10 {
+		t.Errorf("FramesSuppressed: want 10, got %d", stats.FramesSuppressed)
+	}
+	if math.Abs(stats.SuppressRatio-0.5) > 0.01 {
+		t.Errorf("SuppressRatio: want ~0.5, got %.4f", stats.SuppressRatio)
+	}
+}
+
+// TestPipelineReset verifies that Reset() clears stats counters so that only
+// the frames processed after the reset are reflected in Stats().
+func TestPipelineReset(t *testing.T) {
+	p := newTestPipeline()
+	frame := makePCMFrame(100)
+	var out bytes.Buffer
+
+	// Process 5 frames then reset.
+	for i := 0; i < 5; i++ {
+		if err := p.ProcessFrames(frame, &out); err != nil {
+			t.Fatalf("pre-reset frame %d error: %v", i, err)
+		}
+	}
+	p.Reset()
+	out.Reset()
+
+	// Process 5 more frames after reset.
+	for i := 0; i < 5; i++ {
+		if err := p.ProcessFrames(frame, &out); err != nil {
+			t.Fatalf("post-reset frame %d error: %v", i, err)
+		}
+	}
+
+	stats := p.Stats()
+	if stats.FramesProcessed != 5 {
+		t.Errorf("FramesProcessed after Reset: want 5, got %d", stats.FramesProcessed)
 	}
 }
