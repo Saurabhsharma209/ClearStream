@@ -55,6 +55,12 @@ type BridgeConfig struct {
 	// MaxFrameBytes is the maximum size of a single incoming WebSocket message.
 	// Messages larger than this are rejected. Default: 65536.
 	MaxFrameBytes int64
+
+	// AGC enables Automatic Gain Control for every connection on this bridge.
+	// Each connection gets its own independent AGC state.
+	// Use audio.DefaultAGCConfig() as a starting point.
+	// Set to nil to disable (default).
+	AGC *audio.AGCConfig
 }
 
 // Bridge is a WebSocket server that accepts raw PCM audio, runs it through the
@@ -118,12 +124,13 @@ func (b *Bridge) ServeWS(w http.ResponseWriter, r *http.Request) {
 	remoteAddr := r.RemoteAddr
 	b.logger.Info("client connected", zap.String("remote", remoteAddr))
 
-	// Each connection gets its own stateful pipeline instance.
+	// Each connection gets its own stateful pipeline instance (including AGC state).
 	pipeline := audio.NewPipeline(audio.PipelineConfig{
 		SampleRate: b.cfg.SampleRate,
 		Channels:   b.cfg.Channels,
 		Suppressor: b.cfg.Suppressor,
 		Logger:     b.logger,
+		AGC:        b.cfg.AGC,
 	})
 
 	conn.SetReadLimit(b.cfg.MaxFrameBytes)

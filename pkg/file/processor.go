@@ -46,6 +46,12 @@ type Options struct {
 	// NormalizePeak applies peak normalization to the output (-1 dBFS target).
 	NormalizePeak bool
 
+	// AGC enables Automatic Gain Control on this file processing job.
+	// When set, output level is adaptively adjusted toward AGC.TargetRMS
+	// after noise suppression. Use audio.DefaultAGCConfig() as a starting point.
+	// Set to nil to disable (default).
+	AGC *audio.AGCConfig
+
 	// Suppressor is the noise suppressor used by StreamProcess.
 	// If nil, StreamProcess will return an error.
 	Suppressor model.Suppressor
@@ -122,7 +128,7 @@ func (p *Processor) ProcessWithOptions(src, dst string, opts Options) error {
 	defer os.Remove(tmpAudio.Name())
 
 	// 3. Decode audio to raw 16kHz mono PCM via FFmpeg pipe
-	if err := p.decodeAndSuppress(src, tmpAudio.Name(), info, logger); err != nil {
+	if err := p.decodeAndSuppress(src, tmpAudio.Name(), info, opts.AGC, logger); err != nil {
 		return fmt.Errorf("file: decode+suppress: %w", err)
 	}
 
@@ -215,8 +221,8 @@ func (p *Processor) ProcessDir(srcDir, dstDir string, opts Options) []error {
 }
 
 // decodeAndSuppress decodes audio from src to 16kHz mono PCM,
-// runs it through the suppressor, and writes raw PCM to pcmPath.
-func (p *Processor) decodeAndSuppress(src, pcmPath string, info *audio.MediaInfo, logger *zap.Logger) error {
+// runs it through the suppressor (and optional AGC), and writes raw PCM to pcmPath.
+func (p *Processor) decodeAndSuppress(src, pcmPath string, info *audio.MediaInfo, agc *audio.AGCConfig, logger *zap.Logger) error {
 	// FFmpeg decode command: any input → 16kHz mono signed 16-bit PCM on stdout
 	decodeCmd := exec.Command(p.cfg.FFmpegPath,
 		"-i", src,
@@ -240,6 +246,7 @@ func (p *Processor) decodeAndSuppress(src, pcmPath string, info *audio.MediaInfo
 		Channels:   p.cfg.Channels,
 		Suppressor: p.cfg.Suppressor,
 		Logger:     logger,
+		AGC:        agc,
 	})
 
 	// Pipe FFmpeg stdout → suppressor → pcmFile
@@ -395,6 +402,7 @@ func StreamProcess(ctx context.Context, r io.Reader, w io.Writer, opts Options) 
 		Channels:   1,
 		Suppressor: opts.Suppressor,
 		Logger:     logger,
+		AGC:        opts.AGC,
 	})
 
 	buf := make([]byte, audio.FrameSizeBytes*64)

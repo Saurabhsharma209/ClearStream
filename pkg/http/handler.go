@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
+	"github.com/exotel/clearstream/pkg/audio"
 	"github.com/exotel/clearstream/pkg/file"
 	"github.com/exotel/clearstream/pkg/model"
 	"github.com/prometheus/client_golang/prometheus"
@@ -207,6 +209,36 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	opts := file.Options{}
 	if r.FormValue("audio_only") == "true" {
 		opts.AudioOnly = true
+	}
+	if r.FormValue("normalize_peak") == "true" {
+		opts.NormalizePeak = true
+	}
+
+	// AGC: enabled via ?agc=true, tuned via ?agc_target_rms=3000&agc_max_gain=4.0
+	// &agc_attack_ms=20&agc_release_ms=200
+	if r.FormValue("agc") == "true" {
+		agcCfg := audio.DefaultAGCConfig()
+		if v := r.FormValue("agc_target_rms"); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				agcCfg.TargetRMS = f
+			}
+		}
+		if v := r.FormValue("agc_max_gain"); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				agcCfg.MaxGain = f
+			}
+		}
+		if v := r.FormValue("agc_attack_ms"); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				agcCfg.AttackMs = f
+			}
+		}
+		if v := r.FormValue("agc_release_ms"); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				agcCfg.ReleaseMs = f
+			}
+		}
+		opts.AGC = &agcCfg
 	}
 
 	if err := proc.ProcessWithOptions(tmpIn.Name(), tmpOut.Name(), opts); err != nil {

@@ -72,6 +72,15 @@ type Config struct {
 	// VADThreshold is the RMS energy threshold for static VAD (EnableVAD=true,
 	// AdaptiveVAD=false). Default: 300 (good for 16-bit telephony PCM).
 	VADThreshold float64
+
+	// EnableAGC enables Automatic Gain Control globally for all sessions created
+	// from this instance. Uses DefaultAGCConfig() unless AGC is also set.
+	EnableAGC bool
+
+	// AGC holds fine-grained AGC settings applied when EnableAGC is true.
+	// If nil and EnableAGC is true, audio.DefaultAGCConfig() is used.
+	// Override per-session by passing audio.AGCConfig to NewRTPSession / file.Options.
+	AGC *audio.AGCConfig
 }
 
 // DefaultConfig returns a sensible out-of-the-box configuration.
@@ -169,18 +178,38 @@ func (cs *ClearStream) ProcessFileWithOptions(src, dst string, opts file.Options
 	return fp.ProcessWithOptions(src, dst, opts)
 }
 
+// globalAGC resolves the effective AGCConfig from top-level SDK config.
+// Returns nil if AGC is not enabled.
+func (cs *ClearStream) globalAGC() *audio.AGCConfig {
+	if !cs.cfg.EnableAGC {
+		return nil
+	}
+	if cs.cfg.AGC != nil {
+		return cs.cfg.AGC
+	}
+	def := audio.DefaultAGCConfig()
+	return &def
+}
+
 // NewRTPSession creates a live RTP interception session.
 // The session reads RTP packets from ListenAddr, suppresses noise,
 // and forwards clean packets to ForwardAddr.
+//
+// AGC: if cfg.AGC is nil and EnableAGC is true on the SDK config, the global
+// AGC settings are inherited. Set cfg.AGC explicitly to override per-session.
 func (cs *ClearStream) NewRTPSession(cfg rtp.Config) (*rtp.Session, error) {
 	cfg.SampleRate = cs.cfg.SampleRate
 	cfg.Suppressor = cs.model
 	cfg.Logger = cs.logger
+	if cfg.AGC == nil {
+		cfg.AGC = cs.globalAGC()
+	}
 	return rtp.NewSession(cfg)
 }
 
 // Pipeline returns a low-level audio processing pipeline for advanced use.
 // Use this when you want to feed raw PCM frames directly.
+// AGC is inherited from SDK config if EnableAGC is true.
 func (cs *ClearStream) Pipeline() *audio.Pipeline {
 	var vad audio.VADer
 	if cs.cfg.EnableVAD {
@@ -200,6 +229,7 @@ func (cs *ClearStream) Pipeline() *audio.Pipeline {
 		Suppressor: cs.model,
 		Logger:     cs.logger,
 		VAD:        vad,
+		AGC:        cs.globalAGC(),
 	})
 }
 

@@ -39,6 +39,12 @@ type PipelineConfig struct {
 	// automatically create a DefaultAdaptiveVAD() that calibrates the noise
 	// floor over the first 500ms of audio. Set VAD explicitly to override.
 	UseAdaptiveVAD bool
+
+	// AGC is optional Automatic Gain Control applied after noise suppression.
+	// When set, the pipeline adaptively adjusts output level toward AGC.TargetRMS.
+	// Use DefaultAGCConfig() as a starting point for telephony calls.
+	// Set to nil to disable (default).
+	AGC *AGCConfig
 }
 
 // PipelineStats holds real-time pipeline quality metrics.
@@ -57,6 +63,7 @@ type Pipeline struct {
 	cfg    PipelineConfig
 	buf    []byte // partial frame accumulator
 	vad    VADer
+	agc    *AGC
 	logger *zap.Logger
 
 	statsMu          sync.Mutex
@@ -74,10 +81,20 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 	if vad == nil && cfg.UseAdaptiveVAD {
 		vad = DefaultAdaptiveVAD()
 	}
+	var agc *AGC
+	if cfg.AGC != nil {
+		agcCfg := *cfg.AGC
+		agcCfg.SampleRate = cfg.SampleRate
+		if agcCfg.SampleRate == 0 {
+			agcCfg.SampleRate = 16000
+		}
+		agc = NewAGC(agcCfg)
+	}
 	return &Pipeline{
 		cfg:    cfg,
 		buf:    make([]byte, 0, FrameSizeBytes*4),
 		vad:    vad,
+		agc:    agc,
 		logger: cfg.Logger,
 	}
 }
@@ -111,6 +128,11 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 				return fmt.Errorf("pipeline: suppress frame: %w", err)
 			}
 			usedSuppressor = true
+		}
+
+		// AGC: adaptive gain applied after suppression (speech frames only)
+		if p.agc != nil {
+			cleaned = p.agc.Process(cleaned)
 		}
 
 		elapsed := time.Since(start).Seconds() * 1000
@@ -187,6 +209,9 @@ func (p *Pipeline) Reset() {
 	p.cfg.Suppressor.Reset()
 	if p.vad != nil {
 		p.vad.Reset()
+	}
+	if p.agc != nil {
+		p.agc.Reset()
 	}
 	p.statsMu.Lock()
 	p.framesProcessed = 0

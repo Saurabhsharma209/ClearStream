@@ -48,6 +48,12 @@ type Config struct {
 
 	// OnStats is an optional callback called every second with session statistics.
 	OnStats func(Stats)
+
+	// AGC enables Automatic Gain Control on this RTP session.
+	// When set, output level is adaptively adjusted toward AGC.TargetRMS.
+	// Use audio.DefaultAGCConfig() as a starting point.
+	// Set to nil to disable (default).
+	AGC *audio.AGCConfig
 }
 
 // Stats holds per-second session statistics.
@@ -112,6 +118,7 @@ func NewSession(cfg Config) (*Session, error) {
 		Channels:   1,
 		Suppressor: cfg.Suppressor,
 		Logger:     cfg.Logger,
+		AGC:        cfg.AGC,
 	})
 
 	return &Session{
