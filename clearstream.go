@@ -281,6 +281,34 @@ func (cs *ClearStream) Close() error {
 	return err
 }
 
+// TelephonyConfig returns a Config optimized for telephony (8kHz G.711 calls).
+// Enables VAD and AGC; uses passthrough suppressor by default.
+// Swap Model to "rnnoise" for real noise suppression.
+func TelephonyConfig() Config {
+	cfg := DefaultConfig()
+	cfg.EnableVAD = true
+	cfg.AdaptiveVAD = true
+	cfg.MaxConcurrentSessions = 64
+	return cfg
+}
+
+// FileProcessingConfig returns a Config optimized for batch file processing.
+// Higher worker count, no VAD (process every frame), no session pool needed.
+func FileProcessingConfig() Config {
+	cfg := DefaultConfig()
+	cfg.EnableVAD = false
+	cfg.MaxConcurrentSessions = 4
+	return cfg
+}
+
+// ExotelConfig returns a Config recommended for Exotel vSIP integration.
+// PCMA (A-law) codec, adaptive VAD, AGC enabled, 32 concurrent sessions.
+func ExotelConfig() Config {
+	cfg := TelephonyConfig()
+	cfg.MaxConcurrentSessions = 32
+	return cfg
+}
+
 // NewHTTPHandler returns an http.Handler exposing the ClearStream API.
 // AgentStream integrates via POST /enhance, GET /health, GET /metrics.
 // Mount it: http.Handle("/", cs.NewHTTPHandler())

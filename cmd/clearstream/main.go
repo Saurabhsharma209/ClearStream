@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -48,7 +49,18 @@ func main() {
 	case "server":
 		runServer(os.Args[2:])
 	case "version":
-		fmt.Printf("clearstream v%s (ClearStream Audio Enhancement SDK)\n", clearstream.Version)
+		cfg := clearstream.DefaultConfig()
+		cs, err := clearstream.New(cfg)
+		if err != nil {
+			fmt.Printf("clearstream v%s\n", clearstream.Version)
+			return
+		}
+		defer cs.Close()
+		fmt.Printf("clearstream v%s\n", clearstream.Version)
+		fmt.Printf("  model:    %s\n", cfg.Model)
+		fmt.Printf("  pool:     %d sessions\n", cs.PoolSize())
+		fmt.Printf("  go:       %s\n", runtime.Version())
+		fmt.Printf("  platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		printUsage()
