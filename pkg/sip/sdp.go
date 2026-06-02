@@ -103,3 +103,20 @@ func payloadTypeToCodec(pt uint8) audio.Codec {
 		return audio.CodecG711U
 	}
 }
+
+// BandMode returns the BandMode for the codec in this SDPMedia.
+// It correctly handles the G.722 RFC 3551 clock-rate quirk: SDP declares
+// G722/8000, but the actual audio is 16 kHz wideband — so we return
+// BandWide, not BandNarrow.
+func (m *SDPMedia) BandMode() audio.BandMode {
+	switch m.Codec {
+	case audio.CodecG711U, audio.CodecG711A, audio.CodecG729, audio.CodecGSM, audio.CodecILBC:
+		return audio.BandNarrow
+	case audio.CodecG722, audio.CodecSpeex:
+		return audio.BandWide // G.722 RFC 3551: SDP clock=8000 but real audio is 16kHz
+	case audio.CodecOpus:
+		return audio.BandFull
+	default:
+		return audio.BandNarrow // safe default for Indian PSTN
+	}
+}

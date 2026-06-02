@@ -79,12 +79,6 @@ type Config struct {
 	// AdaptiveVAD=false). Default: 300 (good for 16-bit telephony PCM).
 	VADThreshold float64
 
-	// Codec hints the expected RTP codec for this config. Used by Validate() to
-	// catch sample-rate/codec mismatches before a session is created.
-	// Leave empty to skip codec-rate validation.
-	// Recognised values: "PCMU" (G.711 µ-law), "PCMA" (G.711 A-law), "G722".
-	Codec string
-
 	// EnableAGC enables Automatic Gain Control globally for all sessions created
 	// from this instance. Uses DefaultAGCConfig() unless AGC is also set.
 	EnableAGC bool
@@ -121,27 +115,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Model == "deepfilter" && c.ModelPath == "" {
 		return fmt.Errorf("clearstream: Model \"deepfilter\" requires ModelPath")
-	}
-	// Codec-rate mismatch checks.
-	// G.711 µ-law and A-law are fixed at 8 kHz per ITU-T G.711.
-	// G.722 is fixed at 16 kHz per ITU-T G.722.
-	if c.SampleRate != 0 && c.Codec != "" {
-		switch c.Codec {
-		case "PCMU", "PCMA":
-			if c.SampleRate != 8000 {
-				return fmt.Errorf(
-					"clearstream: Codec %q requires SampleRate 8000, got %d",
-					c.Codec, c.SampleRate,
-				)
-			}
-		case "G722":
-			if c.SampleRate != 16000 {
-				return fmt.Errorf(
-					"clearstream: Codec %q requires SampleRate 16000, got %d",
-					c.Codec, c.SampleRate,
-				)
-			}
-		}
 	}
 	return nil
 }
@@ -334,36 +307,6 @@ func ExotelConfig() Config {
 	cfg := TelephonyConfig()
 	cfg.MaxConcurrentSessions = 32
 	return cfg
-}
-
-// IndiaTelephonyConfig returns a Config tuned for Indian PSTN deployments.
-// Indian operators mandate G.711 µ-law (PCMU) or A-law (PCMA) at 8kHz narrowband.
-// This is the correct config for Exotel PSTN trunk integration.
-func IndiaTelephonyConfig() Config {
-	return Config{
-		SampleRate:            8000,
-		Channels:              1,
-		Model:                 "passthrough",
-		EnableVAD:             true,
-		AdaptiveVAD:           true,
-		VADThreshold:          0.3, // tuned for 8kHz narrowband speech
-		MaxConcurrentSessions: 64,
-		// AGC normalized for telephone-level speech (-18 dBFS target)
-	}
-}
-
-// WidebandConfig returns a Config for wideband VoIP (16kHz, e.g. G.722 SIP trunks).
-// Use this for Exotel VoIP customers, WebRTC, or any SIP UA advertising G.722.
-func WidebandConfig() Config {
-	return Config{
-		SampleRate:            16000,
-		Channels:              1,
-		Model:                 "passthrough",
-		EnableVAD:             true,
-		AdaptiveVAD:           true,
-		VADThreshold:          0.25,
-		MaxConcurrentSessions: 32,
-	}
 }
 
 // NewHTTPHandler returns an http.Handler exposing the ClearStream API.
