@@ -10,8 +10,10 @@
 *.out
 *.so
 *.test
+*.prof
 .DS_Store
 /clearstream
+coverage.html
 ecc_integration
 load_test
 snr_benchmark

@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt vet clean poc bench test-race test-nocgo install poc-build poc-up poc-clean poc-generate-audio
+.PHONY: build test lint fmt vet clean poc bench test-race test-nocgo install poc-build poc-up poc-clean poc-generate-audio coverage coverage-html
 
 GOFLAGS ?= -trimpath
 BINARY  := clearstream
@@ -56,5 +56,15 @@ loadtest:
 
 bench-all:
 	go test -run='^$$' -bench=. -benchmem -benchtime=2s ./...
+
+coverage:
+	go test -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out | tail -5
+	@echo "Full report: go tool cover -html=coverage.out"
+
+coverage-html:
+	go test -coverprofile=coverage.out ./...
+	go tool cover -html=coverage.out -o coverage.html
+	@echo "Saved to coverage.html"
 
 .DEFAULT_GOAL := build

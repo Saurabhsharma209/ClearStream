@@ -327,3 +327,24 @@
 
 ### POC command
     go run examples/exotel_poc/main.go --rtp-listen :5004 --rtp-forward AGENT:5004 --http :8080
+
+## 2026-06-03 (Days 15 & 16 — README, Streaming, Config Presets, Coverage)
+
+**Agents run:** SDK, Audio, RTP, HTTP, QA, Post-processing
+**Build:** passing | **Tests:** 10 packages green (-race) | **Race detector:** clean
+
+### Changes
+- README.md: comprehensive SDK guide — quickstart, 5 integration paths (RTP, HTTP, File, SIP, WebSocket), POC runbook, performance table, config preset reference
+- pkg/audio/pipeline.go: NewTelephonyPipeline(suppressor) constructor (16kHz, AdaptiveVAD, AGC defaults); VADer interface (IsSpeech+Reset); top-level sync.Mutex mu for buf (race detector fix); PipelineStats.String()
+- pkg/audio/pipeline_test.go: TestFullSignalChain (200 frames 440Hz sine+noise through VAD+suppress+AGC), TestNewTelephonyPipeline
+- pkg/rtp/session.go: AGC *audio.AGCConfig wired into config; QualityReport() combining RTP stats + pipeline stats
+- pkg/rtp/session_test.go: TestSessionQualityReport, TestRTPLoopback fix (MockSuppressor)
+- pkg/http/handler.go: POST /enhance/stream chunked streaming; writeJSONError(); CORS; /info endpoint; response headers
+- clearstream.go: TelephonyConfig(), FileProcessingConfig(), ExotelConfig() presets; Validate()
+- cmd/clearstream/main.go: dir batch subcommand; version with runtime info
+- Makefile: coverage, coverage-html targets
+- Coverage: pkg/audio 87.2%, pkg/sip 75.0%
+
+### Metrics
+- Test packages: 10 | All green with -race
+- Audio coverage: 87.2% | SIP coverage: 75.0%
