@@ -16,6 +16,41 @@ import (
 	"go.uber.org/zap"
 )
 
+// rtpPayloadInfo maps standard RTP payload types to codec and true audio sample rate.
+// NOTE: G.722 (PT=9) has RTP clock 8000 per RFC 3551 but real audio is 16kHz.
+var rtpPayloadInfo = map[uint8]struct {
+	codec      audio.Codec
+	sampleRate int
+}{
+	0:   {audio.CodecG711U, 8000},   // PCMU  — Indian PSTN standard
+	3:   {audio.CodecGSM, 8000},     // GSM
+	8:   {audio.CodecG711A, 8000},   // PCMA  — Indian PSTN (A-law variant)
+	9:   {audio.CodecG722, 16000},   // G.722 — wideband, RTP clock=8000 but audio=16kHz
+	15:  {audio.CodecUnknown, 8000}, // G728
+	18:  {audio.CodecG729, 8000},    // G.729
+	111: {audio.CodecOpus, 48000},   // Opus  — WebRTC default dynamic PT
+	110: {audio.CodecOpus, 48000},   // Opus  — alternate dynamic PT
+}
+
+// resolvePayloadType fills in Codec and SampleRate from PayloadType if not set.
+func resolvePayloadType(cfg *Config) {
+	if info, ok := rtpPayloadInfo[cfg.PayloadType]; ok {
+		if cfg.Codec == "" {
+			cfg.Codec = info.codec
+		}
+		if cfg.SampleRate == 0 {
+			cfg.SampleRate = info.sampleRate
+		}
+	}
+	// Final fallback: unknown PT → narrowband
+	if cfg.SampleRate == 0 {
+		cfg.SampleRate = 8000
+	}
+	if cfg.Codec == "" {
+		cfg.Codec = audio.CodecG711U
+	}
+}
+
 // Config holds configuration for a live RTP session.
 type Config struct {
 	// ListenAddr is the UDP address to receive RTP packets (e.g. ":5004").
@@ -109,16 +144,15 @@ func NewSession(cfg Config) (*Session, error) {
 		return nil, fmt.Errorf("rtp: listen %s: %w", cfg.ListenAddr, err)
 	}
 
-	if cfg.Codec == "" {
-		cfg.Codec = payloadTypeToCodec(cfg.PayloadType)
-	}
+	resolvePayloadType(&cfg)
 
 	pipe := audio.NewPipeline(audio.PipelineConfig{
-		SampleRate: cfg.SampleRate,
-		Channels:   1,
-		Suppressor: cfg.Suppressor,
-		Logger:     cfg.Logger,
-		AGC:        cfg.AGC,
+		SampleRate:      cfg.SampleRate,
+		InputSampleRate: cfg.SampleRate,
+		Channels:        1,
+		Suppressor:      cfg.Suppressor,
+		Logger:          cfg.Logger,
+		AGC:             cfg.AGC,
 	})
 
 	return &Session{
@@ -395,10 +429,17 @@ func (s *Session) QualityReport() string {
 	if rtp.PacketsReceived > 0 {
 		lossRate = float64(rtp.PacketsLost) / float64(rtp.PacketsReceived) * 100
 	}
+	band := "narrowband(8kHz)"
+	if s.cfg.SampleRate >= 16000 {
+		band = "wideband(16kHz)"
+	}
+	if s.cfg.SampleRate >= 44100 {
+		band = "fullband(48kHz)"
+	}
 	return fmt.Sprintf(
-		"RTP: rx=%d tx=%d lost=%d(%.1f%%) latency=%.1fms | Pipeline: %s",
+		"RTP: rx=%d tx=%d lost=%d(%.1f%%) latency=%.1fms | Band: %s [PT=%d %s] | Pipeline: %s",
 		rtp.PacketsReceived, rtp.PacketsSent, rtp.PacketsLost, lossRate,
-		rtp.LatencyAvgMs, pipe.String(),
+		rtp.LatencyAvgMs, band, s.cfg.PayloadType, s.cfg.Codec, pipe.String(),
 	)
 }
 

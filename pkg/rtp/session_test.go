@@ -286,7 +286,40 @@ func TestSessionQualityReport(t *testing.T) {
 	if !contains(report, "Pipeline:") {
 		t.Errorf("QualityReport missing 'Pipeline:': %q", report)
 	}
+	if !contains(report, "Band:") {
+		t.Errorf("QualityReport missing 'Band:': %q", report)
+	}
 	t.Logf("QualityReport: %s", report)
+}
+
+// TestPayloadTypeResolution verifies that resolvePayloadType correctly maps
+// standard RTP payload types to codec and sample rate, including the G.722
+// wideband quirk (RTP clock=8000 but true audio=16kHz).
+func TestPayloadTypeResolution(t *testing.T) {
+	cases := []struct {
+		pt        uint8
+		wantCodec string
+		wantRate  int
+		desc      string
+	}{
+		{0, "pcm_mulaw", 8000, "PT=0 PCMU — Indian PSTN standard"},
+		{8, "pcm_alaw", 8000, "PT=8 PCMA — Indian PSTN A-law"},
+		{9, "g722", 16000, "PT=9 G.722 — wideband, RTP clock=8000 but audio=16kHz"},
+		{111, "opus", 48000, "PT=111 Opus — WebRTC default dynamic PT"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			cfg := Config{PayloadType: tc.pt}
+			resolvePayloadType(&cfg)
+			if string(cfg.Codec) != tc.wantCodec {
+				t.Errorf("PT=%d: codec want %q, got %q", tc.pt, tc.wantCodec, cfg.Codec)
+			}
+			if cfg.SampleRate != tc.wantRate {
+				t.Errorf("PT=%d: sample rate want %d, got %d", tc.pt, tc.wantRate, cfg.SampleRate)
+			}
+		})
+	}
 }
 
 func contains(s, sub string) bool {
