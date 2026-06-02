@@ -1,29 +1,24 @@
-.PHONY: build test test-race test-nocgo lint fmt clean install 
-        poc poc-build poc-up poc-clean poc-generate-audio
+.PHONY: build test lint fmt vet clean poc bench test-race test-nocgo install poc-build poc-up poc-clean poc-generate-audio
 
-GOFLAGS ?=
+GOFLAGS ?= -trimpath
 BINARY  := clearstream
 
 build:
 	go build $(GOFLAGS) ./...
 
 test:
-	go test $(GOFLAGS) ./...
-
-test-race:
-	go test -race $(GOFLAGS) ./...
-
-test-nocgo:
-	CGO_ENABLED=0 go test ./...
+	go test -race -count=1 ./...
 
 bench:
-	go test -bench=. -benchmem ./...
-
-lint:
-	go vet ./...
+	go test -run='^$$' -bench=. -benchmem ./...
 
 fmt:
 	go fmt ./...
+
+vet:
+	go vet ./...
+
+lint: fmt vet
 
 clean:
 	go clean ./...
@@ -32,7 +27,16 @@ clean:
 install:
 	go install ./cmd/clearstream
 
-# --- POC targets ---
+test-race:
+	go test -race $(GOFLAGS) ./...
+
+test-nocgo:
+	CGO_ENABLED=0 go test ./...
+
+poc: build
+	@echo "Starting ClearStream POC (HTTP on :8080, RTP on :5004)"
+	go run cmd/clearstream/main.go server --http :8080 &
+	@echo "Server started. Test with: curl -X POST http://localhost:8080/enhance"
 
 poc-generate-audio:
 	mkdir -p testdata
@@ -46,7 +50,5 @@ poc-up:
 
 poc-clean:
 	docker compose down -v
-
-poc: poc-generate-audio poc-build poc-up
 
 .DEFAULT_GOAL := build

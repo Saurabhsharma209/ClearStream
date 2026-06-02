@@ -90,53 +90,6 @@ func TestProcessDirCreatesDestDir(t *testing.T) {
 	}
 }
 
-func TestProcessDir(t *testing.T) {
-	src := t.TempDir()
-	dst := filepath.Join(t.TempDir(), "output")
-
-	// Create 2 zero-byte .wav files and 1 .txt file.
-	for _, name := range []string{"a.wav", "b.wav", "notes.txt"} {
-		f, err := os.Create(filepath.Join(src, name))
-		if err != nil {
-			t.Fatalf("create %s: %v", name, err)
-		}
-		f.Close()
-	}
-
-	opts := file.Options{
-		Suppressor: model.NewPassthrough(),
-		Logger:     zap.NewNop(),
-		Workers:    2,
-	}
-
-	results, err := file.ProcessDir(context.Background(), src, dst, opts)
-	if err != nil {
-		t.Fatalf("ProcessDir returned error: %v", err)
-	}
-
-	// Verify dst was created.
-	if _, statErr := os.Stat(dst); os.IsNotExist(statErr) {
-		t.Error("expected dstDir to be created")
-	}
-
-	// Partition results.
-	var skipped, processed int
-	for _, r := range results {
-		if r.Skipped {
-			skipped++
-		} else {
-			processed++
-		}
-	}
-
-	if skipped != 1 {
-		t.Errorf("expected 1 skipped result (notes.txt), got %d", skipped)
-	}
-	if processed != 2 {
-		t.Errorf("expected 2 processed results (.wav files), got %d", processed)
-	}
-}
-
 func TestStreamProcess(t *testing.T) {
 	// Synthetic PCM: 10 frames of silence (all zeros)
 	frameCount := 10

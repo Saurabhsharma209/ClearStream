@@ -92,3 +92,76 @@ func TestSuppressorConcurrentReset(t *testing.T) {
 	}
 	wg.Wait() // must not race or panic
 }
+
+// BenchmarkPassthroughLargeFrame benchmarks Passthrough.Process with 1024-sample
+// frames (64ms at 16kHz) to verify the interface handles non-standard frame sizes.
+func BenchmarkPassthroughLargeFrame(b *testing.B) {
+	sup, _ := model.NewSuppressor(model.SuppressorConfig{Backend: "passthrough"})
+	defer sup.Close()
+	frame := make([]int16, 1024)
+	for i := range frame {
+		frame[i] = int16(math.Sin(float64(i)*0.05) * 16000)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sup.Process(frame)
+	}
+}
+
+// BenchmarkMockSuppressor benchmarks MockSuppressor.Process with a 160-sample
+// frame and Gain=1.0, providing a baseline for test-double overhead.
+func BenchmarkMockSuppressor(b *testing.B) {
+	m := model.NewMockSuppressor()
+	m.Gain = 1.0
+	frame := make([]int16, 160)
+	for i := range frame {
+		frame[i] = int16(i * 100)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m.Process(frame)
+	}
+}
+
+// TestSuppressorInterfaceCompliance is a table-driven test that verifies every
+// available suppressor satisfies the Suppressor contract:
+//   - Name() returns a non-empty string
+//   - Process() returns a frame of the same length as the input
+//   - Reset() does not panic
+//   - Close() returns nil
+func TestSuppressorInterfaceCompliance(t *testing.T) {
+	frame := make([]int16, 160)
+	for i := range frame {
+		frame[i] = int16(i)
+	}
+
+	tests := []struct {
+		name string
+		sup  model.Suppressor
+	}{
+		{"passthrough", model.NewPassthrough()},
+		{"mock", model.NewMockSuppressor()},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.sup.Name() == "" {
+				t.Error("Name() must return a non-empty string")
+			}
+			out, err := tc.sup.Process(frame)
+			if err != nil {
+				t.Errorf("Process() returned unexpected error: %v", err)
+			}
+			if len(out) != len(frame) {
+				t.Errorf("Process() returned %d samples, want %d", len(out), len(frame))
+			}
+			tc.sup.Reset() // must not panic
+			if err := tc.sup.Close(); err != nil {
+				t.Errorf("Close() returned unexpected error: %v", err)
+			}
+		})
+	}
+}

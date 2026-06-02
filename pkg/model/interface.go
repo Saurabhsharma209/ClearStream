@@ -27,12 +27,26 @@ type Suppressor interface {
 }
 
 // SuppressorConfig configures which backend to load.
+// Backend selects the suppression engine: "rnnoise" for the lightweight RNNoise
+// CGo backend (default when empty), "deepfilter" for the ONNX-based DeepFilterNet
+// model, or "passthrough" for a no-op implementation suited to tests and pipelines
+// that do not require noise suppression.
+// ModelPath is required only when Backend is "deepfilter"; it must point to a
+// valid ONNX model file on disk.
 type SuppressorConfig struct {
-	// Backend: "rnnoise" | "deepfilter" | "passthrough"
+	// Backend selects the noise-suppression engine.
+	// Valid values: "rnnoise" (default), "deepfilter", "passthrough".
 	Backend string
 
-	// ModelPath is the ONNX model file path (required for "deepfilter").
+	// ModelPath is the path to the ONNX model file.
+	// Required when Backend is "deepfilter"; ignored otherwise.
 	ModelPath string
+}
+
+// DefaultSuppressorConfig returns a SuppressorConfig using the passthrough
+// backend, suitable for testing without any external dependencies.
+func DefaultSuppressorConfig() SuppressorConfig {
+	return SuppressorConfig{Backend: "passthrough"}
 }
 
 // NewSuppressor constructs the appropriate Suppressor based on config.

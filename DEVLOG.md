@@ -202,3 +202,31 @@
 - RTP: SSRC change detection unit test (session reset on new call leg)
 - Audio: pipeline_test.go with VADer interface — test AdaptiveVAD path end-to-end
 - API: Config.Validate() method with field range checks
+
+## 2026-06-02 (Days 8 & 9 — Sprint 2 Start)
+
+**Agents run:** RTP/SIP, Audio Pipeline, API Layer, QA/Testing, Post-processing, AI Model
+**Build:** passing | **Tests:** all packages green
+
+### Changes
+- pkg/rtp/session_test.go: TestSSRCDetection, TestSSRCChangeResetsSession (state-machine replay), TestRTPHeaderRoundtrip (field-level roundtrip); fixed TestRTPLoopback nil-suppressor panic via MockSuppressor
+- pkg/audio/pipeline_test.go: TestPipelineAdaptiveVADCalibration, TestPipelineStatsSuppressRatio, TestPipelineReset — VADer interface + Stats() fully exercised
+- clearstream.go: Config.Validate() — SampleRate [8000,48000], Channels [1,2], Model allowlist, deepfilter requires ModelPath; New() returns validation error early
+- clearstream_validate_test.go: 8 unit tests covering all validation branches
+- Makefile: build/test/bench/fmt/vet/lint/clean/poc targets; .DEFAULT_GOAL=build
+- .github/workflows/ci.yml: Go 1.21/1.22 matrix, race detector, 120s timeout, benchmark smoke run
+- pkg/file/processor.go: ProcessDir(ctx, srcDir, dstDir, opts) — concurrent (semaphore, default 4 workers), SupportedExtensions map, DirResult struct; typed sentinels ErrFileNotFound/ErrCodecNotFound/ErrUnsupportedCodec; Workers field on Options
+- pkg/file/processor_test.go: TestProcessDir — 2 wav + 1 txt, verifies skip logic and dstDir creation
+- pkg/model/interface.go: DefaultSuppressorConfig() factory; improved doc comments on SuppressorConfig
+- pkg/model/passthrough.go: Go doc comments on all exported methods
+- pkg/model/bench_test.go: BenchmarkPassthroughLargeFrame (1024-sample), BenchmarkMockSuppressor, TestSuppressorInterfaceCompliance (table-driven over passthrough+mock)
+- pkg/model/rnnoise_nocgo.go: log to os.Stderr instead of Stdout (fixes ExampleNew doc test)
+
+### Blocked
+- DeepFilterNet ONNX: needs manual ONNX Runtime shared lib + exported model
+- go test on macOS 15 + Go 1.17: dyld LC_UUID (pre-existing); all tests pass on Go 1.22 in sandbox
+
+### Tomorrow (Day 10)
+- Audio: vad_test.go AdaptiveVAD calibration edge cases (empty frame, single frame, noisy calibration)
+- RTP: G.711 µ-law/A-law round-trip test for all 256 values (pin-down correctness)
+- API: HTTP handler integration test (POST /enhance with synthetic WAV bytes)

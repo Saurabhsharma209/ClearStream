@@ -2,21 +2,25 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   build-and-test:
+    name: Build & Test
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.21", "1.22"]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Go
+      - name: Set up Go ${{ matrix.go-version }}
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: ${{ matrix.go-version }}
           cache: true
 
       - name: Install system dependencies
@@ -27,23 +31,14 @@ jobs:
       - name: Download Go modules
         run: go mod download
 
-      - name: Build (CGO disabled — no external libs needed)
-        run: CGO_ENABLED=0 go build ./...
+      - name: Build
+        run: go build ./...
 
       - name: Vet
-        run: CGO_ENABLED=0 go vet ./...
+        run: go vet ./...
 
-      - name: Test (CGO disabled)
-        run: CGO_ENABLED=0 go test -timeout 120s -count=1 ./...
+      - name: Test
+        run: go test -race -count=1 -timeout=120s ./...
 
-      - name: Test with race detector (CGO enabled, librnnoise present)
-        run: |
-          go test -race -timeout 120s -count=1 \
-            ./pkg/audio/... \
-            ./pkg/file/... \
-            ./pkg/http/... \
-            ./pkg/sip/... \
-            ./pkg/websocket/...
-
-      - name: Build with CGO (RNNoise enabled)
-        run: go build ./...
+      - name: Benchmark (smoke)
+        run: go test -run='^$$' -bench=. -benchtime=1x ./...
