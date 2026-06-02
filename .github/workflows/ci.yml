@@ -10,15 +10,17 @@ jobs:
   build-and-test:
     name: Build & Test
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     strategy:
       matrix:
         go-version: ["1.21", "1.22"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
 
       - name: Set up Go ${{ matrix.go-version }}
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v5.5.0
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
@@ -26,7 +28,9 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg librnnoise-dev
+          sudo apt-get install -y ffmpeg
+          # librnnoise-dev is optional; rnnoise support requires -tags rnnoise
+          sudo apt-get install -y librnnoise-dev || echo "librnnoise-dev unavailable – building without RNNoise CGo support"
 
       - name: Download Go modules
         run: go mod download
