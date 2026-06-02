@@ -51,4 +51,10 @@ poc-up:
 poc-clean:
 	docker compose down -v
 
+loadtest:
+	go test -v -run TestLoadTest -timeout=60s ./pkg/loadtest/...
+
+bench-all:
+	go test -run='^$$' -bench=. -benchmem -benchtime=2s ./...
+
 .DEFAULT_GOAL := build
