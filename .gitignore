@@ -1,16 +1,21 @@
+
 # Binaries
-*.exe
-*.dll
-*.so
-*.dylib
-clearstream
-
-# Test output
-*.test
-*.out
-
+# Compiled binaries
 # Generated audio test data (keep .gitkeep)
-testdata/*.wav
-testdata/*.pcm
+# Test output
+*.dll
+*.dylib
+*.exe
+*.go.*[0-9]
+*.out
+*.so
+*.test
+.DS_Store
+clearstream
+ecc_integration
+load_test
+snr_benchmark
 testdata/*.mp3
 testdata/*.mp4
+testdata/*.pcm
+testdata/*.wav
