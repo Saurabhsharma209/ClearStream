@@ -21,14 +21,17 @@ import (
 	"go.uber.org/zap"
 )
 
-// ErrCodecNotFound is returned when FFmpeg cannot find the required codec.
-var ErrCodecNotFound = errors.New("codec not found")
-
-// ErrFileNotFound is returned when the input file does not exist.
-var ErrFileNotFound = errors.New("file not found")
-
-// ErrPermission is returned when the file cannot be read or written.
-var ErrPermission = errors.New("permission denied")
+// Sentinel errors returned by the file processor.
+var (
+	// ErrFileNotFound is returned when the input file does not exist.
+	ErrFileNotFound = errors.New("clearstream/file: input file not found")
+	// ErrCodecNotFound is returned when ffprobe cannot detect the codec.
+	ErrCodecNotFound = errors.New("clearstream/file: codec not detected")
+	// ErrUnsupportedCodec is returned when the codec is not supported.
+	ErrUnsupportedCodec = errors.New("clearstream/file: unsupported codec")
+	// ErrPermission is returned when the file cannot be read or written.
+	ErrPermission = errors.New("permission denied")
+)
 
 // Options controls per-call processing behaviour.
 type Options struct {
@@ -54,6 +57,109 @@ type Options struct {
 	// OnProgress is called with values 0.0–1.0 as processing advances.
 	// It is called from the processing goroutine; keep it non-blocking.
 	OnProgress func(pct float64)
+	// Workers sets the maximum number of concurrent goroutines used by ProcessDir.
+	// If 0, defaults to 4.
+	Workers int
+}
+
+// SupportedExtensions lists the file extensions recognised by ProcessDir.
+var SupportedExtensions = map[string]bool{
+	".wav": true, ".mp3": true, ".mp4": true, ".ogg": true,
+	".flac": true, ".m4a": true, ".webm": true, ".opus": true,
+}
+
+// DirResult reports the outcome of processing one file in a directory.
+type DirResult struct {
+	SrcPath string
+	DstPath string
+	Err     error
+	Skipped bool // true if extension not in SupportedExtensions
+}
+
+// ProcessFile enhances the audio in srcPath and writes the result to dstPath
+// using default processor settings and the provided options.
+// It is a convenience wrapper around NewProcessor + ProcessWithOptions.
+func ProcessFile(ctx context.Context, srcPath, dstPath string, opts Options) error {
+	if _, err := os.Stat(srcPath); os.IsNotExist(err) {
+		return fmt.Errorf("clearstream/file: %q: %w", srcPath, ErrFileNotFound)
+	}
+	logger := opts.Logger
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	p := NewProcessor(ProcessorConfig{
+		FFmpegPath: "ffmpeg",
+		SampleRate: 16000,
+		Channels:   1,
+		Suppressor: opts.Suppressor,
+		Logger:     logger,
+	})
+	return p.ProcessWithOptions(srcPath, dstPath, opts)
+}
+
+// ProcessDir enhances all audio/video files in srcDir and writes results to dstDir.
+// Files are processed concurrently with up to Workers goroutines (default: 4).
+// Only files with extensions in SupportedExtensions are processed; others are skipped.
+// Results are reported via the returned []DirResult slice.
+func ProcessDir(ctx context.Context, srcDir, dstDir string, opts Options) ([]DirResult, error) {
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return nil, fmt.Errorf("clearstream/file: read dir %q: %w", srcDir, err)
+	}
+
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		return nil, fmt.Errorf("clearstream/file: create dst dir %q: %w", dstDir, err)
+	}
+
+	workers := opts.Workers
+	if workers <= 0 {
+		workers = 4
+	}
+
+	results := make([]DirResult, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		srcPath := filepath.Join(srcDir, e.Name())
+		dstPath := filepath.Join(dstDir, e.Name())
+		if !SupportedExtensions[ext] {
+			results = append(results, DirResult{SrcPath: srcPath, DstPath: dstPath, Skipped: true})
+		} else {
+			results = append(results, DirResult{SrcPath: srcPath, DstPath: dstPath})
+		}
+	}
+
+	// Process non-skipped files concurrently.
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for i := range results {
+		if results[i].Skipped {
+			continue
+		}
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			results[idx].Err = ProcessFile(ctx, results[idx].SrcPath, results[idx].DstPath, opts)
+		}(i)
+	}
+	wg.Wait()
+
+	// Sort by SrcPath.
+	sortDirResults(results)
+	return results, nil
+}
+
+// sortDirResults sorts results in-place by SrcPath.
+func sortDirResults(r []DirResult) {
+	for i := 1; i < len(r); i++ {
+		for j := i; j > 0 && r[j].SrcPath < r[j-1].SrcPath; j-- {
+			r[j], r[j-1] = r[j-1], r[j]
+		}
+	}
 }
 
 // ProcessorConfig holds configuration for a Processor.
@@ -83,7 +189,8 @@ func (p *Processor) Process(src, dst string) error {
 // ProcessWithOptions enhances audio in src and writes the result to dst.
 //
 // Pipeline:
-//   src → ffmpeg decode → 16kHz PCM → AI suppress → re-encode → mux → dst
+//
+//	src → ffmpeg decode → 16kHz PCM → AI suppress → re-encode → mux → dst
 //
 // For video files, the video track passes through untouched.
 func (p *Processor) ProcessWithOptions(src, dst string, opts Options) error {
