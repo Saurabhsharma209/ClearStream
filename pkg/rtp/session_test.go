@@ -251,3 +251,53 @@ func TestRTPHeaderRoundtrip(t *testing.T) {
 	t.Logf("RTP header roundtrip OK: SSRC=0x%08X SeqNum=0x%04X TS=0x%08X PT=%d",
 		parsed.SSRC, parsed.SequenceNumber, parsed.Timestamp, parsed.PayloadType)
 }
+
+// TestSessionQualityReport verifies that QualityReport returns a non-empty string
+// containing the expected "RTP:" and "Pipeline:" sections.
+func TestSessionQualityReport(t *testing.T) {
+	sinkConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("bind sink: %v", err)
+	}
+	defer sinkConn.Close()
+
+	logger, _ := zap.NewDevelopment()
+	cfg := Config{
+		ListenAddr:  "127.0.0.1:0",
+		ForwardAddr: sinkConn.LocalAddr().String(),
+		PayloadType: 0,
+		Logger:      logger,
+		Suppressor:  model.NewMockSuppressor(),
+	}
+
+	sess, err := NewSession(cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.conn.Close()
+
+	report := sess.QualityReport()
+	if report == "" {
+		t.Fatal("QualityReport returned empty string")
+	}
+	if !contains(report, "RTP:") {
+		t.Errorf("QualityReport missing 'RTP:': %q", report)
+	}
+	if !contains(report, "Pipeline:") {
+		t.Errorf("QualityReport missing 'Pipeline:': %q", report)
+	}
+	t.Logf("QualityReport: %s", report)
+}
+
+func contains(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsStr(s, sub))
+}
+
+func containsStr(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

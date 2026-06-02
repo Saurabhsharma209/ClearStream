@@ -386,6 +386,22 @@ func (s *Session) listenRTCP() {
 	}
 }
 
+// QualityReport returns a human-readable summary of session quality metrics,
+// combining RTP stats and pipeline processing stats.
+func (s *Session) QualityReport() string {
+	rtp := s.Stats()
+	pipe := s.pipeline.Stats()
+	lossRate := float64(0)
+	if rtp.PacketsReceived > 0 {
+		lossRate = float64(rtp.PacketsLost) / float64(rtp.PacketsReceived) * 100
+	}
+	return fmt.Sprintf(
+		"RTP: rx=%d tx=%d lost=%d(%.1f%%) latency=%.1fms | Pipeline: %s",
+		rtp.PacketsReceived, rtp.PacketsSent, rtp.PacketsLost, lossRate,
+		rtp.LatencyAvgMs, pipe.String(),
+	)
+}
+
 func (s *Session) statsLoop(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
