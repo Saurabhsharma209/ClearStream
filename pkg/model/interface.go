@@ -41,6 +41,11 @@ type SuppressorConfig struct {
 	// ModelPath is the path to the ONNX model file.
 	// Required when Backend is "deepfilter"; ignored otherwise.
 	ModelPath string
+
+	// Aggressiveness controls suppression strength: 0=backend default, 1=mild,
+	// 2=medium, 3=aggressive. The passthrough backend ignores this field.
+	// RNNoise and future backends use it to tune their internal parameters.
+	Aggressiveness int
 }
 
 // DefaultSuppressorConfig returns a SuppressorConfig using the passthrough

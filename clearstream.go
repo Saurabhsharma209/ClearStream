@@ -378,3 +378,19 @@ func (cs *ClearStream) NewHTTPHandler() http.Handler {
 		PoolSize:   cs.PoolSize(),
 	})
 }
+
+// ExotelCallCenterConfig returns a Config optimized for Exotel's Indian call center deployments.
+// This is the recommended starting point for Exotel customers.
+// It combines India PSTN narrowband settings with call-center-specific tuning.
+func ExotelCallCenterConfig() Config {
+	return Config{
+		SampleRate:            8000, // Indian PSTN: always 8kHz
+		Channels:              1,
+		Model:                 "passthrough", // replace with "rnnoise" when available
+		EnableVAD:             true,
+		AdaptiveVAD:           true,
+		VADThreshold:          0.25, // Indian English phonetics
+		MaxConcurrentSessions: 100,  // Exotel scale
+		// Profile: IndiaCallCenterProfile (available via model package)
+	}
+}

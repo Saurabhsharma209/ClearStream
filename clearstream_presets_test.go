@@ -53,3 +53,19 @@ func TestNewWithTelephonyConfig(t *testing.T) {
 		t.Errorf("PoolSize() = %d, want 64", cs.PoolSize())
 	}
 }
+
+func TestExotelCallCenterConfig(t *testing.T) {
+	cfg := clearstream.ExotelCallCenterConfig()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("ExotelCallCenterConfig Validate() = %v, want nil", err)
+	}
+	if cfg.SampleRate != 8000 {
+		t.Errorf("SampleRate: got %d, want 8000", cfg.SampleRate)
+	}
+	if !cfg.EnableVAD {
+		t.Error("EnableVAD: expected true")
+	}
+	if cfg.MaxConcurrentSessions != 100 {
+		t.Errorf("MaxConcurrentSessions: got %d, want 100", cfg.MaxConcurrentSessions)
+	}
+}
