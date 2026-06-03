@@ -115,6 +115,7 @@ type Session struct {
 	stats     Stats
 	RTCPStats RTCPReceiverReport // most recent RTCP RR stats
 	rtcpConn  *net.UDPConn
+	rtcpReady chan struct{} // closed once rtcpConn is assigned (or binding fails)
 	cancel    context.CancelFunc
 	done      chan struct{}
 	logger    *zap.Logger
@@ -156,13 +157,14 @@ func NewSession(cfg Config) (*Session, error) {
 	})
 
 	return &Session{
-		cfg:      cfg,
-		conn:     conn,
-		fwdAddr:  fwdAddr,
-		jitter:   NewJitterBuffer(cfg.JitterDepth),
-		pipeline: pipe,
-		done:     make(chan struct{}),
-		logger:   cfg.Logger,
+		cfg:       cfg,
+		conn:      conn,
+		fwdAddr:   fwdAddr,
+		jitter:    NewJitterBuffer(cfg.JitterDepth),
+		pipeline:  pipe,
+		done:      make(chan struct{}),
+		rtcpReady: make(chan struct{}),
+		logger:    cfg.Logger,
 	}, nil
 }
 
@@ -190,8 +192,13 @@ func (s *Session) Stop() {
 		s.cancel()
 	}
 	s.conn.Close()
-	if s.rtcpConn != nil {
-		s.rtcpConn.Close()
+	// Wait for listenRTCP to finish binding before accessing rtcpConn.
+	<-s.rtcpReady
+	s.mu.Lock()
+	rc := s.rtcpConn
+	s.mu.Unlock()
+	if rc != nil {
+		rc.Close()
 	}
 	<-s.done
 	s.logger.Info("RTP session stopped")
@@ -372,24 +379,31 @@ func (s *Session) encodeFromPCM(pcm []int16, pt uint8) ([]byte, error) {
 func (s *Session) listenRTCP() {
 	host, portStr, err := net.SplitHostPort(s.cfg.ListenAddr)
 	if err != nil {
+		close(s.rtcpReady)
 		return
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
+		close(s.rtcpReady)
 		return
 	}
 	rtcpAddr := net.JoinHostPort(host, strconv.Itoa(port+1))
 
 	addr, err := net.ResolveUDPAddr("udp", rtcpAddr)
 	if err != nil {
+		close(s.rtcpReady)
 		return
 	}
 
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
+		close(s.rtcpReady)
 		return
 	}
+	s.mu.Lock()
 	s.rtcpConn = conn
+	s.mu.Unlock()
+	close(s.rtcpReady)
 	defer conn.Close()
 
 	buf := make([]byte, 1500)

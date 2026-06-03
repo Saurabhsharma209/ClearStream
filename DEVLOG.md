@@ -402,26 +402,3 @@ G.722 declares `a=rtpmap:9 G722/8000` in SDP but the actual audio is 16kHz wideb
 1. Audio: AGC integration test with real signal levels (verify TargetRMS convergence in <50 frames)
 2. HTTP: /enhance/stream chunked-response integration test with synthetic multi-chunk WAV
 3. Model: DeepFilterNet stub — ONNX session lifecycle unit test (behind build tag, no real model needed)
-
-## 2026-06-03 (Day 18 ext — AEC, Speaker Diarization, Indian Call Center Profile)
-
-**Agents run:** Audio (AEC), Audio (Diarization), Model/SDK
-**Build:** passing | **Tests:** 10 packages green (-race)
-
-### Changes
-- pkg/audio/aec.go (NEW): NLMS adaptive echo canceller — AECConfig, DefaultAECConfig() (16kHz/512-tap), NarrowbandAECConfig() (8kHz/256-tap), AEC.Process(farEnd, nearEnd), AEC.Reset(); echo converges after ~200 frames
-- pkg/audio/aec_test.go (NEW): 6 tests — bypass, echo reduction (RMS < 50% after 300 frames), reset/reconverge, narrowband config, default config, pipeline wiring
-- pkg/audio/diarize.go (NEW): SpeakerLabel enum (near/far/silence/unknown), DiarizedSegment, Diarizer interface, EnergyDiarizer (energy-based, RMS threshold + 300ms silence gap for speaker turns), SpeakerStats, DiarizeReport
-- pkg/audio/diarize_test.go (NEW): 6 tests — silence frames, speech frames, turn detection, reset, interface check, pipeline wiring
-- pkg/audio/pipeline.go: AEC + Diarizer fields in PipelineConfig; SetFarEnd() thread-safe method; AEC applied pre-VAD; Diarizer called post-suppression; DiarizationSegments() method
-- pkg/model/profile.go (NEW): NoiseProfile struct; IndiaCallCenterProfile() (NB, VAD=0.25, AGC=0.35, aggressiveness=2); IndiaWidebandProfile() (WB, VAD=0.20, aggressiveness=1); GenericOfficeProfile()
-- pkg/model/profile_test.go (NEW): 3 profile validation tests
-- pkg/model/interface.go: Aggressiveness int field on SuppressorConfig (0=default, 1=mild, 2=medium, 3=aggressive)
-- clearstream.go: ExotelCallCenterConfig() (8kHz, VAD=0.25, MaxConcurrentSessions=100)
-- clearstream_presets_test.go: TestExotelCallCenterConfig
-
-### Architecture
-- AEC sits before VAD/suppressor in the pipeline chain: AEC → VAD → Suppressor → AGC → Diarizer → output
-- Diarizer interface allows future ML-based models (x-vectors) to replace EnergyDiarizer without API change
-- NoiseProfile decouples environment tuning from suppressor implementation
-- IndiaCallCenterProfile VADThreshold=0.25 tuned for Indian English retroflex consonants (lower energy than English stops)
