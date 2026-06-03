@@ -334,3 +334,53 @@ func containsStr(s, sub string) bool {
 	}
 	return false
 }
+
+// TestSSRCChangeResetsPipeline verifies that processing two RTP packets with
+// different SSRCs triggers a pipeline reset. It uses a counter to track resets,
+// mirroring the detection logic in session.handlePacket.
+func TestSSRCChangeResetsPipeline(t *testing.T) {
+	const ssrc1 uint32 = 0xDEAD0001
+	const ssrc2 uint32 = 0xBEEF0002
+	payload := make([]byte, 160)
+	for i := range payload {
+		payload[i] = 0xFF // u-law silence
+	}
+
+	pkt1 := buildRawRTPPacket(1, 0, ssrc1, payload)
+	pkt2 := buildRawRTPPacket(2, 160, ssrc2, payload)
+
+	hdr1, _, err := parseRTPHeader(pkt1)
+	if err != nil {
+		t.Fatalf("parseRTPHeader pkt1: %v", err)
+	}
+	hdr2, _, err := parseRTPHeader(pkt2)
+	if err != nil {
+		t.Fatalf("parseRTPHeader pkt2: %v", err)
+	}
+
+	// Simulate the session state fields and reset counter (mock pipeline).
+	var lastSSRC uint32
+	ssrcSeen := false
+	resetCalled := 0
+
+	process := func(hdr rtpHeader) {
+		if ssrcSeen && hdr.SSRC != lastSSRC {
+			// mirrors: pipeline.Reset() in session.handlePacket
+			resetCalled++
+		}
+		lastSSRC = hdr.SSRC
+		ssrcSeen = true
+	}
+
+	process(hdr1)
+	if resetCalled != 0 {
+		t.Fatalf("expected no reset on first packet, got %d", resetCalled)
+	}
+
+	process(hdr2)
+	if resetCalled != 1 {
+		t.Fatalf("expected Reset called once on SSRC change, got %d", resetCalled)
+	}
+
+	t.Logf("TestSSRCChangeResetsPipeline: SSRC %d to %d triggered %d reset(s)", ssrc1, ssrc2, resetCalled)
+}

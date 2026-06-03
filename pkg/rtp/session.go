@@ -254,10 +254,7 @@ func (s *Session) handlePacket(raw []byte) error {
 
 	// Detect SSRC change (new call leg)
 	if s.ssrcSet && header.SSRC != s.currentSSRC {
-		s.logger.Info("SSRC changed — resetting session",
-			zap.Uint32("old_ssrc", s.currentSSRC),
-			zap.Uint32("new_ssrc", header.SSRC),
-		)
+		s.logger.Info(fmt.Sprintf("SSRC changed: %d → %d, pipeline reset", s.currentSSRC, header.SSRC))
 		s.jitter.Reset()
 		s.pipeline.Reset()
 	}
