@@ -348,3 +348,36 @@
 ### Metrics
 - Test packages: 10 | All green with -race
 - Audio coverage: 87.2% | SIP coverage: 75.0%
+
+## 2026-06-03 (Days 17 & 18 — Indian Telephony Band-Awareness + Future-Proof Wideband)
+
+**Agents run:** Audio, RTP, SDK, SIP, Engineering Lead
+**Build:** passing | **Tests:** 10 packages green (-race) | **Race detector:** clean
+
+### Problem addressed
+Indian PSTN is exclusively narrowband 8kHz (G.711 µ-law PCMU / A-law PCMA). Wideband (G.722, 16kHz) and fullband (Opus, 48kHz) exist in VoIP. The SDK was previously hardcoded to assume 8kHz input with a fixed 8k→16k resample — broken for wideband inputs and not future-proof.
+
+### G.722 RTP quirk (RFC 3551)
+G.722 declares `a=rtpmap:9 G722/8000` in SDP but the actual audio is 16kHz wideband. This historic RFC bug is now correctly handled at every layer (RTP auto-detection, SDP parsing, band mapping).
+
+### Changes
+- pkg/audio/band.go (NEW): BandMode enum — BandNarrow(8kHz), BandWide(16kHz), BandSuperWide(32kHz), BandFull(48kHz); SampleRate()/String()/BandFromSampleRate()/BandFromRTPPayloadType(); RTPPayloadBand map covering PT 0/8 (NB), PT 9 (WB, G.722 quirk), PT 111/110 (Opus FB); ProcessorSampleRate=16000 const; NeedsUpsample/NeedsDownsample helpers
+- pkg/audio/band_test.go (NEW): 6 tests — TestBandMode_SampleRate, TestBandFromRTPPayloadType, TestBandFromSampleRate, TestProcessorSampleRate, TestNeedsUpsample, TestNeedsDownsample
+- pkg/audio/pipeline.go: InputSampleRate field in PipelineConfig; adaptive resample path (8k→16k for NB, skip for WB, downsample for SWB/FB, resample back after suppression); inputRate() now falls back to SampleRate then 8000 (fixes regression in existing tests)
+- pkg/rtp/session.go: rtpPayloadInfo map (PT→codec+sampleRate); resolvePayloadType() fills Codec/SampleRate from PT early in NewSession(); passes InputSampleRate to pipeline; QualityReport() now includes Band line
+- pkg/rtp/session_test.go: TestPayloadTypeResolution — PT=0→PCMU/8kHz, PT=8→PCMA/8kHz, PT=9→G722/16kHz, PT=111→Opus/48kHz
+- pkg/sip/sdp.go: BandMode() method on SDPMedia — G.722 correctly returns BandWide despite SDP declaring G722/8000
+- pkg/sip/sdp_test.go (NEW): TestSDPG722BandMode (RFC 3551 quirk), TestSDPPCMUBandMode
+- clearstream.go: IndiaTelephonyConfig() (8kHz, PSTN-tuned VAD, 64 sessions), WidebandConfig() (16kHz, 32 sessions); Validate() checks codec-rate agreement (G722 must be 16kHz, PCMU/PCMA must be 8kHz)
+- clearstream_band_test.go (NEW): TestIndiaTelephonyConfig, TestWidebandConfig, TestValidate_G722MustBe16kHz, TestValidate_PCMUMustBe8kHz
+
+### Metrics
+- Test packages: 10 | All green with -race
+- New test files: 3 (band.go, sdp_test.go, clearstream_band_test.go)
+- Band modes supported: NB (8kHz), WB (16kHz), SWB (32kHz), FB (48kHz)
+- RTP payload types mapped: 0, 3, 7, 8, 9, 15, 18, 96, 97, 110, 111
+
+### Architecture
+- Pipeline InputSampleRate priority: InputSampleRate > SampleRate > 8000 (PSTN safe default)
+- G.722 quirk handled at 3 layers: RTP PT map, SDP BandMode(), band.go RTPPayloadBand
+- Suppressor always operates at 16kHz; resampling is transparent to callers

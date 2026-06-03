@@ -106,13 +106,16 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 	}
 }
 
-// inputRate returns the effective input sample rate, defaulting to 8000 for
-// backward compatibility with narrowband Indian PSTN callers.
+// inputRate returns the effective input sample rate.
+// Priority: InputSampleRate > SampleRate > 8000 (narrowband fallback for Indian PSTN).
 func (p *Pipeline) inputRate() int {
-	if p.cfg.InputSampleRate <= 0 {
-		return 8000
+	if p.cfg.InputSampleRate > 0 {
+		return p.cfg.InputSampleRate
 	}
-	return p.cfg.InputSampleRate
+	if p.cfg.SampleRate > 0 {
+		return p.cfg.SampleRate
+	}
+	return 8000 // safe narrowband fallback (Indian PSTN: G.711 µ-law/A-law)
 }
 
 // ProcessFrames reads all available complete frames from in, runs suppression,
