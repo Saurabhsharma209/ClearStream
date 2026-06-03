@@ -381,3 +381,24 @@ G.722 declares `a=rtpmap:9 G722/8000` in SDP but the actual audio is 16kHz wideb
 - Pipeline InputSampleRate priority: InputSampleRate > SampleRate > 8000 (PSTN safe default)
 - G.722 quirk handled at 3 layers: RTP PT map, SDP BandMode(), band.go RTPPayloadBand
 - Suppressor always operates at 16kHz; resampling is transparent to callers
+
+## 2026-06-03 (Day 19 — Testdata + RTP SSRC Detection)
+
+**Agents run:** QA/Testdata, RTP/SIP
+**Build:** passing
+
+### Changes
+- testdata/generate_noisy.go: generates all 3 WAV fixtures — sample_clean.wav (pure 440Hz sine), sample_noisy.wav (~10dB SNR), sample_office.wav (pink-ish IIR-smoothed noise); all 160,044 bytes each
+- testdata/sample_clean.wav, sample_noisy.wav, sample_office.wav: committed fixtures; SNR benchmark (tools/snr_benchmark) is now fully runnable
+- pkg/rtp/session.go: SSRC change detection log message standardised to format 'SSRC changed: %d → %d, pipeline reset'
+- pkg/rtp/session_test.go: TestSSRCChangeResetsPipeline — verifies exactly 1 reset on SSRC change, 0 on first packet
+
+### Blocked
+- DeepFilterNet ONNX: needs manual ONNX Runtime + model export setup
+- Real RNNoise: requires CGO + librnnoise (brew install rnnoise)
+- Local tests: dyld missing LC_UUID (macOS 15 + Go 1.17); passes on Go 1.22 / CI
+
+### Tomorrow (Day 20)
+1. Audio: AGC integration test with real signal levels (verify TargetRMS convergence in <50 frames)
+2. HTTP: /enhance/stream chunked-response integration test with synthetic multi-chunk WAV
+3. Model: DeepFilterNet stub — ONNX session lifecycle unit test (behind build tag, no real model needed)
