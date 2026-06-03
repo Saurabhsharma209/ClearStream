@@ -40,11 +40,21 @@ type PipelineConfig struct {
 	// floor over the first 500ms of audio. Set VAD explicitly to override.
 	UseAdaptiveVAD bool
 
+	// Diarizer is an optional speaker diarization engine.
+	// When set, each frame's speaker label is tracked alongside suppression.
+	// Use NewEnergyDiarizer(DefaultEnergyDiarizerConfig()) for energy-based diarization.
+	Diarizer Diarizer
+
 	// AGC is optional Automatic Gain Control applied after noise suppression.
 	// When set, the pipeline adaptively adjusts output level toward AGC.TargetRMS.
 	// Use DefaultAGCConfig() as a starting point for telephony calls.
 	// Set to nil to disable (default).
 	AGC *AGCConfig
+
+	// AEC is optional Acoustic Echo Cancellation applied before VAD and suppression.
+	// Feed the far-end reference signal via Pipeline.SetFarEnd() before each ProcessFrames call.
+	// Set to nil to disable (default).
+	AEC *AECConfig
 
 	// InputSampleRate is the sample rate of incoming PCM audio in Hz.
 	// When 0, defaults to 8000 (narrowband, backward-compatible with Indian PSTN).
@@ -73,6 +83,12 @@ type Pipeline struct {
 	agc    *AGC
 	logger *zap.Logger
 
+	aec      *AEC
+	farEnd   []int16 // far-end reference for AEC (set by SetFarEnd)
+	farEndMu sync.Mutex
+
+	diarizer Diarizer
+
 	statsMu          sync.Mutex
 	framesProcessed  uint64
 	framesSuppressed uint64
@@ -97,11 +113,20 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 		}
 		agc = NewAGC(agcCfg)
 	}
+	var aec *AEC
+	if cfg.AEC != nil {
+		aecCfg := *cfg.AEC
+		if aecCfg.SampleRate == 0 {
+			aecCfg.SampleRate = cfg.SampleRate
+		}
+		aec = NewAEC(aecCfg)
+	}
 	return &Pipeline{
 		cfg:    cfg,
 		buf:    make([]byte, 0, FrameSizeBytes*4),
 		vad:    vad,
 		agc:    agc,
+		aec:    aec,
 		logger: cfg.Logger,
 	}
 }
@@ -163,6 +188,14 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 			}
 		}
 
+		// AEC: cancel echo from near-end using far-end reference
+		if p.aec != nil {
+			p.farEndMu.Lock()
+			fe := p.farEnd
+			p.farEndMu.Unlock()
+			processSamples = p.aec.Process(fe, processSamples)
+		}
+
 		var cleaned []int16
 		usedSuppressor := false
 		if p.vad != nil && !p.vad.IsSpeech(processSamples) {
@@ -190,6 +223,10 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 			if err != nil {
 				return fmt.Errorf("pipeline: resample output %d→%d: %w", ProcessorSampleRate, inRate, err)
 			}
+		}
+
+		if p.diarizer != nil {
+			p.diarizer.ProcessFrame(outSamples, time.Now().UnixMilli())
 		}
 
 		elapsed := time.Since(start).Seconds() * 1000
@@ -270,12 +307,24 @@ func (p *Pipeline) Reset() {
 	if p.agc != nil {
 		p.agc.Reset()
 	}
+	if p.aec != nil {
+		p.aec.Reset()
+	}
 	p.statsMu.Lock()
 	p.framesProcessed = 0
 	p.framesSuppressed = 0
 	p.framesSilent = 0
 	p.latencyEMA = 0
 	p.statsMu.Unlock()
+}
+
+// SetFarEnd provides the far-end reference signal for AEC.
+// Call this with the decoded far-end PCM before each ProcessFrames call.
+// Thread-safe.
+func (p *Pipeline) SetFarEnd(samples []int16) {
+	p.farEndMu.Lock()
+	p.farEnd = samples
+	p.farEndMu.Unlock()
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -296,4 +345,12 @@ func int16ToBytes(s []int16) []byte {
 		out[2*i+1] = byte(v >> 8)
 	}
 	return out
+}
+
+// DiarizationSegments returns all completed speaker segments if a Diarizer is configured.
+func (p *Pipeline) DiarizationSegments() []DiarizedSegment {
+	if p.diarizer == nil {
+		return nil
+	}
+	return p.diarizer.Segments()
 }
