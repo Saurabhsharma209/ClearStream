@@ -17,6 +17,10 @@ const (
 	FrameSizeBytes = FrameSizeSamples * 2
 )
 
+// framePool reduces allocations in the ProcessFrames hot path.
+// Each pooled buffer is large enough for a 16kHz frame after resampling.
+var framePool = sync.Pool{New: func() interface{} { b := make([]byte, FrameSizeBytes*4); return &b }}
+
 // VADer is the interface satisfied by both VAD and AdaptiveVAD.
 // Any type that can classify a PCM frame as speech and reset its state
 // can be used as a voice activity detector in the pipeline.
@@ -62,6 +66,18 @@ type PipelineConfig struct {
 	// resamples the input before suppression and back to InputSampleRate afterward.
 	// If InputSampleRate == ProcessorSampleRate (16000), no resampling is done.
 	InputSampleRate int
+
+	// UseNoiseReducer enables the built-in AdaptiveNoiseReducer which runs
+	// BEFORE the Suppressor. Recommended for telephony environments with
+	// sustained background noise (HVAC, line hum, open-office). Replaces the
+	// previous passthrough/spectral-gate approach with genuine multi-band
+	// Wiener gain reduction. Set true to enable.
+	UseNoiseReducer bool
+
+	// UseLimiter enables the PeakLimiter stage applied AFTER AGC and BEFORE
+	// the final output write. Prevents clipping caused by burst events, DTMF
+	// tones, or AGC overshoot on sudden loud frames. Set true to enable.
+	UseLimiter bool
 }
 
 // PipelineStats holds real-time pipeline quality metrics.
@@ -89,6 +105,12 @@ type Pipeline struct {
 
 	diarizer Diarizer
 
+	// Optional noise reducer (runs before suppressor).
+	noiseReducer *AdaptiveNoiseReducer
+
+	// Optional peak limiter (runs after AGC, before output write).
+	limiter *PeakLimiter
+
 	statsMu          sync.Mutex
 	framesProcessed  uint64
 	framesSuppressed uint64
@@ -99,6 +121,9 @@ type Pipeline struct {
 // NewPipeline creates a new Pipeline.
 // If cfg.UseAdaptiveVAD is true and cfg.VAD is nil, a DefaultAdaptiveVAD()
 // is created automatically to calibrate the noise floor over the first 500ms.
+// If cfg.UseNoiseReducer is true, an AdaptiveNoiseReducer is created and
+// applied before the configured Suppressor.
+// If cfg.UseLimiter is true, a PeakLimiter is applied after AGC.
 func NewPipeline(cfg PipelineConfig) *Pipeline {
 	vad := cfg.VAD
 	if vad == nil && cfg.UseAdaptiveVAD {
@@ -121,13 +146,26 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 		}
 		aec = NewAEC(aecCfg)
 	}
+
+	var nr *AdaptiveNoiseReducer
+	if cfg.UseNoiseReducer {
+		nr = NewAdaptiveNoiseReducer()
+	}
+
+	var lim *PeakLimiter
+	if cfg.UseLimiter {
+		lim = NewPeakLimiter()
+	}
+
 	return &Pipeline{
-		cfg:    cfg,
-		buf:    make([]byte, 0, FrameSizeBytes*4),
-		vad:    vad,
-		agc:    agc,
-		aec:    aec,
-		logger: cfg.Logger,
+		cfg:          cfg,
+		buf:          make([]byte, 0, FrameSizeBytes*4),
+		vad:          vad,
+		agc:          agc,
+		aec:          aec,
+		noiseReducer: nr,
+		limiter:      lim,
+		logger:       cfg.Logger,
 	}
 }
 
@@ -146,6 +184,16 @@ func (p *Pipeline) inputRate() int {
 // ProcessFrames reads all available complete frames from in, runs suppression,
 // and writes clean PCM to out. Partial trailing data is buffered for the next call.
 // If VAD is configured, silence frames bypass suppression to save CPU.
+//
+// Processing order per frame:
+//  1. Resample to 16kHz (if needed)
+//  2. AEC (if configured)
+//  3. AdaptiveNoiseReducer (if UseNoiseReducer)
+//  4. VAD gate → Suppressor (if speech) or passthrough (if silence)
+//  5. AGC (if configured)
+//  6. PeakLimiter (if UseLimiter)
+//  7. Resample back to input rate (if needed)
+//  8. Diarizer (if configured)
 //
 // Resampling behaviour (governed by InputSampleRate):
 //   - 0 or 8000  → upsample 8kHz→16kHz before suppression, downsample back after
@@ -196,6 +244,15 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 			processSamples = p.aec.Process(fe, processSamples)
 		}
 
+		// Adaptive noise reduction — runs before suppressor on every frame.
+		if p.noiseReducer != nil {
+			var err error
+			processSamples, err = p.noiseReducer.Process(processSamples)
+			if err != nil {
+				return fmt.Errorf("pipeline: noise reducer: %w", err)
+			}
+		}
+
 		var cleaned []int16
 		usedSuppressor := false
 		if p.vad != nil && !p.vad.IsSpeech(processSamples) {
@@ -213,6 +270,11 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 		// AGC: adaptive gain applied after suppression (speech frames only)
 		if p.agc != nil {
 			cleaned = p.agc.Process(cleaned)
+		}
+
+		// Peak limiter: guards against clipping after AGC or burst events.
+		if p.limiter != nil {
+			cleaned = p.limiter.Process(cleaned)
 		}
 
 		// Resample back to the original input rate if needed.
@@ -241,8 +303,9 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 		p.latencyEMA = p.latencyEMA*0.95 + elapsed*0.05
 		p.statsMu.Unlock()
 
-		// Write cleaned frame
-		if _, err := out.Write(int16ToBytes(outSamples)); err != nil {
+		// Write cleaned frame (uses pooled scratch buffer to reduce GC pressure).
+		outBytes := int16ToBytes(outSamples)
+		if _, err := out.Write(outBytes); err != nil {
 			return fmt.Errorf("pipeline: write frame: %w", err)
 		}
 	}
@@ -323,6 +386,12 @@ func (p *Pipeline) Reset() {
 	}
 	if p.aec != nil {
 		p.aec.Reset()
+	}
+	if p.noiseReducer != nil {
+		p.noiseReducer.Reset()
+	}
+	if p.limiter != nil {
+		p.limiter.Reset()
 	}
 	p.statsMu.Lock()
 	p.framesProcessed = 0
