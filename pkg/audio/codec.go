@@ -3,9 +3,11 @@
 package audio
 
 import (
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -114,41 +116,82 @@ func probeViaFFmpeg(ffmpegPath, filePath string) (*MediaInfo, error) {
 	return parseFFmpegInfo(string(stderr), filePath)
 }
 
-// parseFFprobeJSON parses ffprobe JSON output into MediaInfo.
+// ffprobeOutput is the top-level structure returned by ffprobe -print_format json.
+type ffprobeOutput struct {
+	Streams []ffprobeStream `json:"streams"`
+	Format  ffprobeFormat   `json:"format"`
+}
+
+// ffprobeStream represents one stream entry in ffprobe JSON output.
+// Note: sample_rate and bit_rate are strings in ffprobe output.
+type ffprobeStream struct {
+	CodecType  string `json:"codec_type"`
+	CodecName  string `json:"codec_name"`
+	SampleRate string `json:"sample_rate"` // e.g. "44100"
+	Channels   int    `json:"channels"`
+	Duration   string `json:"duration"` // e.g. "3.502000"
+	BitRate    string `json:"bit_rate"` // e.g. "128000"
+}
+
+// ffprobeFormat represents the format/container section of ffprobe JSON output.
+type ffprobeFormat struct {
+	FormatName string `json:"format_name"` // e.g. "wav" or "mov,mp4,m4a,3gp,3g2,mj2"
+	Duration   string `json:"duration"`    // e.g. "3.502000"
+	BitRate    string `json:"bit_rate"`
+}
+
+// parseFFprobeJSON parses ffprobe JSON output into MediaInfo using encoding/json.
 func parseFFprobeJSON(data []byte, filePath string) (*MediaInfo, error) {
-	// Lightweight manual parse to avoid json import cycles in this layer.
-	// For production, use encoding/json.
+	var probe ffprobeOutput
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return nil, fmt.Errorf("parseFFprobeJSON: unmarshal: %w", err)
+	}
+
 	info := &MediaInfo{
 		ContainerFormat: strings.TrimPrefix(filepath.Ext(filePath), "."),
+		Channels:        1, // safe default
 	}
 
-	s := string(data)
-
-	// Detect video stream
-	if strings.Contains(s, `"codec_type": "video"`) {
-		info.HasVideo = true
-		info.VideoCodec = extractJSONField(s, "codec_name", "video")
+	// Infer container from format_name when extension is ambiguous.
+	if probe.Format.FormatName != "" {
+		// format_name may be a comma-separated list (e.g. "mov,mp4,m4a,3gp,3g2,mj2");
+		// take the first entry as the canonical name.
+		info.ContainerFormat = strings.SplitN(probe.Format.FormatName, ",", 2)[0]
 	}
 
-	// Detect audio codec
-	audioCodecStr := extractJSONField(s, "codec_name", "audio")
-	info.AudioCodec = normalizeCodec(audioCodecStr)
+	// Parse duration from format block first (most reliable source).
+	if d, err := strconv.ParseFloat(probe.Format.Duration, 64); err == nil && d > 0 {
+		info.DurationSec = d
+	}
 
-	// Sample rate
-	srStr := extractJSONField(s, "sample_rate", "audio")
-	fmt.Sscanf(srStr, "%d", &info.SampleRate)
+	for _, s := range probe.Streams {
+		switch s.CodecType {
+		case "audio":
+			info.AudioCodec = normalizeCodec(s.CodecName)
+			if s.Channels > 0 {
+				info.Channels = s.Channels
+			}
+			if sr, err := strconv.Atoi(s.SampleRate); err == nil && sr > 0 {
+				info.SampleRate = sr
+			}
+			// Use stream duration as fallback when format duration is missing.
+			if info.DurationSec == 0 {
+				if d, err := strconv.ParseFloat(s.Duration, 64); err == nil {
+					info.DurationSec = d
+				}
+			}
+			if br, err := strconv.Atoi(s.BitRate); err == nil {
+				info.BitRate = br / 1000 // convert bps → kbps
+			}
+		case "video":
+			info.HasVideo = true
+			info.VideoCodec = s.CodecName
+		}
+	}
+
 	if info.SampleRate == 0 {
 		info.SampleRate = info.AudioCodec.NativeSampleRate()
 	}
-
-	// Channels
-	fmt.Sscanf(extractJSONField(s, "channels", "audio"), "%d", &info.Channels)
-	if info.Channels == 0 {
-		info.Channels = 1
-	}
-
-	// Duration
-	fmt.Sscanf(extractJSONField(s, "duration", ""), "%f", &info.DurationSec)
 
 	return info, nil
 }
@@ -239,37 +282,4 @@ func normalizeCodec(name string) Codec {
 	default:
 		return CodecUnknown
 	}
-}
-
-// extractJSONField is a minimal field extractor for ffprobe JSON output.
-// It finds the first occurrence of `"key": "value"` near the streamType context.
-func extractJSONField(s, key, streamType string) string {
-	target := fmt.Sprintf(`"%s": "`, key)
-	searchIn := s
-	if streamType != "" {
-		// Find the block containing the stream type
-		marker := fmt.Sprintf(`"codec_type": "%s"`, streamType)
-		if idx := strings.Index(s, marker); idx >= 0 {
-			// Look in a window around the marker
-			start := idx - 500
-			if start < 0 {
-				start = 0
-			}
-			end := idx + 500
-			if end > len(s) {
-				end = len(s)
-			}
-			searchIn = s[start:end]
-		}
-	}
-	idx := strings.Index(searchIn, target)
-	if idx < 0 {
-		return ""
-	}
-	rest := searchIn[idx+len(target):]
-	end := strings.Index(rest, `"`)
-	if end < 0 {
-		return ""
-	}
-	return rest[:end]
 }

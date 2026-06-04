@@ -143,7 +143,7 @@ func TestParseFFprobeJSON(t *testing.T) {
       "codec_type": "audio",
       "codec_name": "opus",
       "sample_rate": "48000",
-      "channels": "2",
+      "channels": 2,
       "duration": "10.5"
     }
   ],
@@ -186,7 +186,7 @@ func TestParseFFprobeJSONWithVideo(t *testing.T) {
       "codec_type": "audio",
       "codec_name": "aac",
       "sample_rate": "44100",
-      "channels": "2"
+      "channels": 2
     }
   ]
 }`
@@ -301,31 +301,48 @@ func TestParseFFmpegInfoVideo(t *testing.T) {
 	}
 }
 
-func TestExtractJSONField(t *testing.T) {
-	json := `{"codec_type": "audio", "codec_name": "opus", "sample_rate": "48000"}`
+// TestParseFFprobeJSONFields verifies that parseFFprobeJSON correctly extracts
+// codec, sample rate, channels, duration, and bitrate from well-formed JSON.
+// (Replaces the former TestExtractJSONField which tested the removed extractJSONField helper.)
+func TestParseFFprobeJSONFields(t *testing.T) {
+	jsonData := []byte(`{
+  "streams": [
+    {
+      "codec_type": "audio",
+      "codec_name": "opus",
+      "sample_rate": "48000",
+      "channels": 2,
+      "bit_rate": "64000"
+    }
+  ],
+  "format": {
+    "format_name": "ogg",
+    "duration": "3.500000"
+  }
+}`)
 
-	// With streamType filter
-	got := extractJSONField(json, "codec_name", "audio")
-	if got != "opus" {
-		t.Errorf("extractJSONField(codec_name, audio) = %q, want %q", got, "opus")
+	info, err := parseFFprobeJSON(jsonData, "test.ogg")
+	if err != nil {
+		t.Fatalf("parseFFprobeJSON error: %v", err)
 	}
-
-	// Without streamType filter
-	got = extractJSONField(json, "sample_rate", "")
-	if got != "48000" {
-		t.Errorf("extractJSONField(sample_rate, '') = %q, want %q", got, "48000")
+	if info.AudioCodec != CodecOpus {
+		t.Errorf("AudioCodec = %q, want opus", info.AudioCodec)
 	}
-
-	// Missing field
-	got = extractJSONField(json, "nonexistent", "")
-	if got != "" {
-		t.Errorf("extractJSONField(nonexistent) = %q, want empty string", got)
+	if info.SampleRate != 48000 {
+		t.Errorf("SampleRate = %d, want 48000", info.SampleRate)
 	}
-
-	// streamType not found → fallback to full string search
-	got = extractJSONField(json, "codec_name", "video")
-	// codec_type video not present, so falls back to full string
-	_ = got // result depends on fallback behavior; just ensure no panic
+	if info.Channels != 2 {
+		t.Errorf("Channels = %d, want 2", info.Channels)
+	}
+	if info.BitRate != 64 {
+		t.Errorf("BitRate = %d kbps, want 64", info.BitRate)
+	}
+	if info.DurationSec < 3.49 || info.DurationSec > 3.51 {
+		t.Errorf("DurationSec = %f, want ~3.5", info.DurationSec)
+	}
+	if info.ContainerFormat != "ogg" {
+		t.Errorf("ContainerFormat = %q, want ogg", info.ContainerFormat)
+	}
 }
 
 // ── diarize helpers ──────────────────────────────────────────────────────────
