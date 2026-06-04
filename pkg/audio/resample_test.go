@@ -186,3 +186,128 @@ func computeSNR(samples []int16, freq, sampleRate float64) float64 {
 	}
 	return 10 * math.Log10(sigPower/noisePower)
 }
+
+// TestPipelineResetStats verifies that ResetStats clears counters without
+// affecting the audio processing state (VAD, AGC, suppressor stay warm).
+func TestPipelineResetStats(t *testing.T) {
+	p := NewPipeline(PipelineConfig{
+		SampleRate: 16000,
+		Channels:   1,
+		Suppressor: &passthroughSuppressor{},
+	})
+
+	// Push 5 frames of signal through
+	frame := make([]byte, FrameSizeBytes)
+	for i := 0; i < FrameSizeSamples; i++ {
+		v := int16(1000)
+		frame[2*i] = byte(v)
+		frame[2*i+1] = byte(v >> 8)
+	}
+	var sink resampleNopWriter
+	for i := 0; i < 5; i++ {
+		if err := p.ProcessFrames(frame, &sink); err != nil {
+			t.Fatalf("ProcessFrames: %v", err)
+		}
+	}
+
+	before := p.Stats()
+	if before.FramesProcessed != 5 {
+		t.Errorf("expected 5 frames before reset, got %d", before.FramesProcessed)
+	}
+
+	p.ResetStats()
+
+	after := p.Stats()
+	if after.FramesProcessed != 0 {
+		t.Errorf("expected 0 frames after ResetStats, got %d", after.FramesProcessed)
+	}
+	if after.AvgLatencyMs != 0 {
+		t.Errorf("expected 0 latency EMA after ResetStats, got %.4f", after.AvgLatencyMs)
+	}
+
+	// Audio state should still work — process one more frame without error
+	if err := p.ProcessFrames(frame, &sink); err != nil {
+		t.Errorf("ProcessFrames after ResetStats error: %v", err)
+	}
+	afterProcess := p.Stats()
+	if afterProcess.FramesProcessed != 1 {
+		t.Errorf("expected 1 frame after post-reset process, got %d", afterProcess.FramesProcessed)
+	}
+	t.Logf("ResetStats OK: before=%d frames → reset → after=%d frames", before.FramesProcessed, afterProcess.FramesProcessed)
+}
+
+// BenchmarkKaiserFIRUpsample2x measures throughput of the 8kHz→16kHz Kaiser
+// FIR path. At 16kHz/160 samples per frame = 100 frames/sec real-time;
+// this benchmark should show >>10,000 frames/sec (>100× real-time headroom).
+func BenchmarkKaiserFIRUpsample2x(b *testing.B) {
+	// 160 samples of 440 Hz sine at 8kHz
+	src := make([]int16, 160)
+	for i := range src {
+		src[i] = int16(16000 * math.Sin(2*math.Pi*440*float64(i)/8000))
+	}
+	b.ResetTimer()
+	b.SetBytes(int64(len(src) * 2))
+	for i := 0; i < b.N; i++ {
+		out, err := Resample(src, 8000, 16000)
+		if err != nil || len(out) != 320 {
+			b.Fatalf("Resample error: %v len=%d", err, len(out))
+		}
+	}
+}
+
+// BenchmarkLinearResample measures the linear interpolation fallback path
+// for a non-2x ratio (8kHz→24kHz) so we can compare against Kaiser.
+func BenchmarkLinearResample(b *testing.B) {
+	src := make([]int16, 160)
+	for i := range src {
+		src[i] = int16(16000 * math.Sin(2*math.Pi*440*float64(i)/8000))
+	}
+	b.ResetTimer()
+	b.SetBytes(int64(len(src) * 2))
+	for i := 0; i < b.N; i++ {
+		out, err := Resample(src, 8000, 24000)
+		if err != nil || len(out) == 0 {
+			b.Fatalf("Resample error: %v len=%d", err, len(out))
+		}
+	}
+}
+
+// TestKaiserFIRMinSNR is a hard regression guard: Kaiser 8k→16k SNR must
+// exceed 60 dB. If a code change accidentally degrades the filter, this fails.
+func TestKaiserFIRMinSNR(t *testing.T) {
+	const minSNR = 60.0
+	freq := 440.0
+	n := 1600 // 200ms @ 8kHz — long enough for stable SNR measurement
+
+	src := make([]int16, n)
+	for i := range src {
+		src[i] = int16(16000 * math.Sin(2*math.Pi*freq*float64(i)/8000))
+	}
+	out, err := Resample(src, 8000, 16000)
+	if err != nil {
+		t.Fatalf("Resample: %v", err)
+	}
+	snr := computeSNR(out, freq, 16000)
+	t.Logf("Kaiser FIR SNR = %.2f dB (min=%.0f dB)", snr, minSNR)
+	if snr < minSNR {
+		t.Errorf("Kaiser FIR SNR %.2f dB below minimum %.0f dB — filter quality regression", snr, minSNR)
+	}
+}
+
+// ── helpers used by Day-21 tests ─────────────────────────────────────────────
+
+// resampleNopWriter is a package-unique name to avoid conflict with diarize_test.go's nopWriter.
+type resampleNopWriter struct{}
+
+func (resampleNopWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+type passthroughSuppressor struct{}
+
+func (p *passthroughSuppressor) Process(s []int16) ([]int16, error) {
+	out := make([]int16, len(s))
+	copy(out, s)
+	return out, nil
+}
+func (p *passthroughSuppressor) Reset()       {}
+func (p *passthroughSuppressor) Close() error { return nil }
+func (p *passthroughSuppressor) Name() string { return "passthrough" }

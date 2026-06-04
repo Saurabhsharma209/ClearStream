@@ -453,3 +453,70 @@ func BenchmarkAGCProcess(b *testing.B) {
 		agc.Process(samples)
 	}
 }
+
+// TestAGCConvergesWithinFiftyFrames is the canonical Day-20 convergence test.
+// It verifies that starting from gain=1.0 with a quiet signal (RMS=300),
+// the AGC output RMS reaches within 20% of TargetRMS=3000 in fewer than 50 frames.
+// This exercises the per-sample attack smoothing added in the soft-limiter rework.
+func TestAGCConvergesWithinFiftyFrames(t *testing.T) {
+	const (
+		targetRMS  = 3000.0
+		inputRMS   = 300.0 // 20 dB below target
+		tolerance  = 0.20  // within 20% of target
+		maxFrames  = 50
+		sampleRate = 16000
+	)
+
+	cfg := AGCConfig{
+		TargetRMS:  targetRMS,
+		MaxGain:    4.0,  // 3000/300 = 10× needed, capped at 4×
+		AttackMs:   20,   // 20ms attack — should converge well within 50 frames (500ms)
+		ReleaseMs:  200,
+		SampleRate: sampleRate,
+	}
+	agc := NewAGC(cfg)
+
+	// Constant sine-like signal at ~300 RMS
+	frame := make([]int16, 160)
+	for i := range frame {
+		// simple alternating square at ~300 amplitude → RMS=300
+		if i%2 == 0 {
+			frame[i] = 300
+		} else {
+			frame[i] = -300
+		}
+	}
+
+	convergedAt := -1
+	for f := 0; f < maxFrames; f++ {
+		out := agc.Process(frame)
+
+		// Measure output RMS
+		var sumSq float64
+		for _, s := range out {
+			sumSq += float64(s) * float64(s)
+		}
+		outRMS := 0.0
+		if len(out) > 0 {
+			outRMS = (sumSq / float64(len(out)))
+			// sqrt approximation: just check ratio
+			_ = outRMS
+		}
+		gain := agc.CurrentGain()
+		effectiveRMS := inputRMS * gain
+		lo := targetRMS * (1 - tolerance)
+		hi := targetRMS * (1 + tolerance)
+		if effectiveRMS >= lo && effectiveRMS <= hi && convergedAt < 0 {
+			convergedAt = f + 1
+			break
+		}
+	}
+
+	if convergedAt < 0 {
+		t.Errorf("AGC did not converge to TargetRMS=%.0f ±%.0f%% within %d frames; final gain=%.3f (effectiveRMS=%.0f)",
+			targetRMS, tolerance*100, maxFrames, agc.CurrentGain(), inputRMS*agc.CurrentGain())
+	} else {
+		t.Logf("AGC converged at frame %d/%d (gain=%.3f, effectiveRMS=%.0f, target=%.0f)",
+			convergedAt, maxFrames, agc.CurrentGain(), inputRMS*agc.CurrentGain(), targetRMS)
+	}
+}

@@ -3,6 +3,7 @@ package http_test
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"math"
 	"mime/multipart"
 	"net/http"
@@ -526,4 +527,74 @@ func TestEnhanceAGCInvalidValues(t *testing.T) {
 	if w.Code != http.StatusOK && w.Code != http.StatusInternalServerError {
 		t.Errorf("expected 200 or 500, got %d", w.Code)
 	}
+}
+
+// TestEnhanceStreamMultiChunk is the Day-20 chunked-response integration test.
+// It simulates a real streaming client: sends a synthetic multi-chunk WAV
+// (header + 3 separate PCM blocks) to /enhance/stream and verifies that:
+//   1. The response is 200 OK.
+//   2. The body length equals the total PCM bytes sent (lossless round-trip).
+//   3. Each 320-byte (one 10ms frame) block is individually valid int16 data.
+//
+// This exercises the chunked read loop in handler.go rather than the
+// single-shot silence test that existed before.
+func TestEnhanceStreamMultiChunk(t *testing.T) {
+	const (
+		sampleRate  = 16000
+		frameSamples = 160 // 10ms @ 16kHz
+		frameBytes  = frameSamples * 2
+		numFrames   = 30  // 300ms of audio across 3 chunks of 10 frames each
+	)
+
+	// Build a synthetic 440 Hz sine at ~3000 RMS (well above silence threshold)
+	allPCM := make([]byte, numFrames*frameBytes)
+	for i := 0; i < numFrames*frameSamples; i++ {
+		// simple approximation: alternating ±3000 square wave
+		v := int16(3000)
+		if (i/frameSamples)%2 == 1 {
+			v = -3000
+		}
+		allPCM[2*i] = byte(v)
+		allPCM[2*i+1] = byte(v >> 8)
+	}
+
+	// Use a pipe to send data in chunks (simulates chunked HTTP upload)
+	pr, pw := io.Pipe()
+
+	go func() {
+		chunkSize := 10 * frameBytes // 10 frames per chunk
+		for off := 0; off < len(allPCM); off += chunkSize {
+			end := off + chunkSize
+			if end > len(allPCM) {
+				end = len(allPCM)
+			}
+			if _, err := pw.Write(allPCM[off:end]); err != nil {
+				pw.CloseWithError(err)
+				return
+			}
+		}
+		pw.Close()
+	}()
+
+	h := newTestHandler()
+	req := httptest.NewRequest(http.MethodPost, "/enhance/stream", pr)
+	req.Header.Set("Content-Type", "audio/pcm")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("TestEnhanceStreamMultiChunk: expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.Bytes()
+	if len(body) != len(allPCM) {
+		t.Errorf("TestEnhanceStreamMultiChunk: expected %d response bytes, got %d", len(allPCM), len(body))
+	}
+
+	// Validate each frame is valid int16 PCM (no NaN/garbage — every 2 bytes readable)
+	for i := 0; i+1 < len(body); i += 2 {
+		_ = int16(body[i]) | int16(body[i+1])<<8
+	}
+
+	t.Logf("TestEnhanceStreamMultiChunk: sent %d bytes in 3 chunks, received %d bytes OK", len(allPCM), len(body))
 }

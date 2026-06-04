@@ -297,6 +297,20 @@ func (p *Pipeline) Stats() PipelineStats {
 	}
 }
 
+// ResetStats clears only the pipeline counters and latency EMA, leaving the
+// audio processing state (VAD, AGC, AEC, suppressor) untouched.
+// Use this for periodic per-interval reporting (e.g. emit metrics every 60s
+// then reset so the next interval starts fresh) without disrupting the call.
+// Thread-safe.
+func (p *Pipeline) ResetStats() {
+	p.statsMu.Lock()
+	p.framesProcessed = 0
+	p.framesSuppressed = 0
+	p.framesSilent = 0
+	p.latencyEMA = 0
+	p.statsMu.Unlock()
+}
+
 // Reset clears internal state (call when starting a new stream/file).
 func (p *Pipeline) Reset() {
 	p.buf = p.buf[:0]
