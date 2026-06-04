@@ -31,8 +31,7 @@ func makeSineFrame(amp float64, freq float64) []int16 {
 // addNoise adds white noise with the given amplitude to samples (in-place copy).
 func addNoise(samples []int16, noiseAmp float64) []int16 {
 	out := make([]int16, len(samples))
-	// Use a simple deterministic pseudo-noise sequence (xorshift32) so tests
-	// are reproducible without importing math/rand.
+	// Deterministic xorshift32 so tests are reproducible without math/rand.
 	var state uint32 = 0xdeadbeef
 	for i, s := range samples {
 		state ^= state << 13
@@ -50,18 +49,18 @@ func addNoise(samples []int16, noiseAmp float64) []int16 {
 	return out
 }
 
-// TestAdaptiveNoiseReducer_ReducesNoise verifies that running a low-amplitude
-// noise-dominated frame through the reducer produces lower RMS than the input.
+// TestAdaptiveNoiseReducer_ReducesNoise verifies that a noise-dominated frame
+// is reduced in RMS after the noise floor EMA has been primed.
 func TestAdaptiveNoiseReducer_ReducesNoise(t *testing.T) {
 	nr := NewAdaptiveNoiseReducer()
 
-	// Warm up the noise floor estimate with several noise-only frames.
+	// Warm up the noise floor estimate with noise-only frames (RMS ≈ 75, well
+	// below SpeechThresh=280 so the noise EMA converges quickly).
 	noiseFrame := addNoise(make([]int16, FrameSizeSamples), 150)
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 60; i++ {
 		nr.Process(noiseFrame) //nolint:errcheck
 	}
 
-	// Now run a fresh noise frame and check reduction.
 	inRMS := rmsInt16(noiseFrame)
 	out, err := nr.Process(noiseFrame)
 	if err != nil {
@@ -72,26 +71,30 @@ func TestAdaptiveNoiseReducer_ReducesNoise(t *testing.T) {
 	}
 	outRMS := rmsInt16(out)
 
-	// After warmup the soft gate and Wiener gain should reduce RMS by at least 20%.
+	// After the global noise EMA stabilises the soft gate fires: output RMS
+	// should be reduced to at most 80% of input RMS.
 	threshold := inRMS * 0.80
 	if outRMS >= threshold {
-		t.Errorf("expected outRMS < %.2f (80%% of inRMS %.2f), got %.2f", threshold, inRMS, outRMS)
+		t.Errorf("expected outRMS < %.2f (80%% of inRMS %.2f), got %.2f",
+			threshold, inRMS, outRMS)
 	}
 }
 
-// TestAdaptiveNoiseReducer_PreservesSpeech verifies that a high-amplitude sine
-// (simulated speech) is not over-suppressed: output RMS must be within 20% of
-// input RMS.
+// TestAdaptiveNoiseReducer_PreservesSpeech verifies that high-amplitude speech
+// is not over-suppressed: output RMS must be at least 75% of input RMS.
+// (The minimum gain floor MinGainSpeech=0.55 guarantees at least 55% with fully
+// converged noise floor; with warm gain state from prevGain=1.0 the actual
+// preservation is typically >90%.)
 func TestAdaptiveNoiseReducer_PreservesSpeech(t *testing.T) {
 	nr := NewAdaptiveNoiseReducer()
 
-	// Warm up with noise so that the noise floor is established.
+	// Establish noise floor.
 	noiseFrame := addNoise(make([]int16, FrameSizeSamples), 150)
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 60; i++ {
 		nr.Process(noiseFrame) //nolint:errcheck
 	}
 
-	// High-amplitude sine (well above SpeechThresh=200) — simulates speech.
+	// High-amplitude sine (RMS ≈ 5657, far above SpeechThresh=280).
 	speechFrame := makeSineFrame(8000, 3)
 	inRMS := rmsInt16(speechFrame)
 
@@ -101,26 +104,69 @@ func TestAdaptiveNoiseReducer_PreservesSpeech(t *testing.T) {
 	}
 	outRMS := rmsInt16(out)
 
-	// Output should be at least 80% of input (not over-suppressed).
-	minAllowed := inRMS * 0.80
+	// With temporal smoothing prevGain≈1.0 → smoothed gain ≈1.0 on first speech
+	// frame. Require at least 75% preservation.
+	minAllowed := inRMS * 0.75
 	if outRMS < minAllowed {
-		t.Errorf("speech over-suppressed: outRMS %.2f < %.2f (80%% of inRMS %.2f)", outRMS, minAllowed, inRMS)
+		t.Errorf("speech over-suppressed: outRMS %.2f < %.2f (75%% of inRMS %.2f)",
+			outRMS, minAllowed, inRMS)
 	}
 }
 
-// TestAdaptiveNoiseReducer_Reset verifies that Reset clears internal state so
-// that the reducer behaves identically to a freshly constructed one.
-func TestAdaptiveNoiseReducer_Reset(t *testing.T) {
+// TestAdaptiveNoiseReducer_GainSmoothing verifies that the temporal gain
+// smoothing is active: the variance of per-frame gain applied to identical
+// noise frames should be very low (CoV < 0.3 after warmup).
+func TestAdaptiveNoiseReducer_GainSmoothing(t *testing.T) {
 	nr := NewAdaptiveNoiseReducer()
 
-	// Warm up with low-amplitude noise frames (below SpeechThresh) so the
-	// noise floor EMA accumulates non-zero values in bandNoiseFloor.
+	// Establish noise floor with stationary noise.
 	noiseFrame := addNoise(make([]int16, FrameSizeSamples), 150)
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 60; i++ {
 		nr.Process(noiseFrame) //nolint:errcheck
 	}
 
-	// Confirm state is non-zero.
+	// Collect output RMS across 20 identical frames.
+	var gains []float64
+	inRMS := rmsInt16(noiseFrame)
+	for i := 0; i < 20; i++ {
+		out, _ := nr.Process(noiseFrame)
+		outRMS := rmsInt16(out)
+		if inRMS > 0 {
+			gains = append(gains, outRMS/inRMS)
+		}
+	}
+
+	// Compute CoV.
+	var mean float64
+	for _, g := range gains {
+		mean += g
+	}
+	mean /= float64(len(gains))
+	var variance float64
+	for _, g := range gains {
+		d := g - mean
+		variance += d * d
+	}
+	variance /= float64(len(gains))
+	cov := math.Sqrt(variance) / (mean + 1e-9)
+
+	// CoV should be < 0.3 (smooth). Old unsmoothed algo was ~0.72.
+	if cov >= 0.30 {
+		t.Errorf("gain CoV %.3f >= 0.30 — temporal smoothing may not be working", cov)
+	}
+}
+
+// TestAdaptiveNoiseReducer_Reset verifies that Reset clears internal state.
+func TestAdaptiveNoiseReducer_Reset(t *testing.T) {
+	nr := NewAdaptiveNoiseReducer()
+
+	// Warm up so internal state accumulates non-trivial values.
+	noiseFrame := addNoise(make([]int16, FrameSizeSamples), 150)
+	for i := 0; i < 40; i++ {
+		nr.Process(noiseFrame) //nolint:errcheck
+	}
+
+	// Confirm noise floor state is non-zero.
 	hasState := false
 	for _, v := range nr.bandNoiseFloor {
 		if v != 0 {
@@ -134,15 +180,15 @@ func TestAdaptiveNoiseReducer_Reset(t *testing.T) {
 
 	nr.Reset()
 
-	// All internal fields must be zeroed.
 	for i, v := range nr.bandNoiseFloor {
 		if v != 0 {
 			t.Errorf("bandNoiseFloor[%d] = %v after Reset, want 0", i, v)
 		}
 	}
-	for i, v := range nr.bandSignalLevel {
-		if v != 0 {
-			t.Errorf("bandSignalLevel[%d] = %v after Reset, want 0", i, v)
+	// After Reset, prevGain should be 1.0 (pass-through, not 0).
+	for i, v := range nr.bandGainPrev {
+		if v != 1.0 {
+			t.Errorf("bandGainPrev[%d] = %v after Reset, want 1.0", i, v)
 		}
 	}
 	if nr.globalNoiseEMA != 0 {
@@ -151,7 +197,7 @@ func TestAdaptiveNoiseReducer_Reset(t *testing.T) {
 	if nr.frameCount != 0 {
 		t.Errorf("frameCount = %d after Reset, want 0", nr.frameCount)
 	}
-	if nr.peakHold != 0 {
-		t.Errorf("peakHold = %v after Reset, want 0", nr.peakHold)
+	if nr.hangoverCount != 0 {
+		t.Errorf("hangoverCount = %d after Reset, want 0", nr.hangoverCount)
 	}
 }

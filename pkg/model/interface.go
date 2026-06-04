@@ -59,6 +59,12 @@ func NewSuppressor(cfg SuppressorConfig) (Suppressor, error) {
 	switch cfg.Backend {
 	case "rnnoise", "":
 		return NewRNNoise()
+	case "rnnoise-onnx":
+		if cfg.ModelPath == "" {
+			return nil, fmt.Errorf("model: rnnoise-onnx requires ModelPath")
+		}
+		logger, _ := zap.NewProduction()
+		return NewRNNoiseONNX(cfg.ModelPath, logger)
 	case "deepfilter":
 		if cfg.ModelPath == "" {
 			return nil, fmt.Errorf("model: deepfilter requires ModelPath")
@@ -68,6 +74,6 @@ func NewSuppressor(cfg SuppressorConfig) (Suppressor, error) {
 	case "passthrough":
 		return NewPassthrough(), nil
 	default:
-		return nil, fmt.Errorf("model: unknown backend %q (valid: rnnoise, deepfilter, passthrough)", cfg.Backend)
+		return nil, fmt.Errorf("model: unknown backend %q (valid: rnnoise, rnnoise-onnx, deepfilter, passthrough)", cfg.Backend)
 	}
 }
