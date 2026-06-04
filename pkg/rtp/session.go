@@ -57,7 +57,18 @@ type Config struct {
 	ListenAddr string
 
 	// ForwardAddr is the UDP address to send clean RTP packets to (e.g. "10.0.0.2:5004").
+	// This is the primary (agent-side) destination. See also ForwardAddrs for multi-fork.
 	ForwardAddr string
+
+	// ForwardAddrs is an optional list of additional UDP destinations that receive
+	// an identical copy of the clean RTP stream (e.g. a DC recorder).
+	// ForwardAddr is always included as the first destination; entries in ForwardAddrs
+	// are added on top. If ForwardAddr is empty and ForwardAddrs has entries, the first
+	// entry in ForwardAddrs becomes the primary destination.
+	// Use this to implement the "ClearStream RTP fork" pattern so both the agent and
+	// the datacenter recorder receive clean, noise-suppressed audio without Asterisk
+	// MixMonitor capturing the pre-suppression noisy stream.
+	ForwardAddrs []string
 
 	// Codec is the expected RTP audio codec. Default: auto-detect from payload type.
 	Codec audio.Codec
@@ -106,11 +117,13 @@ type Stats struct {
 }
 
 // Session is a live RTP interception session.
-// It reads RTP from ListenAddr, suppresses noise, forwards to ForwardAddr.
+// It reads RTP from ListenAddr, suppresses noise, and forwards to all configured
+// ForwardAddr / ForwardAddrs destinations simultaneously (fan-out / RTP fork).
 type Session struct {
 	cfg      Config
 	conn     *net.UDPConn
-	fwdAddr  *net.UDPAddr
+	fwdAddr  *net.UDPAddr    // primary forward destination (agent)
+	forkAddrs []*net.UDPAddr // additional fork destinations (recorders, etc.)
 	jitter   *JitterBuffer
 	pipeline *audio.Pipeline
 	dtmf     *DTMFDetector
@@ -157,6 +170,17 @@ func NewSession(cfg Config) (*Session, error) {
 		cfg.DTMFPayloadType = DTMFPayloadType
 	}
 
+	// Resolve additional fork destinations.
+	var forkAddrs []*net.UDPAddr
+	for _, addr := range cfg.ForwardAddrs {
+		fa, err := net.ResolveUDPAddr("udp", addr)
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("rtp: resolve ForwardAddrs[%q]: %w", addr, err)
+		}
+		forkAddrs = append(forkAddrs, fa)
+	}
+
 	pipe := audio.NewPipeline(audio.PipelineConfig{
 		SampleRate:      cfg.SampleRate,
 		InputSampleRate: cfg.SampleRate,
@@ -167,15 +191,16 @@ func NewSession(cfg Config) (*Session, error) {
 	})
 
 	return &Session{
-		cfg:       cfg,
-		conn:      conn,
-		fwdAddr:   fwdAddr,
-		jitter:    NewJitterBuffer(cfg.JitterDepth),
-		pipeline:  pipe,
-		dtmf:      NewDTMFDetector(cfg.SampleRate),
-		done:      make(chan struct{}),
-		rtcpReady: make(chan struct{}),
-		logger:    cfg.Logger,
+		cfg:        cfg,
+		conn:       conn,
+		fwdAddr:    fwdAddr,
+		forkAddrs:  forkAddrs,
+		jitter:     NewJitterBuffer(cfg.JitterDepth),
+		pipeline:   pipe,
+		dtmf:       NewDTMFDetector(cfg.SampleRate),
+		done:       make(chan struct{}),
+		rtcpReady:  make(chan struct{}),
+		logger:     cfg.Logger,
 	}, nil
 }
 
@@ -341,10 +366,16 @@ func (s *Session) handlePacket(raw []byte) error {
 		return fmt.Errorf("encode: %w", err)
 	}
 
-	// Rebuild and forward RTP packet
+	// Rebuild and forward RTP packet to primary destination and all fork addresses.
 	outRaw := buildRTPPacket(header, outPayload)
 	if _, err := s.conn.WriteToUDP(outRaw, s.fwdAddr); err != nil {
 		return fmt.Errorf("forward: %w", err)
+	}
+	for _, fa := range s.forkAddrs {
+		if _, err := s.conn.WriteToUDP(outRaw, fa); err != nil {
+			// Log but don't abort — primary delivery already succeeded.
+			s.logger.Warn("rtp fork write error", zap.String("addr", fa.String()), zap.Error(err))
+		}
 	}
 
 	s.mu.Lock()

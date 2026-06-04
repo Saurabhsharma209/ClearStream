@@ -322,6 +322,89 @@ func TestPayloadTypeResolution(t *testing.T) {
 	}
 }
 
+// TestRTPFork verifies that when ForwardAddrs is set, clean RTP packets are
+// delivered to both the primary ForwardAddr and every entry in ForwardAddrs.
+// Two sink listeners are started; only one is specified via ForwardAddr, the
+// second via ForwardAddrs. Both must receive forwarded packets.
+func TestRTPFork(t *testing.T) {
+	// Primary sink (agent).
+	primarySink, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("bind primary sink: %v", err)
+	}
+	defer primarySink.Close()
+	primarySink.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+	// Secondary sink (recorder / DC fork).
+	recorderSink, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("bind recorder sink: %v", err)
+	}
+	defer recorderSink.Close()
+	recorderSink.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+	logger, _ := zap.NewDevelopment()
+	cfg := Config{
+		ListenAddr:   "127.0.0.1:0",
+		ForwardAddr:  primarySink.LocalAddr().String(),
+		ForwardAddrs: []string{recorderSink.LocalAddr().String()},
+		PayloadType:  0, // PCMU
+		JitterDepth:  1,
+		Logger:       logger,
+		Suppressor:   model.NewMockSuppressor(),
+	}
+
+	sess, err := NewSession(cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	sess.Start()
+	defer sess.Stop()
+
+	// Verify fork addresses were resolved.
+	if len(sess.forkAddrs) != 1 {
+		t.Fatalf("expected 1 fork addr, got %d", len(sess.forkAddrs))
+	}
+
+	// Send 4 PCMU packets.
+	sender, err := net.DialUDP("udp", nil, sess.conn.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatalf("dial sender: %v", err)
+	}
+	defer sender.Close()
+
+	payload := make([]byte, 160)
+	for i := range payload {
+		payload[i] = 0xFF // µ-law silence
+	}
+	for i := 0; i < 4; i++ {
+		pkt := buildRawRTPPacket(uint16(i), uint32(i*160), 0xCAFEBABE, payload)
+		if _, err := sender.Write(pkt); err != nil {
+			t.Fatalf("send pkt %d: %v", i, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(150 * time.Millisecond)
+
+	// Primary sink must have received at least one packet.
+	primaryBuf := make([]byte, 4096)
+	primarySink.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	n, _, err := primarySink.ReadFromUDP(primaryBuf)
+	if err != nil || n < 12 {
+		t.Errorf("primary sink: expected RTP packet, got n=%d err=%v", n, err)
+	}
+
+	// Recorder sink must also have received at least one packet.
+	recorderSink.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	n, _, err = recorderSink.ReadFromUDP(primaryBuf)
+	if err != nil || n < 12 {
+		t.Errorf("recorder (fork) sink: expected RTP packet, got n=%d err=%v", n, err)
+	}
+
+	t.Logf("RTP fork OK: primary=%s recorder=%s",
+		primarySink.LocalAddr(), recorderSink.LocalAddr())
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsStr(s, sub))
 }

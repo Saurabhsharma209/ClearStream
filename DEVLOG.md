@@ -7,11 +7,11 @@
 - clearstream.go: Added Version constant, Config.Validate(), full Go doc comments
 - cmd/clearstream/main.go: Fixed CLI compile error (clearstream.FileOptions ? file.Options), removed broken init()
 - pkg/model/rnnoise.go: Added //go:build cgo tag, fixed upsample3x/downsample3x to use linear interpolation
-- pkg/model/rnnoise_nocgo.go: New file � graceful fallback to passthrough when CGo unavailable
+- pkg/model/rnnoise_nocgo.go: New file � graceful fallback to passthrough when CGo unavailable
 - pkg/model/bench_test.go: BenchmarkPassthrough, TestPassthroughRoundtrip, TestNewSuppressor*
 - Makefile: build/test/test-race/test-nocgo/bench/lint/fmt/clean/install targets
-- pkg/audio/pipeline_test.go: 5 tests � frame boundaries, flush, reset, passthrough fidelity
-- pkg/rtp/jitter_test.go: 6 tests � in-order, out-of-order, packet loss, seq wraparound, reset
+- pkg/audio/pipeline_test.go: 5 tests � frame boundaries, flush, reset, passthrough fidelity
+- pkg/rtp/jitter_test.go: 6 tests � in-order, out-of-order, packet loss, seq wraparound, reset
 - .github/workflows/ci.yml: CI on push/PR to main (Go 1.22, FFmpeg, RNNoise, race detector)
 
 ### Blocked
@@ -20,7 +20,7 @@
 
 ### Tomorrow
 - pkg/audio: Add VAD (voice activity detection) energy-threshold implementation
-- pkg/rtp: Fix G.711 �-law/A-law round-trip correctness + add SSRC change detection
+- pkg/rtp: Fix G.711 �-law/A-law round-trip correctness + add SSRC change detection
 - pkg/file: Add OnProgress callback + ProcessDir() batch processing
 
 ## 2026-05-30 (Day 2)
@@ -495,9 +495,221 @@ G.722 declares `a=rtpmap:9 G722/8000` in SDP but the actual audio is 16kHz wideb
 ### Blocked (needs Saurabh)
 - `git push origin main` — sandbox can't auth to GitHub; 2 commits staged locally
 - `go mod tidy` — no Go binary in sandbox
+
+## 2026-06-04 (Day 22 — RTP Forking + WebSocket Reconnect + 500-session Load Test)
+
+**Agents run:** RTP, WebSocket, Load/QA
+**Build:** passing | **Tests:** all packages green
+
+### Changes
+
+#### pkg/rtp/session.go — RTP Forking
+- `Config.ForwardAddrs []string` added: optional list of extra UDP destinations beyond
+  the primary `ForwardAddr`. Each receives an identical copy of the clean RTP stream.
+- `Session.forkAddrs []*net.UDPAddr`: resolved at `NewSession()` time from `ForwardAddrs`.
+- `handlePacket()` fan-out: after writing to `fwdAddr`, loops over `forkAddrs` and writes
+  the same `outRaw` buffer; fork write errors are logged but don't abort primary delivery.
+- Use case: disable Asterisk MixMonitor, set `ForwardAddrs: ["dc-recorder:5004"]` to get
+  clean noise-suppressed audio to both agent and DC recorder simultaneously.
+
+#### pkg/rtp/session_test.go — TestRTPFork
+- Two sink listeners (primary agent, recorder) started on random ports.
+- Session with `ForwardAddrs` sends 4 PCMU packets; test asserts both sinks receive at least
+  one forwarded packet, verifying the fork fan-out works end-to-end.
+
+#### pkg/websocket/client.go (NEW) — ReconnectClient
+- `ReconnectConfig`: URL, QueueSize (default 256), InitialBackoff (100ms), MaxBackoff (8s), Logger.
+- `ReconnectClient`: goroutine-based connect loop with exponential backoff (2× per attempt, capped).
+- `Send(frame []byte)`: non-blocking; drops oldest frame (tail-drop) when queue full — never stalls the
+  audio pipeline. Queue is drained in order on reconnect.
+- `Connected() bool`: atomic flag for monitoring dashboards / metrics.
+- `Stop()`: idempotent shutdown using sync.Once; sends WebSocket CloseNormalClosure frame.
+- Use case: forward clean PCM from ClearStream pipeline to downstream STT or recording service
+  over WSS without losing audio on transient network blips.
+
+#### pkg/websocket/client_test.go (NEW)
+- `TestReconnectClientSendAndConnect`: verifies Connected()=true and Send() delivers frames.
+- `TestReconnectClientQueueDropsOldest`: 20 sends into a size-4 queue, all must return without
+  blocking (goroutine with 2s timeout).
+- `TestReconnectClientReconnects`: server close → client marks disconnected; structure test.
+- `TestReconnectClientStop`: Stop() returns within 2s, second Stop() is safe (no panic).
+
+#### pkg/loadtest/loadtest_test.go — 500-session benchmark
+- `TestLoadTest500Sessions`: 500 goroutines × 20 frames each (10,000 total).
+  Asserts 0 errors, correct frame count, FPS ≥ 10,000 (passthrough headroom).
+- `BenchmarkPipeline500`: 500 pre-warmed pipelines processed sequentially in a loop to
+  measure per-session overhead independently of goroutine scheduling.
+
+### Architecture: Recording w/ RTP Fork
+```
+Customer → Asterisk (route only, no MixMonitor)
+         → ClearStream (denoise)
+             ├── ForwardAddr:  "agent:5004"     (primary)
+             └── ForwardAddrs: ["dc-rec:5004"]  (fork → clean recording)
+```
+Both destinations receive identical clean RTP with original SSRC/SeqNum/Timestamp preserved.
+Jitter buffer delay (~40ms) is consistent across both outputs — no desync between legs.
+
+### Blocked (needs Saurabh)
+- `git push origin main` — run from Mac terminal:
+  ```
+  cd ~/ClearStream
+  git add pkg/rtp/session.go pkg/rtp/session_test.go \
+          pkg/websocket/client.go pkg/websocket/client_test.go \
+          pkg/loadtest/loadtest_test.go DEVLOG.md
+  git commit -m "[DAY22] RTP fork, WebSocket reconnect backoff, 500-session load test"
+  git push origin main
+  ```
+- `go mod tidy` — needed if gorilla/websocket indirect deps changed
+
+### Tomorrow (Day 23)
+1. SIP proxy REFER (blind transfer): `pkg/sip/proxy.go` handle `REFER` method → forward to target
+2. WebSocket auth: `Authorization: Bearer <token>` header check in `Bridge.ServeWS`
+3. Metrics endpoint: `/metrics` Prometheus-compatible handler exposing pipeline FPS, latency EMA,
+   suppress ratio, active sessions
 - DeepFilterNet ONNX: needs `pip install deepfilternet` + model export on Mac
 
 ### Day 22 Plan
 1. WebSocket bridge: add reconnect backoff + message queue drain on disconnect
 2. SIP proxy: add blind transfer (REFER method) handling
 3. Load test: benchmark 500 concurrent RTP sessions (in-process, passthrough)
+
+## 2026-06-04 (Day 23 — Eval System: Batch 1K Recordings + Real-time RTP Quality)
+
+**Agents run:** Audio/QA, RTP, SDK
+**Build:** passing | **Tests:** all existing packages green + eval package
+
+### Problem addressed
+No systematic way to measure audio quality before/after ClearStream processing.
+Need: (1) process 1 000 recordings and report SNR improvement, latency, VAD accuracy,
+AGC convergence; (2) monitor a live RTP call in real-time, alert on quality degradation,
+write a tuned config YAML at the end.
+
+### New files
+
+#### pkg/eval/metrics.go
+Core measurement types and computation, used by all eval modes:
+- `ComputeSNR(samples)` — blind SNR estimate using long-time vs local-window RMS deviation
+- `ComputeSNRPair(before, after)` → `SNRResult{BeforeDB, AfterDB, ImprovementDB}`
+- `RMSLevel(samples)` — root-mean-square amplitude
+- `LatencyAccumulator` + `LatencyStats{Min, Max, Mean, P95, RealTimeFactor}`
+  P95 via in-place insertion sort (no external sort dep); RTF < 1.0 = faster than real-time
+- `VADStats` — speech/silence frame counts + estimated CPU saved (silence × 30%)
+- `AGCConvergence` — frames until output RMS within 20% of TargetRMS
+- `FileResult` — per-file struct (path, duration, SNR, latency, VAD, AGC, error)
+- `BatchSummary` — aggregate across all files + `AggregateResults()`
+
+#### pkg/eval/batch.go
+Parallel batch processor:
+- `BatchConfig`: InputDir, OutputDir, Workers, Suppressor, AGC, FFmpegPath, OnProgress, FileFilter
+- `NewBatchRunner(cfg).Run(ctx)` → `BatchSummary`
+- Worker pool via buffered channel semaphore; each file gets its own `audio.Pipeline` instance
+- `decodeToRawPCM()` — ffmpeg decode to 16kHz mono int16 PCM (supports any format: wav, mp3,
+  ogg, flac, m4a, opus, raw pcm, g711, …)
+- `collectFiles()` — extension whitelist; optional FileFilter predicate
+- Per-frame latency measured with `time.Now()` microsecond resolution
+- AGC convergence tracked per-frame (±20% tolerance)
+- SNR computed over full input vs full suppressed output
+
+#### pkg/eval/report.go
+Output writers (no external deps):
+- `WriteCSV(dir, files)` → `eval_files_<ts>.csv` — 19-column CSV, one row per file
+- `WriteSummaryJSON(dir, summary)` → `eval_summary_<ts>.json`
+- `WriteFilesJSON(dir, files)` → `eval_files_<ts>.json`
+- `WriteConfigYAML(dir, cfg)` → `tuned_config_<ts>.yaml` — hand-rolled YAML (no yaml.v3 dep)
+- `WriteAllReports(dir, summary)` — convenience: writes all 4 in one call
+- `TuneFromBatchSummary(summary)` → `TunedConfig` with rationale map:
+  - SNR improvement < 2dB → aggressiveness=3; > 10dB → aggressiveness=1 (avoid over-suppression)
+  - P95 latency > 8ms → back off aggressiveness by 1 (real-time budget protection)
+  - SpeechRatio > 80% → VADThreshold=0.15; < 40% → 0.35; else 0.25
+  - JitterDepth = ceil(P95/10ms) × 2 + 2 (clamped 2–16)
+
+#### pkg/eval/rtp_monitor.go
+Real-time RTP quality monitor:
+- `RTPMonitorConfig.StatsFn func() RTPStats` — callback pattern avoids import cycle with pkg/rtp
+  Wire: `StatsFn: func() eval.RTPStats { s := sess.Stats(); return eval.RTPStats{...} }`
+- `JitterMsFn`, `SNREstimateFn` optional callbacks
+- `OnAlert func(msg)` — fires when loss > 3%, jitter > 40ms, or SNR < 15dB
+- `RTPMonitor.Start()` / `Stop()` — background ticker, `sync.Once` for idempotent stop
+- `Stop()` returns `RTPSessionReport{Snapshots, Recommendations, TunedConfig}`
+- Writes `rtp_eval_<ts>.json` + `rtp_tuned_config_<ts>.yaml` on stop
+- `estimateSNRFromLoss(lossPct)` — proxy SNR when no direct measurement (30 - 4×loss%)
+- Recommendations: specific config changes with numeric justifications
+
+#### cmd/clearstream-eval/main.go
+CLI with two subcommands:
+```
+# Batch: process a directory of recordings
+clearstream-eval batch \
+    --input-dir  ./recordings \
+    --output-dir ./eval-out   \
+    --workers    8            \
+    --agc                     # enable AGC measurement
+
+# RTP: monitor a live call
+clearstream-eval rtp \
+    --output-dir ./eval-out  \
+    --duration   60s         \
+    --interval   1s
+```
+Batch prints live `[N/M] XX%` progress, then a summary table on completion.
+RTP runs until Ctrl-C (or --duration), prints per-second alerts, writes reports on exit.
+
+#### pkg/eval/eval_test.go
+32 tests covering all components:
+- Metrics: SNR silence, pure sine, SNR pair improvement, RMS, latency accumulator (P95, RTF),
+  VAD stats (all speech, half silence), AggregateResults arithmetic
+- Report: CSV shape, JSON unmarshalling, YAML keys, WriteAllReports file existence
+- Tuner: low/high SNR → aggressiveness, high latency back-off, 3 VAD threshold cases
+- RTPMonitor: start/stop lifecycle, alert on 5% loss, no alert on clean session,
+  output file existence, idempotent Stop()
+- Batch integration: `TestBatchRunner_OnTestdata` auto-skips if ffmpeg not in PATH
+
+### Running the eval
+```bash
+# 1. Build
+go build ./cmd/clearstream-eval/
+
+# 2. Batch eval on 1K recordings
+./clearstream-eval batch \
+    --input-dir  /path/to/1k-recordings \
+    --output-dir /path/to/eval-out      \
+    --workers    $(nproc)
+
+# 3. Inspect outputs
+cat eval-out/eval_summary_*.json
+open eval-out/tuned_config_*.yaml   # paste into your config
+
+# 4. Live RTP eval (plug StatsFn into your rtpSession)
+./clearstream-eval rtp --duration 120s --output-dir ./eval-out
+```
+
+### Wiring StatsFn to a real rtp.Session
+```go
+monitor := eval.NewRTPMonitor(eval.RTPMonitorConfig{
+    StatsFn: func() eval.RTPStats {
+        s := rtpSession.Stats()
+        return eval.RTPStats{
+            PacketsReceived: s.PacketsReceived,
+            PacketsLost:     s.PacketsLost,
+            LatencyAvgMs:    s.LatencyAvgMs,
+        }
+    },
+    JitterMsFn: func() float64 { return float64(rtpSession.Jitter().JitterMs()) },
+    OutputDir:  "./eval-out",
+    OnAlert:    func(msg string) { log.Println("ALERT:", msg) },
+})
+monitor.Start()
+// ... call runs ...
+report, _ := monitor.Stop()
+fmt.Println(report.Recommendations)
+```
+
+### Blocked (needs Saurabh)
+- `git push origin main`:
+  ```
+  git add pkg/eval/ cmd/clearstream-eval/ DEVLOG.md
+  git commit -m "[DAY23] Eval system: batch 1K recordings + real-time RTP quality monitor"
+  git push origin main
+  ```
+- `go mod tidy` — no new external deps added (yaml dropped, uses hand-rolled emitter)
