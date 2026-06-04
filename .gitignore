@@ -1,8 +1,5 @@
 
 # Binaries
-# Compiled binaries
-# Generated audio test data (keep .gitkeep)
-# Test output
 *.dll
 *.dylib
 *.exe
@@ -11,13 +8,34 @@
 *.so
 *.test
 *.prof
-.DS_Store
 /clearstream
-coverage.html
 ecc_integration
 load_test
 snr_benchmark
-testdata/*.mp3
-testdata/*.mp4
-testdata/*.pcm
-testdata/*.wav
+
+# OS
+.DS_Store
+
+# Coverage
+coverage.html
+
+# Audio files (generated/test recordings — never commit to repo root)
+*.wav
+*.mp3
+*.mp4
+*.pcm
+*.ogg
+*.opus
+
+# Allow testdata fixtures explicitly added
+!testdata/sample_clean.wav
+!testdata/sample_noisy.wav
+!testdata/sample_office.wav
+
+# Scripts / scratch
+speaker_analysis.py
+WORKSPACE.md
+eval_results.json
+
+# Eval output (large CSVs, WAV outputs)
+eval_out/

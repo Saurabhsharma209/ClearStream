@@ -175,6 +175,16 @@ type StopEvent struct {
 }
 
 // ErrorEvent is emitted on stream errors.
+// FailureCode identifies the category of a stream error.
+type FailureCode string
+
+const (
+	FailureCodeInternal    FailureCode = "internal_error"
+	FailureCodeTimeout     FailureCode = "timeout"
+	FailureCodeUnsupported FailureCode = "unsupported_codec"
+	FailureCodeAuth        FailureCode = "auth_failed"
+)
+
 type ErrorEvent struct {
 	Event     EventType   `json:"event"`
 	StreamSID string      `json:"stream_sid"`
@@ -183,6 +193,6 @@ type ErrorEvent struct {
 }
 
 // MarshalEvent serializes any event struct to JSON bytes.
-func MarshalEvent(v any) ([]byte, error) {
+func MarshalEvent(v interface{}) ([]byte, error) {
 	return json.Marshal(v)
 }

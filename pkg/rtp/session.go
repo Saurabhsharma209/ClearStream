@@ -127,6 +127,7 @@ type Session struct {
 	jitter   *JitterBuffer
 	pipeline *audio.Pipeline
 	dtmf     *DTMFDetector
+	playback *PlaybackQueue
 
 	currentSSRC uint32
 	ssrcSet     bool
@@ -198,6 +199,7 @@ func NewSession(cfg Config) (*Session, error) {
 		jitter:     NewJitterBuffer(cfg.JitterDepth),
 		pipeline:   pipe,
 		dtmf:       NewDTMFDetector(cfg.SampleRate),
+		playback:   NewPlaybackQueue(50),
 		done:       make(chan struct{}),
 		rtcpReady:  make(chan struct{}),
 		logger:     cfg.Logger,
