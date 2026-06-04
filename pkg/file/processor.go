@@ -4,6 +4,7 @@
 package file
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -128,7 +129,7 @@ func (p *Processor) ProcessWithOptions(src, dst string, opts Options) error {
 	defer os.Remove(tmpAudio.Name())
 
 	// 3. Decode audio to raw 16kHz mono PCM via FFmpeg pipe
-	if err := p.decodeAndSuppress(src, tmpAudio.Name(), info, opts.AGC, logger); err != nil {
+	if err := p.decodeAndSuppress(src, tmpAudio.Name(), info, opts.AGC, logger, opts.OnProgress); err != nil {
 		return fmt.Errorf("file: decode+suppress: %w", err)
 	}
 
@@ -222,7 +223,7 @@ func (p *Processor) ProcessDir(srcDir, dstDir string, opts Options) []error {
 
 // decodeAndSuppress decodes audio from src to 16kHz mono PCM,
 // runs it through the suppressor (and optional AGC), and writes raw PCM to pcmPath.
-func (p *Processor) decodeAndSuppress(src, pcmPath string, info *audio.MediaInfo, agc *audio.AGCConfig, logger *zap.Logger) error {
+func (p *Processor) decodeAndSuppress(src, pcmPath string, info *audio.MediaInfo, agc *audio.AGCConfig, logger *zap.Logger, onProgress func(float64)) error {
 	// FFmpeg decode command: any input → 16kHz mono signed 16-bit PCM on stdout
 	decodeCmd := exec.Command(p.cfg.FFmpegPath,
 		"-i", src,
@@ -252,12 +253,42 @@ func (p *Processor) decodeAndSuppress(src, pcmPath string, info *audio.MediaInfo
 	// Pipe FFmpeg stdout → suppressor → pcmFile
 	pr, pw := io.Pipe()
 	decodeCmd.Stdout = pw
-	var stderrBuf bytes.Buffer
-	decodeCmd.Stderr = &stderrBuf
+
+	// Capture stderr for both error detection and real-time progress parsing.
+	stderrPipe, err := decodeCmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("ffmpeg stderr pipe: %w", err)
+	}
 
 	if err := decodeCmd.Start(); err != nil {
 		return fmt.Errorf("ffmpeg start: %w", err)
 	}
+
+	// Stderr goroutine: accumulate for error messages and parse time= for progress.
+	var stderrBuf bytes.Buffer
+	stderrErrCh := make(chan struct{})
+	go func() {
+		defer close(stderrErrCh)
+		sc := bufio.NewScanner(stderrPipe)
+		for sc.Scan() {
+			line := sc.Text()
+			stderrBuf.WriteString(line + "\n")
+			// Parse ffmpeg progress lines: "size=   256kB time=00:00:01.23 bitrate=..."
+			if onProgress != nil && info.DurationSec > 0 {
+				if idx := strings.Index(line, "time="); idx >= 0 {
+					timeStr := strings.Fields(line[idx+5:])[0] // "HH:MM:SS.ms"
+					if secs := parseFFmpegTime(timeStr); secs > 0 {
+						// Map decode phase to progress range 10%–70%.
+						pct := 0.1 + (secs/info.DurationSec)*0.6
+						if pct > 0.69 {
+							pct = 0.69
+						}
+						onProgress(pct)
+					}
+				}
+			}
+		}
+	}()
 
 	// Reader goroutine: pull PCM from FFmpeg, suppress, write to file
 	errCh := make(chan error, 1)
@@ -285,6 +316,7 @@ func (p *Processor) decodeAndSuppress(src, pcmPath string, info *audio.MediaInfo
 	// Wait for FFmpeg to finish, then close the write end of the pipe
 	ffmpegErr := decodeCmd.Wait()
 	pw.Close()
+	<-stderrErrCh // drain stderr goroutine
 
 	suppressErr := <-errCh
 
@@ -370,6 +402,18 @@ func inferOutputCodec(dst string) string {
 	default:
 		return "aac"
 	}
+}
+
+
+// parseFFmpegTime parses an FFmpeg time string "HH:MM:SS.ms" into seconds.
+// Returns 0 on parse failure.
+func parseFFmpegTime(s string) float64 {
+	var h, m int
+	var sec float64
+	if n, _ := fmt.Sscanf(s, "%d:%d:%f", &h, &m, &sec); n == 3 {
+		return float64(h*3600+m*60) + sec
+	}
+	return 0
 }
 
 // parseFFmpegError maps common FFmpeg stderr patterns to typed errors.
