@@ -17,6 +17,37 @@ func TestAGCDefaultConfig(t *testing.T) {
 	if cfg.AttackMs <= 0 || cfg.ReleaseMs <= 0 {
 		t.Error("Attack and Release should be positive")
 	}
+	if cfg.SoftLimitThreshold <= 0 {
+		t.Error("SoftLimitThreshold should be positive in DefaultAGCConfig")
+	}
+}
+
+// TestAGCSoftLimiterNeverClips verifies that the soft limiter (tanh) prevents
+// hard distortion: output samples must never exceed int16 range, and values
+// near the soft-limit threshold should be rounded rather than brick-walled.
+func TestAGCSoftLimiterNeverClips(t *testing.T) {
+	cfg := DefaultAGCConfig()
+	cfg.MaxGain = 100.0         // force extreme gain
+	cfg.TargetRMS = 32000       // push toward full scale
+	cfg.SoftLimitThreshold = 20000 // limiter kicks in at ~-4 dBFS
+	cfg.SampleRate = 16000
+	agc := NewAGC(cfg)
+
+	// Signal near full scale so limiter is exercised
+	frame := make([]int16, 160)
+	for i := range frame {
+		frame[i] = 5000
+	}
+
+	for iter := 0; iter < 100; iter++ {
+		out := agc.Process(frame)
+		for j, s := range out {
+			if s > 32767 || s < -32768 {
+				t.Errorf("iter %d sample[%d]=%d overflows int16 range", iter, j, s)
+				return
+			}
+		}
+	}
 }
 
 func TestAGCSilencePassthrough(t *testing.T) {

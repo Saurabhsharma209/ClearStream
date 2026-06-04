@@ -84,6 +84,12 @@ type Config struct {
 	// OnStats is an optional callback called every second with session statistics.
 	OnStats func(Stats)
 
+	// DTMFPayloadType is the RTP payload type for telephone events (RFC4733). Default: 101.
+	DTMFPayloadType uint8
+
+	// OnDTMF is an optional callback invoked when a DTMF digit is detected.
+	OnDTMF func(DTMFDigit)
+
 	// AGC enables Automatic Gain Control on this RTP session.
 	// When set, output level is adaptively adjusted toward AGC.TargetRMS.
 	// Use audio.DefaultAGCConfig() as a starting point.
@@ -107,6 +113,7 @@ type Session struct {
 	fwdAddr  *net.UDPAddr
 	jitter   *JitterBuffer
 	pipeline *audio.Pipeline
+	dtmf     *DTMFDetector
 
 	currentSSRC uint32
 	ssrcSet     bool
@@ -146,6 +153,9 @@ func NewSession(cfg Config) (*Session, error) {
 	}
 
 	resolvePayloadType(&cfg)
+	if cfg.DTMFPayloadType == 0 {
+		cfg.DTMFPayloadType = DTMFPayloadType
+	}
 
 	pipe := audio.NewPipeline(audio.PipelineConfig{
 		SampleRate:      cfg.SampleRate,
@@ -162,6 +172,7 @@ func NewSession(cfg Config) (*Session, error) {
 		fwdAddr:   fwdAddr,
 		jitter:    NewJitterBuffer(cfg.JitterDepth),
 		pipeline:  pipe,
+		dtmf:      NewDTMFDetector(cfg.SampleRate),
 		done:      make(chan struct{}),
 		rtcpReady: make(chan struct{}),
 		logger:    cfg.Logger,
@@ -191,6 +202,7 @@ func (s *Session) Stop() {
 	if s.cancel != nil {
 		s.cancel()
 	}
+	s.dtmf.Reset()
 	s.conn.Close()
 	// Wait for listenRTCP to finish binding before accessing rtcpConn.
 	<-s.rtcpReady
@@ -257,6 +269,17 @@ func (s *Session) handlePacket(raw []byte) error {
 	header, payload, err := parseRTPHeader(raw)
 	if err != nil {
 		return err
+	}
+
+	// Handle DTMF telephone-event packets (RFC4733)
+	if header.PayloadType == s.cfg.DTMFPayloadType {
+		digit, err := s.dtmf.ParseDTMFPayload(payload)
+		if err != nil {
+			s.logger.Warn("dtmf parse error", zap.Error(err))
+		} else if digit != nil && s.cfg.OnDTMF != nil {
+			s.cfg.OnDTMF(*digit)
+		}
+		return nil
 	}
 
 	// Detect SSRC change (new call leg)
@@ -448,9 +471,10 @@ func (s *Session) QualityReport() string {
 		band = "fullband(48kHz)"
 	}
 	return fmt.Sprintf(
-		"RTP: rx=%d tx=%d lost=%d(%.1f%%) latency=%.1fms | Band: %s [PT=%d %s] | Pipeline: %s",
+		"RTP: rx=%d tx=%d lost=%d(%.1f%%) latency=%.1fms | Jitter: %.1fms (depth=%d frames) | Band: %s [PT=%d %s] | Pipeline: %s",
 		rtp.PacketsReceived, rtp.PacketsSent, rtp.PacketsLost, lossRate,
-		rtp.LatencyAvgMs, band, s.cfg.PayloadType, s.cfg.Codec, pipe.String(),
+		rtp.LatencyAvgMs, s.jitter.JitterMs(), s.jitter.Depth(),
+		band, s.cfg.PayloadType, s.cfg.Codec, pipe.String(),
 	)
 }
 

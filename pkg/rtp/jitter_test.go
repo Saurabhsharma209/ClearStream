@@ -225,3 +225,158 @@ func TestJitterNotPrimedUntilDepth(t *testing.T) {
 		t.Error("buffer should be primed with 3 packets")
 	}
 }
+
+// TestJitterDepthAndJitterMs verifies that Depth() and JitterMs() are accessible
+// and return sane initial values.
+func TestJitterDepthAndJitterMs(t *testing.T) {
+	jb := NewJitterBuffer(4)
+	if d := jb.Depth(); d != 4 {
+		t.Errorf("initial Depth should be 4, got %d", d)
+	}
+	if ms := jb.JitterMs(); ms != 0 {
+		t.Errorf("initial JitterMs should be 0, got %.2f", ms)
+	}
+}
+
+// TestJitterGeneratePLCSilenceWithNoHistory verifies that GeneratePLC returns
+// a silent frame when no good frame has been stored yet.
+func TestJitterGeneratePLCSilenceWithNoHistory(t *testing.T) {
+	jb := NewJitterBuffer(2)
+	frame := jb.GeneratePLC()
+	if len(frame) == 0 {
+		t.Error("expected non-empty PLC frame")
+	}
+	for i, s := range frame {
+		if s != 0 {
+			t.Errorf("expected silence, got frame[%d]=%d", i, s)
+		}
+	}
+}
+
+// TestJitterOnGoodPacketAndPLC verifies that after a good packet is stored,
+// GeneratePLC returns a non-silent frame for the first two losses (waveform
+// substitution) and a decaying frame for loss 3+ (fade-to-silence).
+func TestJitterOnGoodPacketAndPLC(t *testing.T) {
+	jb := NewJitterBuffer(2)
+
+	// Store a non-zero frame as the last good frame.
+	goodFrame := make([]int16, 160)
+	for i := range goodFrame {
+		goodFrame[i] = 1000
+	}
+	jb.OnGoodPacket(goodFrame)
+
+	// Loss 1 and 2: waveform substitution — should be non-zero.
+	for loss := 1; loss <= 2; loss++ {
+		frame := jb.GeneratePLC()
+		allZero := true
+		for _, s := range frame {
+			if s != 0 {
+				allZero = false
+				break
+			}
+		}
+		if allZero {
+			t.Errorf("loss %d: expected non-zero waveform substitution frame, got all zeros", loss)
+		}
+	}
+
+	// Loss 3+: exponential fade. Amplitude must decrease with each call.
+	prev := jb.GeneratePLC() // loss 3
+	for loss := 4; loss <= 6; loss++ {
+		curr := jb.GeneratePLC()
+		// Compare max absolute value: must be <= previous.
+		var prevMax, currMax int16
+		for i := range prev {
+			if prev[i] < 0 {
+				if -prev[i] > prevMax {
+					prevMax = -prev[i]
+				}
+			} else if prev[i] > prevMax {
+				prevMax = prev[i]
+			}
+			if curr[i] < 0 {
+				if -curr[i] > currMax {
+					currMax = -curr[i]
+				}
+			} else if curr[i] > currMax {
+				currMax = curr[i]
+			}
+		}
+		if currMax > prevMax {
+			t.Errorf("loss %d: PLC amplitude %d > previous %d (should be fading)", loss, currMax, prevMax)
+		}
+		prev = curr
+	}
+}
+
+// TestJitterOnGoodPacketResetsLoss verifies that after a good packet is received,
+// the consecutive-loss counter resets so the next loss starts waveform substitution again.
+func TestJitterOnGoodPacketResetsLoss(t *testing.T) {
+	jb := NewJitterBuffer(2)
+
+	goodFrame := make([]int16, 160)
+	for i := range goodFrame {
+		goodFrame[i] = 2000
+	}
+
+	// Advance to loss 5 (fade region).
+	jb.OnGoodPacket(goodFrame)
+	for i := 0; i < 5; i++ {
+		jb.GeneratePLC()
+	}
+
+	// Receive a good packet — resets loss counter.
+	jb.OnGoodPacket(goodFrame)
+
+	// Next loss should be substitution (loss 1) not fade.
+	frame := jb.GeneratePLC()
+	allZero := true
+	for _, s := range frame {
+		if s != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		t.Error("after OnGoodPacket reset, first PLC loss should be waveform substitution (non-zero)")
+	}
+}
+
+// TestDetectPitch sanity-checks that detectPitch returns a period in the valid range
+// for a 440 Hz sine wave at 16 kHz (expected period ≈ 36 samples).
+func TestDetectPitch(t *testing.T) {
+	makeSample := func(i int) int16 {
+		// 440 Hz sine at 16 kHz
+		v := 8000.0 * sinApprox(2.0*3.14159265*440.0*float64(i)/16000.0)
+		if v > 32767 {
+			return 32767
+		}
+		if v < -32768 {
+			return -32768
+		}
+		return int16(v)
+	}
+	frame := make([]int16, 160)
+	for i := range frame {
+		frame[i] = makeSample(i)
+	}
+	period := detectPitch(frame)
+	// 440 Hz at 16 kHz → period ≈ 36.4 samples. Accept 30–45.
+	if period < 30 || period > 45 {
+		t.Errorf("detectPitch for 440 Hz sine: expected 30–45, got %d", period)
+	}
+}
+
+// sinApprox is a simple sin approximation so jitter_test stays math-import-free.
+func sinApprox(x float64) float64 {
+	// Bring x into [-π, π]
+	for x > 3.14159265 {
+		x -= 2 * 3.14159265
+	}
+	for x < -3.14159265 {
+		x += 2 * 3.14159265
+	}
+	// Taylor: sin(x) ≈ x - x³/6 + x⁵/120
+	return x - (x*x*x)/6.0 + (x*x*x*x*x)/120.0
+}
