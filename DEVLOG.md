@@ -425,3 +425,22 @@ G.722 declares `a=rtpmap:9 G722/8000` in SDP but the actual audio is 16kHz wideb
 - Diarizer interface allows future ML-based models (x-vectors) to replace EnergyDiarizer without API change
 - NoiseProfile decouples environment tuning from suppressor implementation
 - IndiaCallCenterProfile VADThreshold=0.25 tuned for Indian English retroflex consonants (lower energy than English stops)
+
+## 2026-06-04 (Day 20 — ffprobe JSON + Real-time Progress)
+
+**Agents run:** Audio Pipeline, Post-processing
+**Build:** passing | **Tests:** 10 packages green
+
+### Changes
+- pkg/audio/codec.go: Replaced manual window-based `extractJSONField` parser with proper `encoding/json` struct unmarshalling. Added `ffprobeOutput`, `ffprobeStream`, `ffprobeFormat` structs matching real ffprobe output. Correctly handles `sample_rate` as string, `channels` as int, `bit_rate` → kbps conversion, and `format_name` comma-separated lists (e.g. "mov,mp4,m4a,3gp"). Removed `extractJSONField` helper — was fragile and had a TODO comment for years.
+- pkg/audio/coverage_boost_test.go: Replaced `TestExtractJSONField` with `TestParseFFprobeJSONFields` verifying codec, sample rate, channels, bitrate, duration, container format. Fixed test data `"channels": "2"` → `"channels": 2` to match actual ffprobe integer output.
+- pkg/file/processor.go: Wired real-time progress into `decodeAndSuppress` via `bufio.Scanner` on `StderrPipe()`. Parses ffmpeg stderr `time=HH:MM:SS.ms` lines; maps decode phase to `OnProgress` range 10%–69% proportional to file duration. Added `parseFFmpegTime()` helper. Previously `OnProgress` was only called at fixed 0%, 10%, 70%, 100% checkpoints.
+
+### Blocked
+- GitHub push: SSH key not available in sandbox; commits staged locally
+- DeepFilterNet ONNX: requires manual ONNX Runtime + model export
+
+### Tomorrow
+1. Model: Add ONNX session lifecycle unit test behind `//go:build onnx` (mock struct, no real runtime)
+2. Audio: Add `Stats()` periodic reset method + benchmark for resampler quality
+3. RTP: Add session loopback UDP integration test
