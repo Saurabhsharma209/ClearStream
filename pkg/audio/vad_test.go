@@ -252,3 +252,39 @@ func TestVADRMSEnergyCorrectnessConstant(t *testing.T) {
 		t.Error("expected IsSpeech=false with threshold 1001 and RMS=1000")
 	}
 }
+
+func TestQuickVAD_Silence(t *testing.T) {
+	frame := make([]int16, FrameSizeSamples) // all zeros
+	if QuickVAD(frame, 0) {
+		t.Error("expected false for all-zero frame (silence)")
+	}
+}
+
+func TestQuickVAD_Speech(t *testing.T) {
+	// All samples = 1000 → RMS = 1000, well above DefaultQuickVADThreshold (200)
+	frame := make([]int16, FrameSizeSamples)
+	for i := range frame {
+		frame[i] = 1000
+	}
+	if !QuickVAD(frame, 0) {
+		t.Error("expected true for frame with RMS ~1000 (speech)")
+	}
+}
+
+func TestQuickVAD_CustomThreshold(t *testing.T) {
+	// All samples = 500 → RMS = 500
+	frame := make([]int16, FrameSizeSamples)
+	for i := range frame {
+		frame[i] = 500
+	}
+
+	// threshold=1000: RMS(500) < 1000 → false
+	if QuickVAD(frame, 1000) {
+		t.Error("expected false with RMS~500 and threshold=1000")
+	}
+
+	// threshold=100: RMS(500) > 100 → true
+	if !QuickVAD(frame, 100) {
+		t.Error("expected true with RMS~500 and threshold=100")
+	}
+}

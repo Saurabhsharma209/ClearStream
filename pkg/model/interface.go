@@ -77,3 +77,23 @@ func NewSuppressor(cfg SuppressorConfig) (Suppressor, error) {
 		return nil, fmt.Errorf("model: unknown backend %q (valid: rnnoise, rnnoise-onnx, deepfilter, passthrough)", cfg.Backend)
 	}
 }
+
+// BatchSuppressor extends Suppressor with a batch-processing method.
+// Implementations may process frames more efficiently in bulk (e.g. SIMD).
+// The default BatchWrapper provides a sequential fallback for any Suppressor.
+type BatchSuppressor interface {
+	Suppressor
+	// ProcessBatch processes multiple frames in one call. Each frame must be
+	// the same length. Returns processed frames in the same order, or an error
+	// if any frame fails (remaining frames are returned as-is on error).
+	ProcessBatch(frames [][]int16) ([][]int16, error)
+}
+
+// AsBatch wraps any Suppressor in a BatchWrapper that implements BatchSuppressor.
+// If s already implements BatchSuppressor, it is returned unwrapped.
+func AsBatch(s Suppressor) BatchSuppressor {
+	if bs, ok := s.(BatchSuppressor); ok {
+		return bs
+	}
+	return &BatchWrapper{s: s}
+}

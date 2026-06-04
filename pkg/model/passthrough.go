@@ -22,3 +22,10 @@ func (p *Passthrough) Close() error { return nil }
 
 // Name returns the backend identifier "passthrough".
 func (p *Passthrough) Name() string { return "passthrough" }
+
+// ProcessBatch implements BatchSuppressor — passes all frames through unchanged.
+func (p *Passthrough) ProcessBatch(frames [][]int16) ([][]int16, error) {
+	out := make([][]int16, len(frames))
+	copy(out, frames)
+	return out, nil
+}

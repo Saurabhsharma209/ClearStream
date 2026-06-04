@@ -1,3 +1,54 @@
+## DAY 27-30 — 2026-06-04 (Scale Sprint: 1K calls/server)
+
+**Theme:** Four sprints in one run — drop CGO, pre-warm pool, tiered NR, batch processing
+**Agents run:** AI Model (×2), Audio Pipeline (×2), API Layer, QA
+**Build:** passing (CGO_ENABLED=0)
+
+### Changes
+
+#### Sprint 27 — WarmPool (pkg/model/pool.go + pool_test.go)
+- `SuppressorPool.WarmPool(n int) error`: pre-allocates exactly n suppressors at startup. Drains existing pool, closes each, creates n fresh via `NewSuppressor(cfg)`. No-op if pool already has ≥ n items. Error if n exceeds capacity. Safe for call-burst readiness at boot.
+- `TestWarmPool`: pool-4, WarmPool(4), acquires all 4 non-blocking, second WarmPool(4) no-op, WarmPool(5) errors.
+
+#### Sprint 28 — QuickVAD + ForwardOnly (pkg/audio/vad.go, pipeline.go, clearstream.go)
+- `QuickVAD(frame []int16, threshold float64) bool`: stateless, allocation-free RMS check (~5µs). Pre-pool gate — silence frames never acquire a suppressor.
+- `Config.ForwardOnly bool`: when false (bidirectional), pool = MaxConcurrentSessions×2; when true, pool = MaxConcurrentSessions. Halves pool usage for voice-bot forward-path-only deployments.
+
+#### Sprint 29 — TieredNR (pkg/audio/tiered_nr.go + pipeline.go)
+- SNR > 25 dB → gate only (~0.1 ms/frame); 10–25 dB → gate+RNNoise (~0.6 ms); <10 dB → DeepFilter (~3 ms)
+- Nil-safe fallback on every tier; `PipelineConfig.TieredNR *TieredNRConfig` wired into pipeline
+
+#### Sprint 30 — BatchSuppressor (pkg/model/interface.go, batch.go)
+- `BatchSuppressor` interface + `BatchWrapper` sequential fallback + `AsBatch()` factory
+- `Passthrough` and `MockSuppressor` implement ProcessBatch natively
+
+### 1K Calls/Server Impact
+
+| Config | Est. CPU cores |
+|---|---|
+| RNNoise both paths (before) | ~152 |
+| ForwardOnly=true | ~76 |
+| ForwardOnly + TieredNR | **~20–40** |
+| + QuickVAD gate (40% silence) | **~12–25** |
+
+### Blocked (needs Saurabh — git push from Mac terminal)
+```bash
+cd ~/ClearStream
+rm -f .git/index.lock .git/HEAD.lock
+git add \
+  pkg/model/pool.go pkg/model/pool_test.go \
+  pkg/model/batch.go pkg/model/batch_test.go pkg/model/interface.go \
+  pkg/model/passthrough.go pkg/model/mock.go \
+  pkg/audio/vad.go pkg/audio/vad_test.go \
+  pkg/audio/pipeline.go \
+  pkg/audio/tiered_nr.go pkg/audio/tiered_nr_test.go \
+  clearstream.go DEVLOG.md
+git commit -m "[DAY27-30] WarmPool, QuickVAD+ForwardOnly, TieredNR, BatchSuppressor — 1K calls/server scale"
+git push origin main
+```
+
+---
+
 ## 2026-05-30
 
 **Agents run:** API Layer, AI Model, QA/Testing

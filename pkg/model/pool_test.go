@@ -158,3 +158,56 @@ func TestSuppressorPoolReset(t *testing.T) {
 		t.Errorf("expected 2 ResetCalls after second Acquire, got %d", mock.ResetCalls)
 	}
 }
+
+// TestWarmPool verifies that WarmPool pre-fills the pool with n fresh
+// Suppressors, that Size() still reports the original capacity, and that
+// all n slots are immediately acquirable without blocking.
+func TestWarmPool(t *testing.T) {
+	const poolSize = 4
+
+	pool, err := NewSuppressorPool(passthroughCfg(), poolSize)
+	if err != nil {
+		t.Fatalf("NewSuppressorPool: %v", err)
+	}
+	defer pool.Close()
+
+	if err := pool.WarmPool(poolSize); err != nil {
+		t.Fatalf("WarmPool(%d): %v", poolSize, err)
+	}
+
+	// Capacity should still be the original size.
+	if pool.Size() != poolSize {
+		t.Errorf("Size() = %d, want %d", pool.Size(), poolSize)
+	}
+
+	// All 4 slots must be acquirable non-blocking (pool channel has them ready).
+	acquired := make([]Suppressor, poolSize)
+	for i := 0; i < poolSize; i++ {
+		var s Suppressor
+		select {
+		case s = <-pool.pool:
+			s.Reset()
+		default:
+			t.Fatalf("Acquire [%d]: pool was empty, WarmPool did not pre-fill", i)
+		}
+		if s == nil {
+			t.Fatalf("Acquire [%d]: got nil Suppressor", i)
+		}
+		acquired[i] = s
+	}
+
+	// Release all back.
+	for _, s := range acquired {
+		pool.Release(s)
+	}
+
+	// WarmPool on a fully-loaded pool should be a no-op (no error).
+	if err := pool.WarmPool(poolSize); err != nil {
+		t.Errorf("WarmPool no-op: unexpected error: %v", err)
+	}
+
+	// WarmPool with n > capacity should return an error.
+	if err := pool.WarmPool(poolSize + 1); err == nil {
+		t.Error("WarmPool(capacity+1): expected error, got nil")
+	}
+}

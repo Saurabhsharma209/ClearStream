@@ -59,3 +59,42 @@ func (p *SuppressorPool) Close() error {
 	})
 	return firstErr
 }
+
+// WarmPool ensures the pool contains exactly n ready Suppressors, blocking
+// until all are initialised. It is safe to call at startup before any
+// sessions begin. Returns an error if n exceeds pool capacity or any
+// Suppressor fails to initialise.
+func (p *SuppressorPool) WarmPool(n int) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if n > p.size {
+		return fmt.Errorf("model: WarmPool(%d) exceeds pool capacity %d", n, p.size)
+	}
+
+	// If the pool already holds at least n items it's a no-op.
+	if len(p.pool) >= n {
+		return nil
+	}
+
+	// Drain whatever is currently in the pool, closing each suppressor.
+	draining := true
+	for draining {
+		select {
+		case s := <-p.pool:
+			_ = s.Close()
+		default:
+			draining = false
+		}
+	}
+
+	// Refill with n fresh suppressors.
+	for i := 0; i < n; i++ {
+		s, err := NewSuppressor(p.cfg)
+		if err != nil {
+			return fmt.Errorf("model: WarmPool init [%d/%d]: %w", i+1, n, err)
+		}
+		p.pool <- s
+	}
+	return nil
+}

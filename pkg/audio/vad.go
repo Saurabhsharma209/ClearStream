@@ -126,3 +126,26 @@ func (a *AdaptiveVAD) Reset() {
 	a.frameCount = 0
 	a.noiseAccum = 0
 }
+
+// QuickVAD returns true if the frame contains speech energy above threshold.
+// It is stateless and allocation-free — intended as a pre-pool gate that
+// runs before acquiring a Suppressor from the pool (~5 µs per call).
+// threshold is the RMS value above which a frame is considered speech;
+// pass 0 to use DefaultQuickVADThreshold (200).
+func QuickVAD(frame []int16, threshold float64) bool {
+	if threshold <= 0 {
+		threshold = DefaultQuickVADThreshold
+	}
+	// compute RMS inline (no alloc)
+	var sum float64
+	for _, s := range frame {
+		f := float64(s)
+		sum += f * f
+	}
+	if len(frame) == 0 {
+		return false
+	}
+	return math.Sqrt(sum/float64(len(frame))) >= threshold
+}
+
+const DefaultQuickVADThreshold = 200.0

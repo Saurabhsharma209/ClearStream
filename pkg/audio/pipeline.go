@@ -74,10 +74,20 @@ type PipelineConfig struct {
 	// Wiener gain reduction. Set true to enable.
 	UseNoiseReducer bool
 
+	// TieredNR configures the three-tier noise reduction ladder.
+	// When non-nil, replaces UseNoiseReducer with SNR-adaptive tier selection.
+	TieredNR *TieredNRConfig
+
 	// UseLimiter enables the PeakLimiter stage applied AFTER AGC and BEFORE
 	// the final output write. Prevents clipping caused by burst events, DTMF
 	// tones, or AGC overshoot on sudden loud frames. Set true to enable.
 	UseLimiter bool
+
+	// ForwardOnly marks this pipeline as processing only the forward (caller→bot)
+	// path. This is a hint to pool-aware callers (e.g. clearstream.go) to size
+	// the suppressor pool at 1× MaxConcurrentSessions instead of 2×.
+	// The pipeline itself behaves identically regardless of this flag.
+	ForwardOnly bool
 }
 
 // PipelineStats holds real-time pipeline quality metrics.
@@ -107,6 +117,9 @@ type Pipeline struct {
 
 	// Optional noise reducer (runs before suppressor).
 	noiseReducer *AdaptiveNoiseReducer
+
+	// Optional tiered noise reducer (replaces noiseReducer when cfg.TieredNR != nil).
+	tieredNR *TieredNR
 
 	// Optional peak limiter (runs after AGC, before output write).
 	limiter *PeakLimiter
@@ -148,7 +161,10 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 	}
 
 	var nr *AdaptiveNoiseReducer
-	if cfg.UseNoiseReducer {
+	var tnr *TieredNR
+	if cfg.TieredNR != nil {
+		tnr = NewTieredNR(*cfg.TieredNR)
+	} else if cfg.UseNoiseReducer {
 		nr = NewAdaptiveNoiseReducer()
 	}
 
@@ -164,6 +180,7 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 		agc:          agc,
 		aec:          aec,
 		noiseReducer: nr,
+		tieredNR:     tnr,
 		limiter:      lim,
 		logger:       cfg.Logger,
 	}
@@ -245,7 +262,14 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 		}
 
 		// Adaptive noise reduction — runs before suppressor on every frame.
-		if p.noiseReducer != nil {
+		// TieredNR takes priority over the flat AdaptiveNoiseReducer when configured.
+		if p.tieredNR != nil {
+			var err error
+			processSamples, err = p.tieredNR.Process(processSamples)
+			if err != nil {
+				return fmt.Errorf("pipeline: tiered noise reducer: %w", err)
+			}
+		} else if p.noiseReducer != nil {
 			var err error
 			processSamples, err = p.noiseReducer.Process(processSamples)
 			if err != nil {
@@ -389,6 +413,9 @@ func (p *Pipeline) Reset() {
 	}
 	if p.noiseReducer != nil {
 		p.noiseReducer.Reset()
+	}
+	if p.tieredNR != nil {
+		p.tieredNR.Reset()
 	}
 	if p.limiter != nil {
 		p.limiter.Reset()

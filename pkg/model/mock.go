@@ -29,3 +29,16 @@ func (m *MockSuppressor) Process(frame []int16) ([]int16, error) {
 func (m *MockSuppressor) Reset()       { m.ResetCalls++ }
 func (m *MockSuppressor) Close() error { return nil }
 func (m *MockSuppressor) Name() string { return "mock" }
+
+// ProcessBatch implements BatchSuppressor.
+func (m *MockSuppressor) ProcessBatch(frames [][]int16) ([][]int16, error) {
+	out := make([][]int16, len(frames))
+	for i, f := range frames {
+		processed, err := m.Process(f)
+		if err != nil {
+			return out, err
+		}
+		out[i] = processed
+	}
+	return out, nil
+}

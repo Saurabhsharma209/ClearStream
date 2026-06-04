@@ -67,6 +67,11 @@ type Config struct {
 	// Default: 32.
 	MaxConcurrentSessions int
 
+	// ForwardOnly hints that this instance processes only the forward (caller→bot)
+	// audio path. When true, the suppressor pool is sized at 1× MaxConcurrentSessions
+	// instead of 2× (no reverse-path noise cancellation needed), halving memory use.
+	ForwardOnly bool
+
 	// EnableVAD enables Voice Activity Detection to skip suppression on silence
 	// frames, saving ~30% CPU on typical telephony calls. Default: false.
 	EnableVAD bool
@@ -181,6 +186,12 @@ func New(cfg Config) (*ClearStream, error) {
 	poolSize := cfg.MaxConcurrentSessions
 	if poolSize <= 0 {
 		poolSize = 32
+	}
+	if cfg.ForwardOnly {
+		// Forward-only: 1 suppressor per session instead of 2 (no reverse-path NC)
+		poolSize = poolSize
+	} else {
+		poolSize = poolSize * 2
 	}
 	pool, err := model.NewSuppressorPool(model.SuppressorConfig{
 		Backend:   cfg.Model,
