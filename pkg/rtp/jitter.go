@@ -32,12 +32,13 @@ type jitterEntry struct {
 //     then exponential fade-to-silence (sounds far more natural than immediate fade)
 //   - Mutex guarding on generatePLC/onGoodPacket so callers need no extra locking
 type JitterBuffer struct {
-	mu       sync.Mutex
-	buf      []jitterEntry
-	nextSeq  uint16
-	depth    int // current target buffer depth (frames), adapts over time
-	maxDepth int
-	primed   bool
+	mu           sync.Mutex
+	buf          []jitterEntry
+	nextSeq      uint16
+	initialDepth int // depth passed to NewJitterBuffer; restored on Reset()
+	depth        int // current target buffer depth (frames), adapts over time
+	maxDepth     int
+	primed       bool
 
 	// PLC state
 	consecutiveLoss int
@@ -57,9 +58,10 @@ func NewJitterBuffer(depth int) *JitterBuffer {
 		depth = defaultJitterDepth
 	}
 	return &JitterBuffer{
-		depth:    depth,
-		maxDepth: defaultJitterMaxDepth,
-		buf:      make([]jitterEntry, 0, depth*2),
+		initialDepth: depth,
+		depth:        depth,
+		maxDepth:     defaultJitterMaxDepth,
+		buf:          make([]jitterEntry, 0, depth*2),
 	}
 }
 
@@ -268,10 +270,11 @@ func (j *JitterBuffer) Reset() {
 	j.consecutiveLoss = 0
 	j.lastGoodFrame = nil
 	j.prevPLC = nil
+	j.lastArrival = time.Time{} // CS-002: zero so first post-reset packet doesn't compute stale inter-arrival delta
 	j.arrivalEMAMs = 0
 	j.arrivalVarMs = 0
 	j.adaptFrames = 0
-	j.depth = defaultJitterDepth
+	j.depth = j.initialDepth // restore configured depth, not the package-level default
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

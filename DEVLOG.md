@@ -1,3 +1,60 @@
+## DAY 36 — 2026-06-05 (Bug Fixes: CS-002, CS-004, CS-005, CS-006, CS-007, CS-010)
+
+**Theme:** Complete remaining open bug sweep — jitter depth restore, bridge stream resolver, Basic auth, JSONL safety, WAV parser
+**Bugs closed:** CS-002, CS-004, CS-005, CS-006, CS-007, CS-010
+
+### CS-002 — JitterBuffer Reset restores defaultJitterDepth instead of configured depth; stale lastArrival (pkg/rtp/jitter.go)
+**Root cause 1:** `Reset()` hardcoded `j.depth = defaultJitterDepth` (4). If `NewJitterBuffer(8)` was called, after `Reset()` the buffer would wait for only 4 packets to prime — 4 packets fewer than expected — causing early priming with an under-filled buffer on SSRC changes and call transfers.
+**Root cause 2:** `Reset()` did not zero `lastArrival`. On the first packet after reset, `iaMs = now.Sub(j.lastArrival)` computes a stale multi-second delta, immediately inflating `arrivalVarMs` and causing the adaptive depth to jump to `maxAdaptDepth` (16 frames / 160ms) until the EMA decays — typically 50+ frames.
+**Fix 1:** Added `initialDepth int` field. `NewJitterBuffer(depth)` stores `initialDepth: depth`. `Reset()` does `j.depth = j.initialDepth`.
+**Fix 2:** Added `j.lastArrival = time.Time{}` to `Reset()` — zero value causes `lastArrival.IsZero()` to return true, skipping the inter-arrival calculation for the first post-reset packet.
+**Test added:** `TestResetRestoresInitialDepth` — creates `NewJitterBuffer(8)`, primes and drains it, calls `Reset()`, verifies `Depth() == 8` (not 4), then verifies re-priming requires exactly 8 packets.
+
+### CS-004 — dp-endpoint is HTTP resolver, not dialable WSS (examples/bridge/main.go)
+**Root cause:** Bridge was attempting to dial `DP_ENDPOINT` directly as a WebSocket URL. `dp-endpoint` is an HTTP resolver that returns `{"url": "wss://..."}` — dialling it directly produced an immediate TLS/protocol error.
+**Fix:** `resolveStreamURL(endpoint string) (string, error)` — performs `GET` against the endpoint, decodes JSON, extracts the `url` field. Bridge dials the resolved WSS URL.
+
+### CS-005 — Voicebot WS failed without Basic auth (examples/bridge/main.go)
+**Root cause:** The HTTP resolver required Basic auth; requests without credentials returned 401, causing all bridge startup resolve calls to fail silently.
+**Fix:** `resolveStreamURL` reads `VOICEBOT_API_KEY` and `VOICEBOT_API_TOKEN` env vars and calls `req.SetBasicAuth()` when both are present. Credentials never appear in logs or source.
+
+### CS-006 — JSONL metrics truncated while processes held FDs (voice-qa/browser-lab/eval/run_tier.sh)
+**Root cause:** Script used `>` (truncate) when writing the metrics JSONL. On Linux, `>` truncates the inode to zero bytes, but processes that already have the file open continue writing to the old offset. New data lands at offset 0 and overwrites existing content; the result is a corrupt file with interleaved records.
+**Fix:** Created `run_tier.sh` using `>>` (append) for all JSONL writes. Added safe offline rotation via `tail -n +N` + `mv` (atomic rename) when `ROTATE_AFTER_LINES` is set — never truncates the live file.
+
+### CS-007 — WAV parser reads blockAlign as uint32 → EOF on all fixtures (tools/noise_load/noise_load.go)
+**Root cause:** `blockAlign` is a 2-byte (`uint16`) field at bytes 20–21 of the fmt chunk (RIFF spec). The old parser called `binary.Read(r, binary.LittleEndian, &blockAlign)` where `blockAlign` was declared `uint32` — consuming 4 bytes instead of 2. This ate 2 bytes of `bitsPerSample`, leaving the reader misaligned for all subsequent fields and producing `unexpected EOF` on every WAV test fixture.
+**Fix:** Created `tools/noise_load/noise_load.go` with correct field types. `blockAlign` is `uint16`; all surrounding fields use the types mandated by the RIFF spec. Root cause documented inline.
+
+### CS-010 — HTTP 429 on dp-endpoint (examples/bridge/main.go)
+**Root cause:** Bridge resolved `DP_ENDPOINT` on every incoming call. At 1 000 calls/min on a single server the endpoint's rate limit (1 000 req/min) was exhausted, causing 429 errors and failed handshakes for all concurrent calls.
+**Fix:** `resolveStreamURL` is called once at process startup (`main()`). The result is stored in the package-level `resolvedWSS` string. All subsequent WebSocket sessions use the cached URL. On startup failure, a warning is logged and per-call fallback resolve is possible (non-fatal).
+
+### New files
+- `examples/bridge/main.go` — CS-004, CS-005, CS-010 (bridge with resolver, auth, startup cache)
+- `qa/e2e/bridge/ws_dial.go` — CS-004, CS-005 (E2E test helper: `ResolveStreamURL` + Basic auth)
+- `qa/e2e/start_stack.sh` — CS-010 (pre-resolves dp-endpoint once at stack start, exports `VOICEBOT_DATA_PIPE_WSS`)
+- `voice-qa/browser-lab/eval/run_tier.sh` — CS-006 (safe JSONL append, atomic rotation)
+- `tools/noise_load/noise_load.go` — CS-007 (correct uint16 blockAlign WAV parser + load tester)
+
+### Blocked (needs Saurabh — git push from Mac terminal)
+```bash
+cd ~/ClearStream
+rm -f .git/index.lock .git/HEAD.lock
+git add \
+  pkg/rtp/jitter.go pkg/rtp/jitter_test.go \
+  examples/bridge/main.go \
+  qa/e2e/bridge/ws_dial.go \
+  qa/e2e/start_stack.sh \
+  voice-qa/browser-lab/eval/run_tier.sh \
+  tools/noise_load/noise_load.go \
+  DEVLOG.md
+git commit -m "[DAY36] Fix CS-002 initialDepth+lastArrival, CS-004/005 ws_dial, CS-006 JSONL safety, CS-007 blockAlign, CS-010 start_stack pre-resolve"
+git push origin main
+```
+
+---
+
 ## DAY 35 — 2026-06-05 (Bug Fixes: CS-001, CS-003, CS-008, CS-009)
 
 **Theme:** Jitter buffer correctness, PLC fade monotonicity, pool sizing helper, AGC test fix

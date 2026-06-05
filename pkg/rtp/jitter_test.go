@@ -433,6 +433,39 @@ func TestDetectPitch(t *testing.T) {
 	}
 }
 
+// TestResetRestoresInitialDepth is the CS-002 regression test.
+// NewJitterBuffer(8) should use depth=8 after Reset(), not the package default of 4.
+func TestResetRestoresInitialDepth(t *testing.T) {
+	const configuredDepth = 8
+	jb := NewJitterBuffer(configuredDepth)
+
+	// Prime the buffer by pushing enough packets, then drain it.
+	for i := uint16(0); i < configuredDepth; i++ {
+		jb.Push(i, uint32(i)*160, []byte{byte(i)})
+	}
+	for i := 0; i < configuredDepth; i++ {
+		jb.Pop()
+	}
+
+	// Now reset and verify depth is restored to configuredDepth, not defaultJitterDepth (4).
+	jb.Reset()
+	if got := jb.Depth(); got != configuredDepth {
+		t.Errorf("after Reset(), Depth() = %d, want %d (configured); got defaultJitterDepth instead", got, configuredDepth)
+	}
+
+	// Also verify the buffer re-primes at the configured depth after reset.
+	for i := uint16(0); i < configuredDepth-1; i++ {
+		primed := jb.Push(i, uint32(i)*160, []byte{byte(i)})
+		if primed {
+			t.Errorf("buffer primed early at seq %d (depth %d), want %d packets before prime", i, i+1, configuredDepth)
+		}
+	}
+	primed := jb.Push(configuredDepth-1, uint32(configuredDepth-1)*160, []byte{byte(configuredDepth - 1)})
+	if !primed {
+		t.Errorf("buffer not primed after %d packets (configured depth); Reset() broke re-prime logic", configuredDepth)
+	}
+}
+
 // sinApprox is a simple sin approximation so jitter_test stays math-import-free.
 func sinApprox(x float64) float64 {
 	// Bring x into [-π, π]
