@@ -1,0 +1,8 @@
+setup/env.local
+browser-lab/.run/
+browser-lab/orchestrator/.venv/
+browser-lab/results/
+pcap-captures/
+sipp/*.pcap
+**/__pycache__/
+.DS_Store

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ClearStream Lab — Noisy User</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 32px auto; padding: 0 16px; }
+  button { margin: 4px; padding: 8px 16px; }
+  label { display: block; margin: 12px 0 4px; }
+  .meter { display: inline-block; width: 200px; height: 14px; background: #eee; border-radius: 4px; overflow: hidden; vertical-align: middle; }
+  .meter > span { display: block; height: 100%; width: 0; background: #4caf50; transition: width .08s; }
+  .meter.noisy > span { background: #f44336; }
+  pre { background: #f5f5f5; padding: 8px; font-size: 12px; max-height: 160px; overflow: auto; }
+</style>
+</head>
+<body>
+<h2>Noisy user (mic + injected noise)</h2>
+<p>Sends 16 kHz mono PCM in <strong>160-sample (10 ms)</strong> frames to the orchestrator WebSocket.</p>
+
+<label>Orchestrator URL <input id="orchUrl" size="48" value="ws://localhost:8090/ingest"></label>
+<label>Noise level (0–1) <input id="noiseLevel" type="range" min="0" max="1" step="0.05" value="0.35"></label>
+<label><input type="checkbox" id="officeNoise" checked> Office static noise</label>
+
+<div>
+  <button id="btnConnect">Connect</button>
+  <button id="btnStart" disabled>Start mic</button>
+  <button id="btnStop" disabled>Stop</button>
+</div>
+<p>
+  Noisy <span class="meter noisy"><span id="mNoisy"></span></span>
+  Sent frames: <span id="frameCount">0</span>
+</p>
+<pre id="log"></pre>
+
+<script>
+const SAMPLE_RATE = 16000;
+const FRAME_SAMPLES = 160; // 10 ms @ 16 kHz — matches ClearStream pipeline
+
+let ws, audioCtx, scriptNode, framesSent = 0;
+let noiseBuf = null, noiseIdx = 0;
+
+function log(msg) {
+  const el = document.getElementById('log');
+  el.textContent += new Date().toISOString().slice(11, 23) + ' ' + msg + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+
+function rms(f32) {
+  let s = 0;
+  for (let i = 0; i < f32.length; i++) s += f32[i] * f32[i];
+  return Math.sqrt(s / f32.length);
+}
+
+function setMeter(id, v) {
+  document.getElementById(id).style.width = Math.min(v * 500, 100) + '%';
+}
+
+function buildNoiseBuffer(ctx, seconds) {
+  const len = SAMPLE_RATE * seconds;
+  const buf = ctx.createBuffer(1, len, SAMPLE_RATE);
+  const ch = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) {
+    ch[i] = (Math.random() * 2 - 1) * 0.15;
+    if (i % 800 < 40) ch[i] += 0.2; // keyboard click bursts
+  }
+  return buf;
+}
+
+document.getElementById('btnConnect').onclick = () => {
+  const url = document.getElementById('orchUrl').value;
+  ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => { log('connected ' + url); document.getElementById('btnStart').disabled = false; };
+  ws.onclose = () => log('closed');
+  ws.onerror = () => log('error');
+  ws.onmessage = e => {
+    if (typeof e.data === 'string') {
+      log('orchestrator: ' + e.data);
+    }
+  };
+};
+
+document.getElementById('btnStart').onclick = async () => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { log('connect first'); return; }
+  audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+  noiseBuf = buildNoiseBuffer(audioCtx, 2);
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: SAMPLE_RATE }, video: false });
+  const src = audioCtx.createMediaStreamSource(stream);
+  scriptNode = audioCtx.createScriptProcessor(FRAME_SAMPLES, 1, 1);
+  const level = () => parseFloat(document.getElementById('noiseLevel').value);
+  const office = () => document.getElementById('officeNoise').checked;
+
+  scriptNode.onaudioprocess = ev => {
+    const f32 = ev.inputBuffer.getChannelData(0);
+    const out = new Float32Array(f32.length);
+    for (let i = 0; i < f32.length; i++) {
+      let s = f32[i];
+      if (office() && noiseBuf) {
+        const n = noiseBuf.getChannelData(0)[noiseIdx % noiseBuf.length];
+        noiseIdx++;
+        s += n * level();
+      } else {
+        s += (Math.random() * 2 - 1) * level() * 0.2;
+      }
+      out[i] = Math.max(-1, Math.min(1, s));
+    }
+    setMeter('mNoisy', rms(out));
+    const i16 = new Int16Array(out.length);
+    for (let i = 0; i < out.length; i++) {
+      i16[i] = Math.max(-32768, Math.min(32767, out[i] * 32768));
+    }
+    ws.send(i16.buffer);
+    framesSent++;
+    document.getElementById('frameCount').textContent = String(framesSent);
+  };
+  src.connect(scriptNode);
+  scriptNode.connect(audioCtx.destination);
+  document.getElementById('btnStop').disabled = false;
+  log('mic streaming ' + FRAME_SAMPLES + ' samples/frame');
+};
+
+document.getElementById('btnStop').onclick = () => {
+  if (scriptNode) { scriptNode.disconnect(); scriptNode = null; }
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+  document.getElementById('btnStop').disabled = true;
+  log('stopped');
+};
+</script>
+</body>
+</html>

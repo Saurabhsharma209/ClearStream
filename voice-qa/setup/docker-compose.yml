@@ -1,0 +1,30 @@
+# Asterisk 18 + Redis for local Ingestix (ingestream) development.
+# Usage: docker compose -f voice-qa/setup/docker-compose.yml up -d
+
+services:
+  redis:
+    image: redis:6.2-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  asterisk18:
+    image: andrius/asterisk:18-current
+    platform: linux/amd64
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "5038:5038/tcp"
+      - "8088:8088/tcp"
+      - "9099:9099/tcp"
+    volumes:
+      - ../asterisk/config:/etc/asterisk/custom:ro
+    environment:
+      - ASTERISK_UID=1000
+    depends_on:
+      redis:
+        condition: service_healthy
