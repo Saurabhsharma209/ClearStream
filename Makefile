@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt vet clean poc bench test-race test-nocgo install poc-build poc-up poc-clean poc-generate-audio coverage coverage-html qa-cs-regression qa-office-conv-rnnoise qa-office-conv-full
+.PHONY: build test lint fmt vet clean poc bench test-race test-nocgo install poc-build poc-up poc-clean poc-generate-audio coverage coverage-html qa-cs-regression qa-office-conv-rnnoise qa-office-conv-full build-slim build-docker-scratch
 
 GOFLAGS ?= -trimpath
 BINARY  := clearstream
@@ -66,6 +66,22 @@ coverage-html:
 	go test -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Saved to coverage.html"
+
+# ── Slim SDK build targets (AQ-005) ──────────────────────────────────────────
+
+# build-slim: CGO_ENABLED=0, strip debug + DWARF, passthrough+rnnoise-Go backend.
+# Result: ~6 MB binary, no C runtime dependency, runs in Docker scratch.
+# Optimisation stack: -ldflags="-s -w" removes ~40% binary size vs default.
+build-slim:
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(BINARY)-slim ./cmd/clearstream/
+	@echo "Slim binary: $$(du -sh $(BINARY)-slim | cut -f1)"
+	@echo "To compress further: upx --best $(BINARY)-slim  (adds ~5ms startup)"
+
+# build-docker-scratch: multi-stage Docker build → FROM scratch image.
+# Result: ~8 MB image (binary + CA certs only). Requires Docker.
+build-docker-scratch:
+	docker build -f Dockerfile.slim -t clearstream-slim:latest .
+	@echo "Image size: $$(docker images clearstream-slim:latest --format '{{.Size}}')"
 
 # ── QA targets ───────────────────────────────────────────────────────────────
 

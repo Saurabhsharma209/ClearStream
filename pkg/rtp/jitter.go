@@ -118,9 +118,11 @@ func (j *JitterBuffer) Push(seq uint16, ts uint32, payload []byte) bool {
 		j.nextSeq = j.buf[0].seq
 	}
 
-	// Adapt depth every 50 frames (~500ms).
+	// Adapt depth every 100 frames (~1s).
+	// AQ-002: raised from 50→100 frames so bursty Wi-Fi jitter doesn't cause
+	// rapid depth oscillation (perceived as choppy playout rhythm).
 	j.adaptFrames++
-	if j.adaptFrames >= 50 {
+	if j.adaptFrames >= 100 {
 		j.adaptFrames = 0
 		j.adaptDepth()
 	}
@@ -295,19 +297,33 @@ func seqLess(a, b uint16) bool {
 }
 
 // detectPitch estimates the fundamental period of a speech frame using
-// normalised autocorrelation. Returns a period in [40, frameLen/2] samples,
-// which corresponds to 250 Hz–200 Hz at 16kHz (typical male/female speech).
+// normalised autocorrelation. Returns a period in [30, frameLen/2] samples.
+//
+// AQ-004: Search range widened from [40,400] → [30,450] samples.
+//   - Lower bound 30 (was 40): covers ~533 Hz at 16kHz (high female voices,
+//     children). The old 40-sample floor missed these, causing the PLC to
+//     pick a doubled period (octave error), which sounds like blabbering.
+//   - Upper bound 450 (was 400): covers ~35 Hz at 16kHz for very low-pitched
+//     voices and tonal background noise that should be repeated faithfully.
+//
+// Pitch continuity guard (AQ-004): if the detected period deviates more than
+// 50% from the previous call's period, the previous period is reused. Octave
+// errors (sudden 2× or 0.5× jumps) are the most common PLC artifact causing
+// the "blabbering" sound — this guard eliminates them.
+//
 // Falls back to frameLen/4 if no clear pitch is found.
+var prevDetectedPitch int // package-level continuity state (reset is harmless)
+
 func detectPitch(frame []int16) int {
 	n := len(frame)
 	if n < 80 {
 		return n // too short to detect
 	}
 
-	minLag := 40  // ~400 Hz at 16kHz
+	minLag := 30  // AQ-004: was 40 — now covers ~533 Hz at 16kHz
 	maxLag := n / 2
-	if maxLag > 400 { // cap at 100 Hz (lowest reasonable pitch)
-		maxLag = 400
+	if maxLag > 450 { // AQ-004: was 400 — covers ~35 Hz lower bound
+		maxLag = 450
 	}
 
 	// Compute energy of full frame for normalisation.
@@ -335,5 +351,16 @@ func detectPitch(frame []int16) int {
 		}
 	}
 
+	// AQ-004: pitch continuity guard — reject octave jumps.
+	// If the new period deviates > 50% from the previous period, reuse the
+	// previous one. This eliminates the "blabbering" artifact caused by the
+	// autocorrelation picking a doubled or halved period on ambiguous frames.
+	if prevDetectedPitch > 0 {
+		ratio := float64(bestLag) / float64(prevDetectedPitch)
+		if ratio > 1.5 || ratio < 0.67 {
+			bestLag = prevDetectedPitch // reuse previous — octave jump rejected
+		}
+	}
+	prevDetectedPitch = bestLag
 	return bestLag
 }

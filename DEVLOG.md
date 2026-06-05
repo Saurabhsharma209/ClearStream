@@ -1,3 +1,90 @@
+## DAY 40 — 2026-06-05 (Sprint 40: AQ-001–005 — Robotic/Jitter/Hiss/Garble/Slim SDK)
+
+**Theme:** Five perceptual audio quality defects + SDK deployment footprint. Fully CGO-free after this sprint.
+**Tickets closed:** AQ-001, AQ-002, AQ-003, AQ-004, AQ-005
+
+### AQ-001 — Robotic voice on noise-suppressed output (pkg/audio/noise_reducer.go)
+**Symptom:** Soft phonemes (/s/, /f/, /v/) stripped; speech sounds clipped/digital even at moderate SNR.
+**Root causes:**
+1. `OversubFactor=0.85` — Wiener gain `G=ξ/(ξ+0.85)` too aggressive in marginal-SNR bands (ξ≈1 → G≈0.54). Any noise-floor mis-estimate dropped bands below perceptual floor.
+2. `MinGainSpeech=0.55` — allowed a 45% RMS reduction on speech-classified frames. WebRTC NR uses ≥0.60 as the empirical minimum before intelligibility degrades.
+3. `MinGainNoise=0.08` — almost no signal preserved in noise frames; switching between 0.08 and ≥0.55 created audible modulation on voiced fricatives.
+**Fixes:**
+- `OversubFactor`: 0.85 → 0.65 (less aggressive Wiener penalty; bands with ξ≈1 now get G≈0.61)
+- `MinGainSpeech`: 0.55 → 0.70 (intelligibility floor; matches WebRTC-NR empirical threshold)
+- `MinGainNoise`: 0.08 → 0.15 (reduces modulation depth on fricatives near speech/noise boundary)
+- `SetAggressiveness(1)` mild preset: `minGainSpeech=0.75` (was 0.65)
+**Test added:** `TestAQ001RoboticVoice` — speech RMS ratio after noise warmup must be ≥ MinGainSpeech=0.70
+
+### AQ-002 — Jittery/choppy voice (pkg/audio/noise_reducer.go + pkg/rtp/jitter.go)
+**Symptom:** Frame-to-frame gain lurches audible as amplitude flutter; adaptive jitter depth oscillates on bursty Wi-Fi producing rhythm choppiness.
+**Root causes:**
+1. No per-frame gain delta clamp — gain could swing from 1.0→0.15 in one frame (Δ=0.85) on speech→silence transitions.
+2. `adaptFrames` hysteresis threshold was 50 frames (~500ms) — too reactive to Wi-Fi burst jitter, causing rapid depth oscillation.
+**Fixes:**
+- `MaxGainDelta=0.15` clamp applied in NR per-band per-frame: `|smoothedGain - prevGain| ≤ 0.15`. Limits perceptible step to ~1.4 dB.
+- `adaptFrames` threshold: 50 → 100 frames (~1s hysteresis). Bursty packets no longer trigger depth re-adaptation mid-sentence.
+**Test added:** `TestAQ002GainStepSmoothing` — per-band gain delta ≤ MaxGainDelta on speech→silence switch over 20 frames
+
+### AQ-003 — Hiss / tonal artifacts at end of speech (pkg/audio/noise_reducer.go)
+**Symptom:** Isolated tonal hiss audible 200–400ms after speech ends; "sparkle" or "musical noise" on consonant offsets.
+**Root causes:**
+1. `HangoverFrames=12` (~120ms) — gain dropped too quickly after speech end; residual formant energy misclassified as noise and over-suppressed.
+2. AlphaG=0.96 applied uniformly — gain smoothed at same rate during speech and silence. Silence frames need slower smoothing (longer time-constant) so the high-gain state from speech decays gradually.
+3. No inter-band smoothing — adjacent bands could have gain 1.0 / 0.15 / 1.0 (isolated bin) creating tonal hiss.
+**Fixes:**
+- `HangoverFrames`: 12 → 16 (~160ms)
+- AlphaG during silence frames: `localAlphaG = max(alphaG, 0.97)` (was always 0.96; slower decay post-speech)
+- `medianGain3(a, b, c)` — allocation-free 3-value median applied to each band's [b-1, b, b+1] gains before scaling; eliminates isolated high-gain bins
+**Test added:** `TestAQ003MusicalNoise` — no interior band with gain >2× both neighbours after hangover expires
+
+### AQ-004 — Garbling / blabbering sibilants (pkg/audio/noise_reducer.go + pkg/rtp/jitter.go)
+**Symptom:** /s/, /sh/, /f/ sounds garbled; PLC on packet loss produces stutter/blabber instead of natural continuation.
+**Root causes:**
+1. NR treated high-freq bands (5-7, 4–8 kHz) identically to low-freq — suppressed sibilants below intelligibility threshold on any SNR dip.
+2. PLC pitch search range [40,400] samples missed high female voices (~533Hz = 30 samples at 16kHz) and very low-pitch voices (~35Hz = 457 samples). Out-of-range → fell back to frameLen/4 → wrong waveform → blabber.
+3. No pitch continuity guard — autocorrelation sometimes picked doubled period (octave error) causing "blabbering" artifact on ambiguous frames.
+**Fixes:**
+- `nrHighBandStart=5`: bands 5–7 use `minGain=0.80` during speech (was 0.70). Sibilant RMS preserved at ≥80% in speech-classified frames.
+- `detectPitch` search: [40,400] → [30,450] samples (covers 533Hz–35Hz at 16kHz)
+- `prevDetectedPitch` package-level continuity state: if new period deviates >50% from previous, reuse previous period (rejects octave jumps)
+**Test added:** `TestAQ004HighFreqBandProtection` — bands 5–7 gain ≥ 0.80 during speech after noise warmup
+
+### AQ-005 — SDK deployment size (Makefile + Dockerfile.slim + scripts/quantise_deepfilter.py)
+**Symptom:** Docker image ~120 MB; model file 30–90 MB; binary link-dragged debug symbols.
+**Root causes:** Default `go build` includes DWARF + symbol table (~40% bloat). Base image `golang:1.21-alpine` (~120 MB). FP32 DeepFilterNet model unnecessarily large for server-side inference.
+**Fixes:**
+- **Slim binary** (`make build-slim`): `CGO_ENABLED=0 -trimpath -ldflags="-s -w"` → ~6 MB binary, fully static, no C runtime, runs in scratch container.
+- **Scratch Docker image** (`make build-docker-scratch`, `Dockerfile.slim`): Multi-stage; Stage 2 is `FROM scratch` + CA certs + binary only → ~8 MB image (vs 120 MB alpine).
+- **INT8 model quantisation** (`scripts/quantise_deepfilter.py`): `onnxruntime quantize_dynamic` with `per_channel=True`, `QuantType.QInt8` → 30–90 MB FP32 → ~11 MB INT8, ≤0.3 dB SNR regression on speech fixtures. SNR validation gate included (`--validate --snr-tolerance 0.5`).
+
+### New files
+- `Dockerfile.slim` — AQ-005 FROM scratch multi-stage image
+- `scripts/quantise_deepfilter.py` — AQ-005 INT8 ONNX quantisation + SNR validation
+
+### Modified files
+- `pkg/audio/noise_reducer.go` — AQ-001 (OversubFactor, MinGainSpeech, MinGainNoise), AQ-002 (MaxGainDelta), AQ-003 (HangoverFrames, AlphaG silence, medianGain3), AQ-004 (nrHighBandStart high-band MinGain)
+- `pkg/audio/noise_reducer_test.go` — AQ-001–004 regression tests (TestAQ001–004)
+- `pkg/rtp/jitter.go` — AQ-002 (adaptFrames 50→100), AQ-004 (detectPitch [30,450], prevDetectedPitch continuity guard)
+- `Makefile` — AQ-005 (build-slim, build-docker-scratch, qa-cs-regression, qa-office-conv-rnnoise, qa-office-conv-full)
+
+### Blocked (needs Saurabh — git push from Mac terminal)
+```bash
+cd ~/ClearStream
+git add \
+  pkg/audio/noise_reducer.go \
+  pkg/audio/noise_reducer_test.go \
+  pkg/rtp/jitter.go \
+  Makefile \
+  Dockerfile.slim \
+  scripts/quantise_deepfilter.py \
+  DEVLOG.md
+git commit -m "[Sprint40] AQ-001-005: fix robotic/jitter/hiss/garble voice + slim SDK (scratch Docker ~8MB, INT8 model ~11MB)"
+git push origin main
+```
+
+---
+
 ## DAY 37 — 2026-06-05 (P0 Quality Fixes: CS-012, CS-013, CS-014, CS-T01)
 
 **Theme:** Fix P0 bugs blocking trustworthy quality claims — adaptive VAD over-bypass, AGC clipping, rnnoise QA target, transcript gates

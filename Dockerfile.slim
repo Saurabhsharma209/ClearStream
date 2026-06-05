@@ -1,0 +1,62 @@
+# Dockerfile.slim — AQ-005: minimal scratch image for ClearStream SDK.
+#
+# Stage 1: build a fully static binary (CGO_ENABLED=0).
+# Stage 2: copy only the binary into FROM scratch — no glibc, no shell, no OS.
+# Final image size: ~6–8 MB (binary only + CA certs for TLS).
+#
+# Build:
+#   docker build -f Dockerfile.slim -t clearstream-slim:latest .
+#
+# Run:
+#   docker run --rm -p 8081:8081 clearstream-slim:latest server --http :8081
+#
+# Why scratch?
+#   - No CVE surface from base OS packages.
+#   - Image size: ~8 MB vs ~120 MB for golang:1.21-alpine.
+#   - Cold start: ~50ms (no init system).
+
+# ── Stage 1: builder ──────────────────────────────────────────────────────────
+FROM golang:1.21-alpine AS builder
+
+WORKDIR /build
+
+# Copy module files first for layer caching.
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source.
+COPY . .
+
+# Build static binary: CGO_ENABLED=0 + strip debug symbols.
+# -trimpath: removes build machine paths from binary (reproducible builds).
+# -ldflags="-s -w": strips symbol table (-s) and DWARF debug info (-w).
+#   Typical saving: 30–40% over default build.
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build \
+      -trimpath \
+      -ldflags="-s -w -extldflags '-static'" \
+      -o /build/clearstream \
+      ./cmd/clearstream/
+
+# Verify the binary is truly static (no dynamic deps).
+RUN ldd /build/clearstream 2>&1 | grep -q "not a dynamic executable" || \
+    { echo "WARNING: binary has dynamic deps — CGO may be active"; }
+
+# ── Stage 2: minimal runtime ──────────────────────────────────────────────────
+FROM scratch
+
+# CA certificates: needed for TLS connections (dp-endpoint HTTPS resolver,
+# Azure OpenAI, etc.). Pulled from the builder stage.
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+# The binary — nothing else.
+COPY --from=builder /build/clearstream /clearstream
+
+# Expose default ports.
+# 8081: HTTP bridge / WebSocket stream
+# 5004: RTP listen (UDP)
+EXPOSE 8081
+EXPOSE 5004/udp
+
+ENTRYPOINT ["/clearstream"]
+CMD ["server", "--http", ":8081"]

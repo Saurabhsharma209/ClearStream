@@ -225,3 +225,167 @@ func TestAdaptiveNoiseReducer_SetAggressiveness(t *testing.T) {
 	}
 	// No panics = pass (behavioral difference needs warmup to be measurable)
 }
+
+// TestAQ001RoboticVoice is the AQ-001 regression test.
+// Verifies that speech-classified bands keep at least MinGainSpeech (0.70)
+// gain so soft phonemes are not over-suppressed (robotic effect).
+func TestAQ001RoboticVoice(t *testing.T) {
+	nr := NewAdaptiveNoiseReducer()
+
+	// Warm up noise floor with quiet background.
+	noiseFrame := make([]int16, 160)
+	for i := range noiseFrame {
+		noiseFrame[i] = 50
+	}
+	for i := 0; i < 60; i++ {
+		nr.Process(noiseFrame) //nolint:errcheck
+	}
+
+	// Speech frame: RMS ~4000 (well above SpeechThresh=280).
+	speechFrame := make([]int16, 160)
+	for i := range speechFrame {
+		if i%2 == 0 {
+			speechFrame[i] = 4000
+		} else {
+			speechFrame[i] = -4000
+		}
+	}
+	out, err := nr.Process(speechFrame)
+	if err != nil {
+		t.Fatalf("Process error: %v", err)
+	}
+
+	inRMS := rmsInt16(speechFrame)
+	outRMS := rmsInt16(out)
+	ratio := outRMS / inRMS
+
+	t.Logf("AQ-001: inRMS=%.0f outRMS=%.0f ratio=%.3f (MinGainSpeech=%.2f)",
+		inRMS, outRMS, ratio, nr.MinGainSpeech)
+
+	// QA gate: output must retain at least MinGainSpeech fraction of input.
+	if ratio < nr.MinGainSpeech {
+		t.Errorf("AQ-001 FAIL: speech RMS ratio=%.3f < MinGainSpeech=%.2f — robotic voice",
+			ratio, nr.MinGainSpeech)
+	}
+}
+
+// TestAQ002GainStepSmoothing is the AQ-002 regression test.
+// Verifies that per-frame band gain changes are clamped to MaxGainDelta.
+func TestAQ002GainStepSmoothing(t *testing.T) {
+	nr := NewAdaptiveNoiseReducer()
+
+	// Warm up with speech to establish high gain state.
+	speechFrame := make([]int16, 160)
+	for i := range speechFrame {
+		if i%2 == 0 {
+			speechFrame[i] = 4000
+		} else {
+			speechFrame[i] = -4000
+		}
+	}
+	for i := 0; i < 30; i++ {
+		nr.Process(speechFrame) //nolint:errcheck
+	}
+
+	// Switch to silence — gain should drop, but no frame-to-frame jump > MaxGainDelta.
+	silentFrame := make([]int16, 160)
+	prevGains := make([]float64, nrBands)
+	for b := range prevGains {
+		prevGains[b] = nr.bandGainPrev[b]
+	}
+
+	for frame := 0; frame < 20; frame++ {
+		nr.Process(silentFrame) //nolint:errcheck
+		for b := 0; b < nrBands; b++ {
+			delta := math.Abs(nr.bandGainPrev[b] - prevGains[b])
+			if delta > nr.MaxGainDelta+1e-9 {
+				t.Errorf("AQ-002 FAIL: frame %d band %d delta=%.4f > MaxGainDelta=%.4f",
+					frame, b, delta, nr.MaxGainDelta)
+			}
+			prevGains[b] = nr.bandGainPrev[b]
+		}
+	}
+	t.Logf("AQ-002 PASS: all gain steps ≤ MaxGainDelta=%.2f", nr.MaxGainDelta)
+}
+
+// TestAQ003MusicalNoise is the AQ-003 regression test.
+// After speech ends and hangover expires, no isolated band should have
+// gain >> its neighbours (the tonal-hiss / musical-noise signature).
+func TestAQ003MusicalNoise(t *testing.T) {
+	nr := NewAdaptiveNoiseReducer()
+
+	noiseFrame := make([]int16, 160)
+	for i := range noiseFrame {
+		noiseFrame[i] = 60
+	}
+	for i := 0; i < 60; i++ {
+		nr.Process(noiseFrame) //nolint:errcheck
+	}
+
+	speechFrame := make([]int16, 160)
+	for i := range speechFrame {
+		if i%2 == 0 {
+			speechFrame[i] = 5000
+		} else {
+			speechFrame[i] = -5000
+		}
+	}
+	for i := 0; i < 10; i++ {
+		nr.Process(speechFrame) //nolint:errcheck
+	}
+
+	// Wait for hangover to expire.
+	for i := 0; i < nr.HangoverFrames+5; i++ {
+		nr.Process(noiseFrame) //nolint:errcheck
+	}
+
+	// No interior band should be isolated high — musical noise check.
+	for b := 1; b < nrBands-1; b++ {
+		g := nr.bandGainPrev[b]
+		left := nr.bandGainPrev[b-1]
+		right := nr.bandGainPrev[b+1]
+		if g > 0.25 && g > 2*left && g > 2*right {
+			t.Errorf("AQ-003 FAIL: band %d isolated gain=%.3f (neighbours %.3f,%.3f) — musical noise",
+				b, g, left, right)
+		}
+	}
+	t.Logf("AQ-003 PASS: no isolated bands after hangover=%d frames", nr.HangoverFrames)
+}
+
+// TestAQ004HighFreqBandProtection is the AQ-004 regression test.
+// High-frequency bands (nrHighBandStart+) must hold gain ≥ 0.80 during speech
+// to protect sibilants (s, sh, f, th) from being suppressed into garbling.
+func TestAQ004HighFreqBandProtection(t *testing.T) {
+	nr := NewAdaptiveNoiseReducer()
+
+	noiseFrame := make([]int16, 160)
+	for i := range noiseFrame {
+		noiseFrame[i] = 80
+	}
+	for i := 0; i < 60; i++ {
+		nr.Process(noiseFrame) //nolint:errcheck
+	}
+
+	speechFrame := make([]int16, 160)
+	for i := range speechFrame {
+		if i%2 == 0 {
+			speechFrame[i] = 3000
+		} else {
+			speechFrame[i] = -3000
+		}
+	}
+	for i := 0; i < 15; i++ {
+		nr.Process(speechFrame) //nolint:errcheck
+	}
+
+	const highBandFloor = 0.80
+	for b := nrHighBandStart; b < nrBands; b++ {
+		g := nr.bandGainPrev[b]
+		if g < highBandFloor-0.01 {
+			t.Errorf("AQ-004 FAIL: high-freq band %d gain=%.3f < %.2f — sibilants suppressed → garbling",
+				b, g, highBandFloor)
+		}
+	}
+	t.Logf("AQ-004 PASS: high-freq bands %d–%d gain ≥ %.2f during speech",
+		nrHighBandStart, nrBands-1, highBandFloor)
+}
