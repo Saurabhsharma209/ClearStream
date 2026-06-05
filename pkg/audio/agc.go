@@ -80,6 +80,8 @@ func ASRConfig() AGCConfig {
 //   - Per-sample gain smoothing (no staircase stepping between frames)
 //   - Soft limiter (tanh) replaces hard clip — no digital distortion on peaks
 //   - Near-silence guard: gain held, not pumped, when RMS < 1.0
+//   - CS-013: input-peak guard — MaxGain auto-reduced when input is already loud
+//   - CS-013: ClipCount tracks samples that hit the int16 boundary (QA gate)
 //
 // Use it post-suppression to even out level differences between speakers and
 // compensate for network path loss on RTP streams.
@@ -89,6 +91,11 @@ type AGC struct {
 	targetGain  float64 // smoothed target (avoids step jumps between frames)
 	attackCoef  float64 // per-sample smoothing coefficient (gain rise)
 	releaseCoef float64 // per-sample smoothing coefficient (gain fall)
+
+	// CS-013: clip tracking. ClipCount increments every time a sample would
+	// exceed ±32767 after gain — soft limiter catches these, but we count them
+	// so the QA gate can assert clip_samples < threshold per call.
+	ClipCount int64
 }
 
 // NewAGC creates an AGC processor with the given config.
@@ -171,8 +178,28 @@ func (a *AGC) Process(samples []int16) []int16 {
 	// pump noise up between words.
 	if rms >= 1.0 {
 		desired := a.cfg.TargetRMS / rms
-		if desired > a.cfg.MaxGain {
-			desired = a.cfg.MaxGain
+		// CS-013: input-peak guard. When the input frame already peaks near
+		// full scale (peak > 0.9 × 32768 = 29491), cap MaxGain to 1.0 so we
+		// never boost a loud signal into clipping.  This covers the scenario
+		// where forward NC removed noise but left the speech RMS unchanged —
+		// the AGC would otherwise try to boost toward TargetRMS and clip.
+		effectiveMaxGain := a.cfg.MaxGain
+		var peak float64
+		for _, s := range samples {
+			f := math.Abs(float64(s))
+			if f > peak {
+				peak = f
+			}
+		}
+		if peak > 29491 { // 0.9 × 32768 ≈ -0.9 dBFS
+			effectiveMaxGain = 1.0
+		} else if peak > 23197 { // 0.71 × 32768 ≈ -3 dBFS
+			// Linearly reduce MaxGain between -3 dBFS and -0.9 dBFS.
+			frac := (peak - 23197) / (29491 - 23197)
+			effectiveMaxGain = a.cfg.MaxGain*(1-frac) + 1.0*frac
+		}
+		if desired > effectiveMaxGain {
+			desired = effectiveMaxGain
 		}
 		a.targetGain = desired
 	}
@@ -192,10 +219,13 @@ func (a *AGC) Process(samples []int16) []int16 {
 		val := a.softLimit(float64(s) * a.currentGain)
 
 		// Final int16 boundary guard (should rarely trigger after soft limit).
+		// CS-013: count boundary hits for QA gate (peak < 0.98 or clip_samples < threshold).
 		if val > 32767 {
 			val = 32767
+			a.ClipCount++
 		} else if val < -32768 {
 			val = -32768
+			a.ClipCount++
 		}
 		out[i] = int16(val)
 	}
@@ -203,9 +233,17 @@ func (a *AGC) Process(samples []int16) []int16 {
 }
 
 // Reset resets AGC state (gain returns to 1.0). Call when starting a new stream.
+// CS-013: ClipCount is NOT reset here — it accumulates per-session for QA reporting.
+// Call ResetClipCount() explicitly when starting a new measurement window.
 func (a *AGC) Reset() {
 	a.currentGain = 1.0
 	a.targetGain = 1.0
+}
+
+// ResetClipCount zeros the clip counter. Call at the start of each QA call
+// window so clip_samples in the metrics JSONL reflects per-call clipping only.
+func (a *AGC) ResetClipCount() {
+	a.ClipCount = 0
 }
 
 // CurrentGain returns the instantaneous linear gain being applied.

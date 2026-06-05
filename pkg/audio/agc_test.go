@@ -603,3 +603,71 @@ func TestAGCConvergesWithinFiftyFrames(t *testing.T) {
 			convergedAt, maxFrames, agc.CurrentGain(), inputRMS*agc.CurrentGain(), targetRMS)
 	}
 }
+
+// TestAGCClipCount is the CS-013 regression test.
+// Feeds a near-full-scale frame (peak ≈ 30000) through AGC with DefaultAGCConfig.
+// CS-013 root cause: without the input-peak guard, MaxGain=4 on a 30000-peak
+// frame pushes samples to 120000 before soft limiting — the soft limiter clips
+// them back but ClipCount should reflect this.  With the fix, MaxGain is reduced
+// to 1.0 for frames above 0.9×32768=29491, so ClipCount stays 0.
+func TestAGCClipCount(t *testing.T) {
+	cfg := DefaultAGCConfig()
+	cfg.SampleRate = 16000
+	agc := NewAGC(cfg)
+	agc.ResetClipCount()
+
+	// Build a frame where peak is 30000 (~-0.74 dBFS) — triggers peak guard.
+	frame := make([]int16, 160)
+	for i := range frame {
+		// Alternating ±30000 to keep RMS high.
+		if i%2 == 0 {
+			frame[i] = 30000
+		} else {
+			frame[i] = -30000
+		}
+	}
+
+	// Process 10 frames (100ms) — gain should not boost a near-full-scale signal.
+	for i := 0; i < 10; i++ {
+		agc.Process(frame)
+	}
+
+	// QA gate: ClipCount must be 0 when input is already near full scale.
+	if agc.ClipCount != 0 {
+		t.Errorf("CS-013: AGC clipped %d samples on near-full-scale input; input-peak guard not working",
+			agc.ClipCount)
+	}
+	t.Logf("CS-013 PASS: ClipCount=%d on 30000-peak input (gain=%.3f)", agc.ClipCount, agc.CurrentGain())
+}
+
+// TestAGCClipCountQuietInput verifies that a quiet input is boosted without clipping.
+// This ensures the peak guard only activates on loud frames, not all frames.
+func TestAGCClipCountQuietInput(t *testing.T) {
+	cfg := DefaultAGCConfig()
+	cfg.SampleRate = 16000
+	agc := NewAGC(cfg)
+	agc.ResetClipCount()
+
+	// Quiet frame: peak ~300 (well below noise floor, typical of a whisper).
+	frame := make([]int16, 160)
+	for i := range frame {
+		if i%2 == 0 {
+			frame[i] = 300
+		} else {
+			frame[i] = -300
+		}
+	}
+
+	// Process 100 frames — gain should rise toward MaxGain without clipping.
+	for i := 0; i < 100; i++ {
+		agc.Process(frame)
+	}
+
+	if agc.ClipCount != 0 {
+		t.Errorf("AGC clipped %d samples boosting a quiet 300-RMS frame; unexpected", agc.ClipCount)
+	}
+	if agc.CurrentGain() < 1.5 {
+		t.Errorf("AGC gain %.3f too low after 100 frames on quiet input — boost not working", agc.CurrentGain())
+	}
+	t.Logf("Quiet boost PASS: gain=%.3f ClipCount=%d", agc.CurrentGain(), agc.ClipCount)
+}

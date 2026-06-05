@@ -1,3 +1,70 @@
+## DAY 37 — 2026-06-05 (P0 Quality Fixes: CS-012, CS-013, CS-014, CS-T01)
+
+**Theme:** Fix P0 bugs blocking trustworthy quality claims — adaptive VAD over-bypass, AGC clipping, rnnoise QA target, transcript gates
+**Bugs closed:** CS-012, CS-013, CS-014/CS-T03, CS-T01
+
+### CS-012 — Adaptive VAD over-bypasses on continuous office noise (pkg/audio/vad.go)
+**Evidence:** On `raw_audio.wav`, adaptive VAD classified only 10% speech vs 72% static VAD; suppressor skipped ~90% of the time.
+**Root cause 1 — SensitivityFactor too low (3.0):** `threshold = noiseFloor × 3.0`. On HVAC noise (floor ~800), threshold=2400. But the calibration mean was pulled up by bursty keystrokes (~1160 RMS), giving threshold=3480 — above typical speech — so even speech frames were bypassed.
+**Root cause 2 — Mean calibration biased by bursts:** 10 keystroke bursts in a 50-frame window inflate the mean significantly. A 20th-percentile estimator ignores the top 80% of bursts and tracks the true steady-state floor.
+**Root cause 3 — No minimum speech floor:** Frames 50% above the noise floor should never be bypassed, regardless of the threshold — they're almost certainly speech carrying noise.
+**Fixes:**
+1. `SensitivityFactor`: 3.0 → 4.5 (calibrated against 20th-pct floor, so effectively lower multiplier on a lower base)
+2. Calibration: `noiseAccum/frameCount` (mean) → 20th-percentile of `rmsWindow` (sorted slice)
+3. `MinSpeechMargin: 1.5` — frames with RMS ≥ `noiseFloor × 1.5` always classified speech, hangover reset
+4. `SpeechRatio()` method added — QA gate: must be within ±20% of static VAD on speech-heavy fixtures
+**Tests added:** `TestAdaptiveVADSpeechRatio` (≥40% speech on 60%-speech fixture), `TestAdaptiveVADPercentileFloor` (bursty noise floor ≤600 vs mean 1160)
+
+### CS-013 — AGC clipping on forward/reverse legs (pkg/audio/agc.go + agc_test.go)
+**Evidence:** Live E2E `forward_out`/`reverse_out` peak 1.0 consistently; `ingest_adaptive_agc` had 633 clipped samples.
+**Root cause:** `MaxGain=4.0` applied to near-full-scale input (peak ~30000 = -0.74 dBFS). Soft limiter shapes peaks but `ClipCount` was not tracked — no QA gate existed.
+**Fixes:**
+1. **Input-peak guard:** When frame peak > 29491 (-0.9 dBFS), `effectiveMaxGain` reduced to 1.0. Between -3 dBFS (23197) and -0.9 dBFS, MaxGain linearly interpolated from `cfg.MaxGain` → 1.0. This is computed per-frame, not per-call, so a loud burst doesn't permanently suppress gain.
+2. **`ClipCount int64`** field on AGC — increments when any sample hits the int16 ±32767 boundary after soft-limit. Proxy JSONL and QA sheet can now gate on `clip_samples < threshold`.
+3. **`ResetClipCount()`** — call at call start for per-call JSONL accuracy.
+**Tests added:** `TestAGCClipCount` (near-full-scale 30000-peak → ClipCount=0), `TestAGCClipCountQuietInput` (quiet 300 RMS → boosted without clipping)
+
+### CS-014 / CS-T03 — Mac QA builds use rnnoise passthrough, NC quality unvalidated (Makefile)
+**Evidence:** All offline presets identical except AGC; `CGO_ENABLED=0` silently swaps rnnoise for passthrough.
+**Fixes:** Added three Makefile targets:
+- `make qa-cs-regression` — fast CGO=0 unit suite (CS-001→009, CS-012, CS-013)
+- `make qa-office-conv-rnnoise` — `CGO_ENABLED=1 -tags rnnoise` build + eval; fails if `CGO_ENABLED=0 && STRICT_NC=1`
+- `make qa-office-conv-full CALLS=N DURATION=D` — full E2E matrix (depends on qa-cs-regression)
+
+### CS-T01 — No real transcript gates (qa/eval/transcript_proxy_eval.py + qa/e2e/generate_qa_sheet.py)
+**Evidence:** Spectral proxy flat at ~55% Char for every preset — cannot rank configs or catch speech destruction.
+**Fixes:**
+- `qa/eval/transcript_proxy_eval.py` — transcribes `condition_*.wav` with faster-whisper, computes Char/Word accuracy vs reference, applies regression gate: `Char drop vs passthrough baseline ≤ 5%`. LLM semantic score deferred (wired but returns `null` until `AZURE_OPENAI_API_KEY`/`AZURE_OPENAI_ENDPOINT` are set).
+- `qa/e2e/generate_qa_sheet.py` — joins proxy JSONL + `transcript_eval.json` into `qa_sheet.json`/`.csv` with one row per preset showing SNR, latency, ClipCount, Char, Word, LLM, gate result.
+
+### New files
+- `qa/eval/transcript_proxy_eval.py` — CS-T01 transcript gate
+- `qa/e2e/generate_qa_sheet.py` — CS-T01 QA sheet aggregator
+
+### Modified files
+- `pkg/audio/vad.go` — CS-012 (percentile calibration, MinSpeechMargin, SpeechRatio)
+- `pkg/audio/vad_test.go` — CS-012 regression tests
+- `pkg/audio/agc.go` — CS-013 (peak guard, ClipCount, ResetClipCount)
+- `pkg/audio/agc_test.go` — CS-013 regression tests
+- `Makefile` — CS-014 QA targets
+
+### Blocked (needs Saurabh — git push from Mac terminal)
+```bash
+cd ~/ClearStream
+rm -f .git/index.lock .git/HEAD.lock
+git add \
+  pkg/audio/vad.go pkg/audio/vad_test.go \
+  pkg/audio/agc.go pkg/audio/agc_test.go \
+  Makefile \
+  qa/eval/transcript_proxy_eval.py \
+  qa/e2e/generate_qa_sheet.py \
+  DEVLOG.md
+git commit -m "[DAY37] P0 fixes: CS-012 adaptive VAD percentile+margin, CS-013 AGC peak guard+ClipCount, CS-014 rnnoise Makefile, CS-T01 transcript gates"
+git push origin main
+```
+
+---
+
 ## DAY 36 — 2026-06-05 (Bug Fixes: CS-002, CS-004, CS-005, CS-006, CS-007, CS-010)
 
 **Theme:** Complete remaining open bug sweep — jitter depth restore, bridge stream resolver, Basic auth, JSONL safety, WAV parser

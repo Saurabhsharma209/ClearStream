@@ -288,3 +288,122 @@ func TestQuickVAD_CustomThreshold(t *testing.T) {
 		t.Error("expected true with RMS~500 and threshold=100")
 	}
 }
+
+// TestAdaptiveVADSpeechRatio is the CS-012 regression test.
+//
+// Simulates a call with continuous office background noise (HVAC ~800 RMS)
+// plus 60% speech frames (RMS ~4000, typical telephony speech level).
+// Before CS-012: SensitivityFactor=3.0 + mean noise floor calibration gave
+// threshold ≈ 2400 — which is below the mixed-frame RMS, but the adaptive
+// calibration using mean of bursty noise could land much higher (~3200),
+// causing ~90% frames to be classified as silence.
+// After CS-012: 20th-percentile noise floor + SensitivityFactor=4.5 +
+// MinSpeechMargin=1.5 ensure speech-heavy fixtures score ≥52% speech rate.
+//
+// QA gate: adaptive speech % must be within ±20% of static VAD speech % on
+// speech-heavy fixtures (static VAD scores ~60% → adaptive must be ≥40%).
+func TestAdaptiveVADSpeechRatio(t *testing.T) {
+	vad := DefaultAdaptiveVAD()
+
+	// Calibration: 50 pure noise frames (RMS ~800, simulating HVAC).
+	noiseRMS := int16(800)
+	noiseFrame := make([]int16, 160)
+	for i := range noiseFrame {
+		if i%2 == 0 {
+			noiseFrame[i] = noiseRMS
+		} else {
+			noiseFrame[i] = -noiseRMS
+		}
+	}
+	for i := 0; i < 50; i++ {
+		vad.IsSpeech(noiseFrame)
+	}
+	if !vad.IsCalibrated() {
+		t.Fatal("AdaptiveVAD not calibrated after 50 frames")
+	}
+	t.Logf("CS-012: noise floor=%.0f threshold=%.0f", vad.NoiseFloor(), vad.VAD.ThresholdRMS)
+
+	// Post-calibration: 60% speech frames (RMS ~4000), 40% noise frames.
+	// 100 frames total → expect ≥40 speech frames classified.
+	speechFrame := make([]int16, 160)
+	speechRMS := int16(4000)
+	for i := range speechFrame {
+		if i%2 == 0 {
+			speechFrame[i] = speechRMS
+		} else {
+			speechFrame[i] = -speechRMS
+		}
+	}
+
+	const totalFrames = 100
+	speechCount := 0
+	for i := 0; i < totalFrames; i++ {
+		var frame []int16
+		if i%10 < 6 { // 60% speech
+			frame = speechFrame
+		} else {
+			frame = noiseFrame
+		}
+		if vad.IsSpeech(frame) {
+			speechCount++
+		}
+	}
+
+	ratio := vad.SpeechRatio()
+	t.Logf("CS-012: speechCount=%d/%d ratio=%.2f", speechCount, totalFrames, ratio)
+
+	// QA gate: adaptive speech ratio must be ≥ 40% on a 60%-speech fixture.
+	// (Static VAD would score ~60%; ±20% tolerance → floor = 40%.)
+	if ratio < 0.40 {
+		t.Errorf("CS-012 FAIL: AdaptiveVAD speech ratio=%.2f < 0.40 on 60%%-speech fixture; over-bypassing (was: ~10%% pre-fix)",
+			ratio)
+	}
+}
+
+// TestAdaptiveVADPercentileFloor verifies that the 20th-percentile calibration
+// (CS-012) gives a lower noise floor than mean calibration on bursty noise.
+// Bursty noise: 40 quiet frames (RMS 200) + 10 loud bursts (RMS 5000).
+// Mean would be inflated by bursts; 20th-percentile should stay near 200.
+func TestAdaptiveVADPercentileFloor(t *testing.T) {
+	vad := DefaultAdaptiveVAD()
+
+	quietFrame := make([]int16, 160)
+	burstFrame := make([]int16, 160)
+	for i := range quietFrame {
+		if i%2 == 0 {
+			quietFrame[i] = 200
+		} else {
+			quietFrame[i] = -200
+		}
+	}
+	for i := range burstFrame {
+		if i%2 == 0 {
+			burstFrame[i] = 5000
+		} else {
+			burstFrame[i] = -5000
+		}
+	}
+
+	// Push 40 quiet + 10 burst frames (interleaved every 5).
+	for i := 0; i < 50; i++ {
+		if i%5 == 4 {
+			vad.IsSpeech(burstFrame)
+		} else {
+			vad.IsSpeech(quietFrame)
+		}
+	}
+
+	if !vad.IsCalibrated() {
+		t.Fatal("not calibrated after 50 frames")
+	}
+
+	// 20th percentile of [200×40, 5000×10] sorted = sorted[10] ≈ 200.
+	// Mean would be (200*40 + 5000*10)/50 = 1160.
+	// Threshold should be ≤ 200 × 4.5 × 2 = 1800 (not 1160 × 4.5 = 5220).
+	noiseFloor := vad.NoiseFloor()
+	t.Logf("CS-012 percentile: noiseFloor=%.0f threshold=%.0f", noiseFloor, vad.VAD.ThresholdRMS)
+
+	if noiseFloor > 600 {
+		t.Errorf("CS-012 percentile floor=%.0f > 600 — bursts inflating calibration (mean bias not fixed)", noiseFloor)
+	}
+}
