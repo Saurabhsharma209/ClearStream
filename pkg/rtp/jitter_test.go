@@ -343,6 +343,71 @@ func TestJitterOnGoodPacketResetsLoss(t *testing.T) {
 	}
 }
 
+// TestPLCFadeToSilence is the canonical CS-003 regression test.
+//
+// It verifies two critical properties of the PLC fade-to-silence path:
+//
+// 1. Monotonic: every successive PLC frame has amplitude ≤ the previous frame.
+//    This must hold across the waveform-substitution → fade TRANSITION (loss 2→3),
+//    which was the original bug: the first fade frame used lastGoodFrame as its
+//    source, so it could be louder than the last waveform-sub frame if the sub
+//    happened to copy from a low-energy region of the frame.
+//
+// 2. Convergence: after 40 consecutive losses, all samples must be zero or
+//    near-zero (abs < 5). With 0.85^n per frame, after 38 fade steps starting
+//    from amplitude ≤ 32767: 32767 × 0.85^38 ≈ 11, truncated to int16 → ~11.
+//    After 50 steps: 32767 × 0.85^50 ≈ 2 → rounds toward 0.
+//
+// The test uses a frame where the FIRST pitch period (samples 0..period-1) is
+// quiet (values ≈ 0) and later samples are loud, so that the old code's bug
+// (waveform-sub copies from index 0 of lastGoodFrame) would trigger the
+// non-monotonic jump at the loss 2→3 boundary.
+func TestPLCFadeToSilence(t *testing.T) {
+	jb := NewJitterBuffer(2)
+
+	// Build a frame where the beginning is quiet and the end is loud.
+	// This maximises the chance of triggering a non-monotonic amplitude
+	// increase at the waveform-substitution → fade transition.
+	goodFrame := make([]int16, 160)
+	for i := range goodFrame {
+		if i < 40 {
+			goodFrame[i] = 10 // quiet first pitch period (minLag = 40 samples)
+		} else {
+			goodFrame[i] = 8000 // loud rest of frame
+		}
+	}
+	jb.OnGoodPacket(goodFrame)
+
+	var prevMax int16
+	for loss := 1; loss <= 60; loss++ {
+		frame := jb.GeneratePLC()
+
+		// Compute max absolute value of this PLC frame.
+		var currMax int16
+		for _, s := range frame {
+			if s < 0 {
+				s = -s
+			}
+			if s > currMax {
+				currMax = s
+			}
+		}
+
+		if loss > 1 && currMax > prevMax {
+			t.Errorf("PLC loss %d: amplitude %d > previous %d (non-monotonic — fade-to-silence bug)",
+				loss, currMax, prevMax)
+		}
+
+		// After 50 losses, must be near-zero.
+		if loss == 60 && currMax > 5 {
+			t.Errorf("PLC loss %d: expected near-silence (< 5), got max amplitude %d", loss, currMax)
+		}
+
+		prevMax = currMax
+		t.Logf("loss %d: maxAbs=%d", loss, currMax)
+	}
+}
+
 // TestDetectPitch sanity-checks that detectPitch returns a period in the valid range
 // for a 440 Hz sine wave at 16 kHz (expected period ≈ 36 samples).
 func TestDetectPitch(t *testing.T) {

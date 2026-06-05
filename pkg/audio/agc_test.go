@@ -552,7 +552,7 @@ func TestAGCConvergesWithinFiftyFrames(t *testing.T) {
 
 	cfg := AGCConfig{
 		TargetRMS:  targetRMS,
-		MaxGain:    4.0,  // 3000/300 = 10× needed, capped at 4×
+		MaxGain:    10.0, // 3000/300 = 10× needed; was wrongly capped at 4× (max output 1200, never ±20% of 3000)
 		AttackMs:   20,   // 20ms attack — should converge well within 50 frames (500ms)
 		ReleaseMs:  200,
 		SampleRate: sampleRate,

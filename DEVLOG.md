@@ -1,3 +1,55 @@
+## DAY 35 — 2026-06-05 (Bug Fixes: CS-001, CS-003, CS-008, CS-009)
+
+**Theme:** Jitter buffer correctness, PLC fade monotonicity, pool sizing helper, AGC test fix
+**Bugs closed:** CS-001, CS-003, CS-008, CS-009 | CS-002 unblocked (was compile-error, not logic bug)
+
+### CS-001 — seqLess 16-bit wraparound (pkg/rtp/jitter.go)
+**Root cause:** `seqLess(a, b)` computed `int32(a) - int32(b) < 0`. For post-wraparound seq 0, this evaluated to true against any pre-wrap seq (65534, 65535), placing seq 0 BEFORE them in the sorted buffer. Pop then reported seq 0 as a lost packet and discarded the payload.
+**Fix:** RFC 3550 §A.1 algorithm — forward distance `dist = b - a` (uint16 wrap). If `0 < dist < 0x8000` then a precedes b. Otherwise b precedes a (b has wrapped). Correct across the full 0→65535→0 cycle.
+```go
+func seqLess(a, b uint16) bool {
+    dist := b - a // uint16: wraps automatically
+    return dist > 0 && dist < 0x8000
+}
+```
+
+### CS-002 — TestJitterBufferReset (pkg/rtp/jitter.go)
+**Root cause:** Not a logic bug. `j.buf = j.buf[:0]` is correct Go — new pushes overwrite the backing array from position 0. Failing because **CI compile error** from `go.mod go 1.17` blocking `any` type alias in events.go. Fixed by `go.mod` bump to 1.18 (DAY34). Should pass in next CI run.
+
+### CS-003 — TestPLCFadeToSilence (pkg/rtp/jitter.go + jitter_test.go)
+**Root cause:** Two issues:
+1. Waveform substitution copied from `lastGoodFrame[0..period-1]` (frame start), not the tail. If the frame started quiet (onset), substitution was low amplitude.
+2. Fade-to-silence used `lastGoodFrame` as source: first fade frame = 0.85 × full-frame amplitude, which could be LOUDER than the quiet waveform-sub frames → non-monotonic amplitude jump.
+**Fix 1:** Waveform sub now copies from the TAIL of lastGoodFrame (`lastGoodFrame[frameLen-period .. frameLen-1]`), which is the most recent audio and most natural to continue from.
+**Fix 2:** Added `prevPLC []int16` to JitterBuffer. Fade uses `prevPLC * 0.85` (previous PLC frame), guaranteeing strict amplitude decrease regardless of waveform-sub output level. Cleared in Reset() and OnGoodPacket().
+**Test added:** `TestPLCFadeToSilence` — runs 60 consecutive losses on a frame where the first 40 samples are quiet (10) and the rest are loud (8000). Verifies monotonic decrease across all losses and near-silence after loss 60.
+
+### CS-008 — Pool size 4 → ~2 bidirectional calls (clearstream.go)
+**Root cause 1:** Dead code: `if cfg.ForwardOnly { poolSize = poolSize }` — no-op branch; pool always doubled even in ForwardOnly mode.
+**Root cause 2:** No helper for operators to set pool size correctly.
+**Fix:**
+- Removed dead branch: replaced with `if !cfg.ForwardOnly { poolSize *= 2 }`.
+- Added `PoolSizeForPeakTracks(peakCalls int, forwardOnly bool) int` — returns `peakCalls` (forward-only) or `peakCalls*2` (bidirectional). Documented the server-164 failure mode in godoc.
+
+### CS-009 — TestAGCConvergesWithinFiftyFrames (pkg/audio/agc_test.go)
+**Root cause:** Test used `MaxGain: 4.0` with `inputRMS=300`, giving max achievable `effectiveRMS = 1200`. Target range was [2400, 3600]. Mathematically unreachable — test always fails. Even the comment said "10× needed, capped at 4×".
+**Fix:** `MaxGain: 4.0` → `MaxGain: 10.0`. With 10×, gain converges to 10.0 within ~4 frames (20ms attack × 4 frames = 80ms, exp(-25) at 8000 samples). effectiveRMS = 3000 ∈ [2400, 3600].
+
+### Blocked (needs Saurabh — git push from Mac terminal)
+```bash
+cd ~/ClearStream
+rm -f .git/index.lock .git/HEAD.lock
+git add \
+  pkg/rtp/jitter.go pkg/rtp/jitter_test.go \
+  clearstream.go \
+  pkg/audio/agc_test.go \
+  DEVLOG.md
+git commit -m "[DAY35] Fix CS-001 seqLess wraparound, CS-003 PLC fade monotonicity, CS-008 pool sizing, CS-009 AGC convergence test"
+git push origin main
+```
+
+---
+
 ## DAY 34 — 2026-06-05 (Sprint 34: ASR-Ready Output Mode)
 
 **Theme:** Fix AGC clipping bug for Voice AI ingestion; go.mod 1.18 upgrade

@@ -187,10 +187,9 @@ func New(cfg Config) (*ClearStream, error) {
 	if poolSize <= 0 {
 		poolSize = 32
 	}
-	if cfg.ForwardOnly {
-		// Forward-only: 1 suppressor per session instead of 2 (no reverse-path NC)
-		poolSize = poolSize
-	} else {
+	// Bidirectional calls need 2 suppressors per call (one per direction).
+	// Forward-only (bot receives audio only) needs 1 suppressor per call.
+	if !cfg.ForwardOnly {
 		poolSize = poolSize * 2
 	}
 	pool, err := model.NewSuppressorPool(model.SuppressorConfig{
@@ -375,6 +374,24 @@ func WidebandConfig() Config {
 		VADThreshold:          0.25,
 		MaxConcurrentSessions: 32,
 	}
+}
+
+// PoolSizeForPeakTracks returns the correct SuppressorPool size for a given
+// number of simultaneous calls. Use this to set Config.MaxConcurrentSessions.
+//
+// Rule: bidirectional calls need 2 suppressors each (forward + reverse path).
+// Forward-only deployments (bot receives audio only, never sends to NR) need 1.
+//
+// Example — server-164 was configured with MaxConcurrentSessions=4, ForwardOnly=false.
+// That created a pool of 8 (4×2). But the operator measured ~2 simultaneous calls,
+// not 4, because each call consumed 2 slots. Fix:
+//
+//	cfg.MaxConcurrentSessions = PoolSizeForPeakTracks(wantedCalls, cfg.ForwardOnly)
+func PoolSizeForPeakTracks(peakCalls int, forwardOnly bool) int {
+	if forwardOnly {
+		return peakCalls // 1 suppressor per call
+	}
+	return peakCalls * 2 // 2 suppressors per bidirectional call
 }
 
 // NewHTTPHandler returns an http.Handler exposing the ClearStream API.

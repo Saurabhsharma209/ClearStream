@@ -42,6 +42,7 @@ type JitterBuffer struct {
 	// PLC state
 	consecutiveLoss int
 	lastGoodFrame   []int16
+	prevPLC         []int16 // last generated PLC frame; used as fade source to guarantee monotonic attenuation
 
 	// Adaptive depth tracking
 	lastArrival    time.Time
@@ -188,22 +189,34 @@ func (j *JitterBuffer) GeneratePLC() []int16 {
 
 	if j.consecutiveLoss <= 2 {
 		// Waveform substitution: detect pitch period (40–400 samples for speech)
-		// via peak autocorrelation, then copy a pitch cycle forward.
+		// via peak autocorrelation, then copy the tail pitch cycle forward.
+		// We copy from the TAIL of lastGoodFrame (most recent samples) so the
+		// substituted audio continues naturally from where the last frame ended.
 		period := detectPitch(j.lastGoodFrame)
+		tail := frameLen - period
+		if tail < 0 {
+			tail = 0
+		}
 		for i := 0; i < frameLen; i++ {
-			src := i % period
-			if src < frameLen {
-				result[i] = j.lastGoodFrame[src]
-			}
+			result[i] = j.lastGoodFrame[tail+(i%period)]
 		}
 	} else {
-		// Exponential fade: 0.85× per consecutive lost frame after the 2nd.
-		decayFactor := math.Pow(0.85, float64(j.consecutiveLoss-2))
-		for i, s := range j.lastGoodFrame {
-			result[i] = int16(float64(s) * decayFactor)
+		// Exponential fade: 0.85× per frame, applied to the PREVIOUS PLC frame
+		// (not lastGoodFrame). This guarantees strict monotonic attenuation
+		// regardless of the amplitude of the waveform-substitution frames.
+		// Without this, if waveform-sub copied from a low-energy region of the
+		// frame, the first fade frame (0.85 × full-amplitude lastGoodFrame) could
+		// be louder than the last waveform-sub frame — a non-monotonic jump.
+		src := j.prevPLC
+		if src == nil {
+			src = j.lastGoodFrame
+		}
+		for i, s := range src {
+			result[i] = int16(float64(s) * 0.85)
 		}
 	}
 
+	j.prevPLC = result
 	return result
 }
 
@@ -219,6 +232,7 @@ func (j *JitterBuffer) OnGoodPacket(frame []int16) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.consecutiveLoss = 0
+	j.prevPLC = nil // clear PLC state so next loss starts fresh from lastGoodFrame
 	// Keep a copy so the caller can reuse/free their slice.
 	cp := make([]int16, len(frame))
 	copy(cp, frame)
@@ -253,6 +267,7 @@ func (j *JitterBuffer) Reset() {
 	j.nextSeq = 0
 	j.consecutiveLoss = 0
 	j.lastGoodFrame = nil
+	j.prevPLC = nil
 	j.arrivalEMAMs = 0
 	j.arrivalVarMs = 0
 	j.adaptFrames = 0
@@ -261,10 +276,19 @@ func (j *JitterBuffer) Reset() {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-// seqLess compares RTP sequence numbers accounting for 16-bit wraparound.
+// seqLess reports whether RTP sequence number a comes before b in stream order,
+// correctly handling 16-bit wraparound per RFC 3550 §A.1.
+//
+// The forward distance from a to b is (b-a) mod 2^16 (uint16 subtraction wraps
+// automatically in Go). If that distance is in [1, 32767], a precedes b; if it
+// is in [32768, 65535], b precedes a (i.e., b has already wrapped around past a).
+//
+// This replaces the previous int32-subtraction heuristic which treated post-wrap
+// seqnums (e.g. 0 after 65535) as numerically less than pre-wrap seqnums,
+// causing them to be inserted at the front of the buffer instead of the back.
 func seqLess(a, b uint16) bool {
-	diff := int32(a) - int32(b)
-	return diff < 0 || diff > maxSeqDrift
+	dist := b - a // uint16: wraps automatically, gives forward distance a→b
+	return dist > 0 && dist < 0x8000
 }
 
 // detectPitch estimates the fundamental period of a speech frame using
