@@ -45,6 +45,33 @@ func DefaultAGCConfig() AGCConfig {
 	}
 }
 
+// ASRConfig returns AGC settings tuned for ASR / Voice AI ingestion.
+// Key differences from DefaultAGCConfig:
+//
+//   - TargetRMS: 4124 (-18 dBFS) — sits comfortably in the ASR sweet spot
+//     (-20 to -14 dBFS) with headroom to spare.
+//   - MaxGain: 2.5 (~8 dB) — prevents the AGC from over-boosting audio that
+//     is already near full scale. Even at 2.5× a -18 dBFS signal stays under
+//     -12 dBFS after boost.
+//   - SoftLimitThreshold: 23197 (-3 dBFS) — tanh ceiling engages well before
+//     hard clipping; guarantees peak < -3 dBFS which is the typical ASR
+//     no-clip requirement.
+//   - ReleaseMs: 300 — slightly slower release so ASR models see stable,
+//     non-pumping gain between utterances.
+//
+// Use this with Pipeline.UseLimiter = true for belt-and-suspenders peak
+// protection when handling unpredictable call-centre audio.
+func ASRConfig() AGCConfig {
+	return AGCConfig{
+		TargetRMS:          4124,  // -18 dBFS (32768 × 10^(-18/20))
+		MaxGain:            2.5,   // ~+8 dB max boost — safe for loud callers
+		AttackMs:           20,    // 20 ms: responsive to quiet callers
+		ReleaseMs:          300,   // 300 ms: stable inter-utterance level
+		SoftLimitThreshold: 23197, // -3 dBFS ceiling (32768 × 10^(-3/20))
+		SampleRate:         16000,
+	}
+}
+
 // AGC is a real-time Automatic Gain Control processor.
 // It tracks signal RMS over a sliding window and smoothly adjusts gain so the
 // output hovers near TargetRMS regardless of how loud or quiet the input is.

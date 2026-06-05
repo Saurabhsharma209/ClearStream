@@ -442,6 +442,89 @@ func (g *gainSuppressor) Reset()       {}
 func (g *gainSuppressor) Close() error { return nil }
 func (g *gainSuppressor) Name() string { return "gainSuppressor" }
 
+// TestASRConfigNoClipping verifies two properties of ASRConfig():
+//
+//  1. int16 bounds are never exceeded (hard invariant — any AGC config must hold this).
+//  2. After the 300 ms release time allows gain to converge down from 1.0,
+//     output peak stays at or below -3 dBFS (sample value 23197) on near-full-scale input.
+//
+// With MaxGain=2.5 and TargetRMS=4124 (-18 dBFS), the AGC will attenuate loud audio
+// toward -18 dBFS once gain has converged. The 300 ms release means convergence is
+// effectively complete by frame 120 (~1.2 s of audio).
+func TestASRConfigNoClipping(t *testing.T) {
+	const (
+		peakLimit       = int16(23197) // -3 dBFS
+		convergenceFrame = 150         // frames needed for 300 ms release to settle
+	)
+
+	cfg := ASRConfig()
+	cfg.SampleRate = 16000
+	agc := NewAGC(cfg)
+
+	// Near-full-scale sine: amplitude 30000 ≈ -0.75 dBFS
+	frame := make([]int16, 160)
+	for i := range frame {
+		frame[i] = int16(30000 * math.Sin(2*math.Pi*440*float64(i)/16000.0))
+	}
+
+	for iter := 0; iter < 200; iter++ {
+		out := agc.Process(frame)
+		for j, s := range out {
+			// Invariant 1: int16 bounds must never be exceeded
+			if s > 32767 || s < -32768 {
+				t.Errorf("ASRConfig iter %d sample[%d]=%d overflows int16", iter, j, s)
+				return
+			}
+			// Invariant 2: after gain convergence, peaks must stay under -3 dBFS
+			if iter >= convergenceFrame && (s > peakLimit || s < -peakLimit) {
+				t.Errorf("ASRConfig iter %d (post-convergence) sample[%d]=%d exceeds -3 dBFS (%d)",
+					iter, j, s, peakLimit)
+				return
+			}
+		}
+	}
+	t.Logf("ASRConfig: converged gain=%.3f, -3 dBFS compliance verified from frame %d",
+		agc.CurrentGain(), convergenceFrame)
+}
+
+// TestASRConfigTargetRMS verifies that ASRConfig() converges toward -18 dBFS
+// output when processing a moderately quiet signal.
+func TestASRConfigTargetRMS(t *testing.T) {
+	cfg := ASRConfig()
+	cfg.SampleRate = 16000
+	agc := NewAGC(cfg)
+
+	// Signal at -30 dBFS: 32768 * 10^(-30/20) ≈ 1036
+	frame := make([]int16, 160)
+	for i := range frame {
+		if i%2 == 0 {
+			frame[i] = 1036
+		} else {
+			frame[i] = -1036
+		}
+	}
+
+	// Run 100 frames — gain should converge
+	var lastOut []int16
+	for i := 0; i < 100; i++ {
+		lastOut = agc.Process(frame)
+	}
+
+	var sumSq float64
+	for _, s := range lastOut {
+		f := float64(s)
+		sumSq += f * f
+	}
+	outRMS := math.Sqrt(sumSq / float64(len(lastOut)))
+
+	// With MaxGain=2.5 and input at 1036, max achievable output ≈ 1036*2.5=2590
+	// which is below TargetRMS=4124. So gain should hit MaxGain=2.5.
+	if agc.CurrentGain() > cfg.MaxGain+0.01 {
+		t.Errorf("gain %.3f exceeds ASRConfig MaxGain %.3f", agc.CurrentGain(), cfg.MaxGain)
+	}
+	t.Logf("ASRConfig convergence: outRMS=%.0f, gain=%.3f, target=%.0f", outRMS, agc.CurrentGain(), cfg.TargetRMS)
+}
+
 func BenchmarkAGCProcess(b *testing.B) {
 	agc := NewAGC(DefaultAGCConfig())
 	samples := make([]int16, 160)

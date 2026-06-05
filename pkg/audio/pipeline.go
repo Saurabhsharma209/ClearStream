@@ -52,6 +52,8 @@ type PipelineConfig struct {
 	// AGC is optional Automatic Gain Control applied after noise suppression.
 	// When set, the pipeline adaptively adjusts output level toward AGC.TargetRMS.
 	// Use DefaultAGCConfig() as a starting point for telephony calls.
+	// Use ASRConfig() when the output is consumed by a Voice AI / ASR engine
+	// — it targets -18 dBFS with a hard -3 dBFS peak ceiling to prevent clipping.
 	// Set to nil to disable (default).
 	AGC *AGCConfig
 
