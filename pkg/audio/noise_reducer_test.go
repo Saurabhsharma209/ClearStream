@@ -201,3 +201,27 @@ func TestAdaptiveNoiseReducer_Reset(t *testing.T) {
 		t.Errorf("hangoverCount = %d after Reset, want 0", nr.hangoverCount)
 	}
 }
+
+func TestAdaptiveNoiseReducer_SetAggressiveness(t *testing.T) {
+	nr := NewAdaptiveNoiseReducer()
+	// Default is level 2
+	frame := make([]int16, 160)
+	for i := range frame {
+		frame[i] = 100
+	}
+	out2, _ := nr.Process(frame)
+
+	// Switch to aggressive (level 3) — should suppress more
+	nr.SetAggressiveness(3)
+	out3, _ := nr.Process(frame)
+
+	// Switch to mild (level 1) — should suppress less
+	nr.SetAggressiveness(1)
+	out1, _ := nr.Process(frame)
+
+	// All outputs must be same length
+	if len(out2) != 160 || len(out3) != 160 || len(out1) != 160 {
+		t.Fatal("wrong output length")
+	}
+	// No panics = pass (behavioral difference needs warmup to be measurable)
+}

@@ -464,3 +464,45 @@ func (p *Pipeline) DiarizationSegments() []DiarizedSegment {
 	}
 	return p.diarizer.Segments()
 }
+
+// SetAggressiveness changes the NR suppression strength mid-call without restart.
+// Propagates to AdaptiveNoiseReducer and TieredNR gate if configured.
+// n: 0-1=mild, 2=medium (default), 3=aggressive.
+func (p *Pipeline) SetAggressiveness(n int) {
+	if p.noiseReducer != nil {
+		p.noiseReducer.SetAggressiveness(n)
+	}
+	if p.tieredNR != nil {
+		p.tieredNR.gate.SetAggressiveness(n)
+	}
+}
+
+// SetVADThreshold adjusts the VAD energy threshold mid-call.
+// Lower = more sensitive (catches quiet speech); higher = less sensitive.
+func (p *Pipeline) SetVADThreshold(threshold float64) {
+	if vad, ok := p.vad.(*VAD); ok {
+		vad.ThresholdRMS = threshold
+	}
+	if avad, ok := p.vad.(*AdaptiveVAD); ok {
+		avad.VAD.ThresholdRMS = threshold
+	}
+}
+
+// SetAGCTarget adjusts the AGC target RMS level mid-call.
+func (p *Pipeline) SetAGCTarget(targetRMS float64) {
+	if p.agc != nil {
+		p.agc.cfg.TargetRMS = targetRMS
+	}
+}
+
+// Reconfigure applies a new PipelineConfig to the running pipeline.
+// Only safe-to-change-live fields are updated: AGC target, TieredNR thresholds.
+// Frame size and sample rate cannot change.
+func (p *Pipeline) Reconfigure(cfg PipelineConfig) {
+	if cfg.TieredNR != nil && p.tieredNR != nil {
+		p.tieredNR.SetThresholds(cfg.TieredNR.HighSNRThreshold, cfg.TieredNR.LowSNRThreshold)
+	}
+	if cfg.AGC != nil && p.agc != nil {
+		p.agc.cfg.TargetRMS = cfg.AGC.TargetRMS
+	}
+}

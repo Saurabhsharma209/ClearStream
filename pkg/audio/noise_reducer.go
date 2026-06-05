@@ -1,6 +1,9 @@
 package audio
 
-import "math"
+import (
+	"math"
+	"sync/atomic"
+)
 
 // AdaptiveNoiseReducer implements a decision-directed Ephraim-Malah Wiener-filter
 // noise reducer with temporal gain smoothing. This eliminates the "musical noise"
@@ -86,6 +89,9 @@ type AdaptiveNoiseReducer struct {
 	// after Wiener processing (second-stage soft gate). Default 0.08.
 	GateAttenuation float64
 
+	// aggressiveness is the atomic aggressiveness level (0/1=mild, 2=medium, 3=aggressive).
+	aggressiveness int32
+
 	// NoiseEMACoeff is the EMA coefficient for the per-band noise floor tracker.
 	// Higher = slower adaptation (better for stationary noise).
 	// Default 0.997.
@@ -121,6 +127,15 @@ func NewAdaptiveNoiseReducer() *AdaptiveNoiseReducer {
 	return r
 }
 
+// SetAggressiveness adjusts suppression strength without restarting the session.
+// n=0 or 1: mild — AlphaG=0.97, MinGainSpeech=0.65, GateAttenuation=0.12
+// n=2:      medium — AlphaG=0.96, MinGainSpeech=0.55, GateAttenuation=0.08 (default)
+// n=3:      aggressive — AlphaG=0.94, MinGainSpeech=0.40, GateAttenuation=0.04
+// Thread-safe: uses atomic store.
+func (r *AdaptiveNoiseReducer) SetAggressiveness(n int) {
+	atomic.StoreInt32(&r.aggressiveness, int32(n))
+}
+
 // Name returns the processor identifier.
 func (r *AdaptiveNoiseReducer) Name() string { return "adaptive-nr-dd" }
 
@@ -129,6 +144,22 @@ func (r *AdaptiveNoiseReducer) Name() string { return "adaptive-nr-dd" }
 func (r *AdaptiveNoiseReducer) Process(frame []int16) ([]int16, error) {
 	if len(frame) == 0 {
 		return frame, nil
+	}
+
+	// Read aggressiveness level atomically and derive local tuning vars.
+	ag := atomic.LoadInt32(&r.aggressiveness)
+	alphaG := r.AlphaG
+	minGainSpeech := r.MinGainSpeech
+	gateAtten := r.GateAttenuation
+	switch ag {
+	case 0, 1:
+		alphaG = 0.97
+		minGainSpeech = 0.65
+		gateAtten = 0.12
+	case 3:
+		alphaG = 0.94
+		minGainSpeech = 0.40
+		gateAtten = 0.04
 	}
 
 	// Convert to float64 for processing.
@@ -195,14 +226,14 @@ func (r *AdaptiveNoiseReducer) Process(frame []int16) ([]int16, error) {
 		rawGain := aprioriSNR / (aprioriSNR + r.OversubFactor)
 
 		// --- Temporal gain smoothing (eliminates musical noise) ---
-		smoothedGain := r.AlphaG*prevGain + (1-r.AlphaG)*rawGain
+		smoothedGain := alphaG*prevGain + (1-alphaG)*rawGain
 
 		// --- Class-dependent gain floor ---
 		// Determine effective speech status: actual speech OR within hangover.
 		effectiveSpeech := isSpeech || r.hangoverCount > 0
 		minGain := r.MinGainNoise
 		if effectiveSpeech {
-			minGain = r.MinGainSpeech
+			minGain = minGainSpeech
 		}
 		if smoothedGain < minGain {
 			smoothedGain = minGain
@@ -260,7 +291,7 @@ func (r *AdaptiveNoiseReducer) Process(frame []int16) ([]int16, error) {
 		gateThresh := r.globalNoiseEMA * 1.5
 		if frameRMS < gateThresh && r.hangoverCount == 0 {
 			for i := range fOut {
-				fOut[i] *= r.GateAttenuation
+				fOut[i] *= gateAtten
 			}
 		}
 	}

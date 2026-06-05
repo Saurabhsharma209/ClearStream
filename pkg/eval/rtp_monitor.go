@@ -75,6 +75,15 @@ type RTPMonitorConfig struct {
 	// OnAlert is called when a quality threshold is breached.
 	// msg is a human-readable description of the problem.
 	OnAlert func(msg string)
+
+	// Pipeline is an optional live pipeline reference. When set, RTPMonitor
+	// automatically calls SetAggressiveness on quality degradation events:
+	//   loss > 3%  → SetAggressiveness(3)
+	//   jitter > 40ms → SetAggressiveness(2)
+	//   recovered  → SetAggressiveness(1)
+	Pipeline interface {
+		SetAggressiveness(n int)
+	}
 }
 
 // QualitySnapshot is a point-in-time quality reading during a session.
@@ -212,6 +221,18 @@ func (m *RTPMonitor) sample() {
 		if m.cfg.OnAlert != nil {
 			m.cfg.OnAlert(reason)
 		}
+		if m.cfg.Pipeline != nil {
+			if snap.LossPct > poorLossPct*100 {
+				m.cfg.Pipeline.SetAggressiveness(3)
+			} else if snap.JitterMs > poorJitterMs {
+				m.cfg.Pipeline.SetAggressiveness(2)
+			} else {
+				m.cfg.Pipeline.SetAggressiveness(1)
+			}
+		}
+	} else if m.cfg.Pipeline != nil {
+		// Recovered — ease back to comfort noise
+		m.cfg.Pipeline.SetAggressiveness(1)
 	}
 
 	m.mu.Lock()

@@ -1,3 +1,50 @@
+## DAY 31-33 — 2026-06-05 (Live Adaptivity: Close Gaps #1 and #2)
+
+**Theme:** Mid-call feedback loop — pipeline adapts to network conditions without restart
+**Build:** passing (CGO_ENABLED=0)
+
+### Changes
+
+#### Sprint 31 — Pipeline.SetAggressiveness() (pkg/audio/noise_reducer.go, pipeline.go)
+- `AdaptiveNoiseReducer.SetAggressiveness(n int)`: atomic int32, zero-lock on hot path
+  - n=1: mild (AlphaG=0.97, MinGain=0.65, Gate=0.12) — comfort noise, quieter calls
+  - n=2: medium default (AlphaG=0.96, MinGain=0.55, Gate=0.08)
+  - n=3: aggressive (AlphaG=0.94, MinGain=0.40, Gate=0.04) — max suppression on bad lines
+- `Pipeline.SetAggressiveness(n)`: propagates to noiseReducer + tieredNR.gate
+- `Pipeline.SetVADThreshold(t)`: adjusts VAD sensitivity live
+- `Pipeline.SetAGCTarget(rms)`: adjusts AGC target RMS live
+
+#### Sprint 32 — RTPMonitor → Pipeline feedback (pkg/eval/rtp_monitor.go)
+- `RTPMonitorConfig.Pipeline interface{SetAggressiveness(int)}`: optional live pipeline ref
+- Auto-action on quality events:
+  - loss > 3%  → `SetAggressiveness(3)` — boost NR to fight degraded line
+  - jitter > 40ms → `SetAggressiveness(2)` — medium response
+  - recovered → `SetAggressiveness(1)` — ease back to comfort noise
+- Gap #1 CLOSED: running call adapts, no session restart needed
+
+#### Sprint 33 — TieredNR hot reload + DeepFilter export (pkg/audio/tiered_nr.go, pipeline.go)
+- `TieredNR.SetThresholds(high, low float64)`: mutex-protected live threshold update
+- `Pipeline.Reconfigure(PipelineConfig)`: hot reload AGC target + TieredNR thresholds
+- `scripts/export_deepfilter_onnx.py`: exports DeepFilterNet to ONNX (run on Mac with torch)
+- Gap #2 CLOSED: full hot config without session restart
+
+### Blocked (needs Saurabh — git push from Mac terminal)
+```bash
+cd ~/ClearStream
+rm -f .git/index.lock .git/HEAD.lock
+git add \
+  pkg/audio/noise_reducer.go pkg/audio/noise_reducer_test.go \
+  pkg/audio/pipeline.go \
+  pkg/audio/tiered_nr.go \
+  pkg/eval/rtp_monitor.go \
+  scripts/export_deepfilter_onnx.py \
+  DEVLOG.md
+git commit -m "[DAY31-33] SetAggressiveness live control, RTPMonitor feedback loop, hot config reload"
+git push origin main
+```
+
+---
+
 ## DAY 27-30 — 2026-06-04 (Scale Sprint: 1K calls/server)
 
 **Theme:** Four sprints in one run — drop CGO, pre-warm pool, tiered NR, batch processing

@@ -127,3 +127,11 @@ func (t *TieredNR) estimateSNR(frame []int16) float64 {
 	}
 	return 20 * math.Log10(rms/t.noiseFloor)
 }
+
+// SetThresholds updates the SNR tier boundaries mid-call (atomic-safe via mutex).
+func (t *TieredNR) SetThresholds(highSNR, lowSNR float64) {
+	t.mu.Lock()
+	t.cfg.HighSNRThreshold = highSNR
+	t.cfg.LowSNRThreshold = lowSNR
+	t.mu.Unlock()
+}
