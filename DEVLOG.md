@@ -1464,3 +1464,25 @@ Rule-based approaches (Wiener, spectral subtraction) **cannot** separate two voi
 ### Tomorrow
 1. RTP/SIP: Add SSRC-change loopback integration test (end-to-end with real UDP packets, verifying pipeline resets cleanly on new call leg)
 2. Audio Pipeline: Add `TestPipelineStatsAccumulation` — verify `Stats().FramesProcessed` increments correctly across VAD speech/silence transitions
+
+## 2026-06-08
+
+**Agents run:** QA/Build (emergency build-fix session)
+**Build:** passing ✅
+
+### Changes
+- `pkg/rtp/playback.go`: replaced 4x `atomic.Uint64` struct fields with plain `uint64`, using `atomic.LoadUint64`/`atomic.AddUint64` package functions (Go 1.17 compat)
+- `pkg/websocket/client.go`: replaced `atomic.Bool` with `uint32`, using `atomic.StoreUint32`/`atomic.LoadUint32` (Go 1.17 compat)
+- `pkg/eval/batch.go`: replaced `var doneCount atomic.Int64` with `int64` + `atomic.AddInt64` (Go 1.17 compat)
+- `pkg/eval/rtp_monitor.go`: replaced `alerts atomic.Int64` field with `int64` + `atomic.AddInt64`/`atomic.LoadInt64` (Go 1.17 compat)
+- `pkg/websocket/client_test.go`: same `atomic.Int64` fix in test file
+- `pkg/rtp/rtcp_test.go`: renamed duplicate `TestPLCFadeToSilence` → `TestPLCFadeToSilence_RTCPBasic` to resolve redeclaration conflict with canonical version in `jitter_test.go`
+- `tools/noise_load/noise_load.go`: replaced removed `ProcessFrame([]int16) []int16` API with current `ProcessFrames([]byte, io.Writer) error` API
+- `voice-qa/browser-lab/bridge/main.go`: removed `ModelName` field from `BridgeConfig` literal (field does not exist in struct)
+
+### Blocked
+- Go 1.17 on the Mac toolchain causes `dyld: missing LC_UUID load command` for all test binaries on modern macOS — tests cannot execute. Upgrade to Go 1.21+ recommended to unblock CI.
+
+### Tomorrow
+1. Upgrade go.mod to `go 1.21` and update CI/Makefile to match — will unblock test execution and allow re-enabling the typed atomic APIs
+2. Add `pkg/audio/pipeline_test.go` with frame-boundary, flush, and reset tests (blocked by dyld today)
