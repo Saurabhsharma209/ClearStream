@@ -60,7 +60,7 @@ func TestParseRTCPWrongType(t *testing.T) {
 	}
 }
 
-func TestPLCFadeToSilence(t *testing.T) {
+func TestPLCFadeToSilence_RTCPBasic(t *testing.T) {
 	jb := NewJitterBuffer(4)
 
 	// Seed lastGoodFrame directly via onGoodPacket (simulates a received frame)

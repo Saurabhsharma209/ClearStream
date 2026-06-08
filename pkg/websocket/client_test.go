@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
 	csws "github.com/exotel/clearstream/pkg/websocket"
+	"github.com/gorilla/websocket"
 )
 
 // echoServer returns an httptest.Server that echoes every binary WebSocket
@@ -106,7 +106,7 @@ func TestReconnectClientQueueDropsOldest(t *testing.T) {
 // TestReconnectClientReconnects verifies that when the server is briefly
 // unavailable and then comes back, the client re-establishes the connection.
 func TestReconnectClientReconnects(t *testing.T) {
-	var received atomic.Int64
+	var received int64
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -120,7 +120,7 @@ func TestReconnectClientReconnects(t *testing.T) {
 			if err != nil {
 				return
 			}
-			received.Add(1)
+			atomic.AddInt64(&received, 1)
 		}
 	}))
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
@@ -168,7 +168,7 @@ func TestReconnectClientReconnects(t *testing.T) {
 			if err != nil {
 				return
 			}
-			received.Add(1)
+			atomic.AddInt64(&received, 1)
 		}
 	})
 	srv2 = httptest.NewServer(mux2)
@@ -179,7 +179,7 @@ func TestReconnectClientReconnects(t *testing.T) {
 	// once (Connected() becomes false and may come back true on the new server
 	// only if the URL matches — here we just assert it doesn't panic/hang).
 	time.Sleep(200 * time.Millisecond)
-	t.Logf("received frames: %d; connected: %v", received.Load(), client.Connected())
+	t.Logf("received frames: %d; connected: %v", atomic.LoadInt64(&received), client.Connected())
 }
 
 // TestReconnectClientStop verifies that Stop() terminates the client cleanly

@@ -19,10 +19,10 @@ type PlaybackQueue struct {
 	mu       sync.Mutex
 	frames   [][]byte // each frame is a G.711 encoded packet payload
 	maxDepth int
-	dropped  atomic.Uint64 // frames dropped due to full queue
-	pushed   atomic.Uint64
-	popped   atomic.Uint64
-	cleared  atomic.Uint64
+	dropped  uint64 // frames dropped due to full queue (accessed via sync/atomic)
+	pushed   uint64
+	popped   uint64
+	cleared  uint64
 }
 
 // NewPlaybackQueue creates a queue with the given maximum depth.
@@ -44,13 +44,13 @@ func (q *PlaybackQueue) Push(frame []byte) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if len(q.frames) >= q.maxDepth {
-		q.dropped.Add(1)
+		atomic.AddUint64(&q.dropped, 1)
 		return false
 	}
 	cp := make([]byte, len(frame))
 	copy(cp, frame)
 	q.frames = append(q.frames, cp)
-	q.pushed.Add(1)
+	atomic.AddUint64(&q.pushed, 1)
 	return true
 }
 
@@ -64,7 +64,7 @@ func (q *PlaybackQueue) Pop() []byte {
 	}
 	frame := q.frames[0]
 	q.frames = q.frames[1:]
-	q.popped.Add(1)
+	atomic.AddUint64(&q.popped, 1)
 	return frame
 }
 
@@ -76,7 +76,7 @@ func (q *PlaybackQueue) Clear() int {
 	defer q.mu.Unlock()
 	n := len(q.frames)
 	q.frames = q.frames[:0]
-	q.cleared.Add(uint64(n))
+	atomic.AddUint64(&q.cleared, uint64(n))
 	return n
 }
 
@@ -98,10 +98,10 @@ type PlaybackStats struct {
 // Stats returns a snapshot of queue counters.
 func (q *PlaybackQueue) Stats() PlaybackStats {
 	return PlaybackStats{
-		Pushed:  q.pushed.Load(),
-		Popped:  q.popped.Load(),
-		Dropped: q.dropped.Load(),
-		Cleared: q.cleared.Load(),
+		Pushed:  atomic.LoadUint64(&q.pushed),
+		Popped:  atomic.LoadUint64(&q.popped),
+		Dropped: atomic.LoadUint64(&q.dropped),
+		Cleared: atomic.LoadUint64(&q.cleared),
 	}
 }
 

@@ -97,7 +97,7 @@ func (r *BatchRunner) Run(ctx context.Context) (BatchSummary, error) {
 
 	total := len(files)
 	results := make([]FileResult, total)
-	var doneCount atomic.Int64
+	var doneCount int64
 
 	sem := make(chan struct{}, r.cfg.Workers)
 	var wg sync.WaitGroup
@@ -116,7 +116,7 @@ func (r *BatchRunner) Run(ctx context.Context) (BatchSummary, error) {
 
 			results[idx] = r.evalFile(ctx, path)
 
-			n := int(doneCount.Add(1))
+			n := int(atomic.AddInt64(&doneCount, 1))
 			if r.cfg.OnProgress != nil {
 				r.cfg.OnProgress(n, total)
 			}
@@ -272,13 +272,13 @@ func collectFiles(dir string, filter func(string) bool) ([]string, error) {
 func decodeToRawPCM(ctx context.Context, ffmpegPath, inputFile string, targetRate int) ([]byte, int, float64, error) {
 	// ffmpeg -i <in> -ac 1 -ar <rate> -f s16le -
 	args := []string{
-		"-y",             // overwrite
-		"-i", inputFile,  // input
-		"-vn",            // no video
-		"-ac", "1",       // mono
+		"-y",            // overwrite
+		"-i", inputFile, // input
+		"-vn",      // no video
+		"-ac", "1", // mono
 		"-ar", fmt.Sprintf("%d", targetRate), // sample rate
-		"-f", "s16le",    // raw signed 16-bit LE PCM
-		"-",              // stdout
+		"-f", "s16le", // raw signed 16-bit LE PCM
+		"-", // stdout
 	}
 	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
 	var stdout, stderr bytes.Buffer
@@ -330,4 +330,3 @@ func max(a, b int) int {
 	}
 	return b
 }
-

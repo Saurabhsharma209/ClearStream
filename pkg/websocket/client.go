@@ -38,12 +38,12 @@ type ReconnectConfig struct {
 // STT or recording service over WebSocket, tolerating brief network glitches
 // without dropping more audio than the queue can hold.
 type ReconnectClient struct {
-	cfg     ReconnectConfig
-	queue   chan []byte
-	logger  *zap.Logger
-	stopCh  chan struct{}
-	once    sync.Once
-	connected atomic.Bool
+	cfg       ReconnectConfig
+	queue     chan []byte
+	logger    *zap.Logger
+	stopCh    chan struct{}
+	once      sync.Once
+	connected uint32 // 0=false 1=true, accessed via sync/atomic
 }
 
 // NewReconnectClient creates a ReconnectClient and immediately begins
@@ -96,7 +96,7 @@ func (c *ReconnectClient) Send(frame []byte) {
 
 // Connected reports whether the client currently has an active connection.
 func (c *ReconnectClient) Connected() bool {
-	return c.connected.Load()
+	return atomic.LoadUint32(&c.connected) == 1
 }
 
 // Stop shuts down the reconnect loop and closes the underlying connection.
@@ -118,7 +118,7 @@ func (c *ReconnectClient) connectLoop() {
 
 		conn, _, err := websocket.DefaultDialer.Dial(c.cfg.URL, nil)
 		if err != nil {
-			c.connected.Store(false)
+			atomic.StoreUint32(&c.connected, 0)
 			c.logger.Warn("websocket dial failed, retrying",
 				zap.String("url", c.cfg.URL),
 				zap.Duration("backoff", backoff),
@@ -134,14 +134,14 @@ func (c *ReconnectClient) connectLoop() {
 		}
 
 		// Connected — reset backoff.
-		c.connected.Store(true)
+		atomic.StoreUint32(&c.connected, 1)
 		backoff = c.cfg.InitialBackoff
 		c.logger.Info("websocket connected", zap.String("url", c.cfg.URL))
 
 		disconnected := c.drainQueue(conn)
 
 		conn.Close()
-		c.connected.Store(false)
+		atomic.StoreUint32(&c.connected, 0)
 
 		if !disconnected {
 			// Stop() was called; exit cleanly.

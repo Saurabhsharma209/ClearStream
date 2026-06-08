@@ -125,7 +125,7 @@ type RTPMonitor struct {
 
 	mu        sync.Mutex
 	snapshots []QualitySnapshot
-	alerts    atomic.Int64
+	alerts    int64 // accessed via sync/atomic
 }
 
 // NewRTPMonitor creates an RTPMonitor.  Call Start() to begin sampling.
@@ -217,7 +217,7 @@ func (m *RTPMonitor) sample() {
 	if reason != "" {
 		snap.AlertFired = true
 		snap.AlertReason = reason
-		m.alerts.Add(1)
+		atomic.AddInt64(&m.alerts, 1)
 		if m.cfg.OnAlert != nil {
 			m.cfg.OnAlert(reason)
 		}
@@ -270,7 +270,7 @@ func (m *RTPMonitor) buildReport(snaps []QualitySnapshot, final RTPStats, endedA
 		DurationMs:      float64(endedAt.Sub(m.startedAt).Milliseconds()),
 		PacketsReceived: final.PacketsReceived,
 		PacketsLost:     final.PacketsLost,
-		AlertCount:      int(m.alerts.Load()),
+		AlertCount:      int(atomic.LoadInt64(&m.alerts)),
 		Snapshots:       snaps,
 	}
 
@@ -297,8 +297,8 @@ func (m *RTPMonitor) buildReport(snaps []QualitySnapshot, final RTPStats, endedA
 	pseudo := BatchSummary{
 		ProcessedFiles:      1,
 		AvgSNRImprovementDB: r.AvgSNREstDB - poorSNRDB, // rough estimate
-		AvgLatencyP95Ms:     r.AvgLatencyMs * 1.5,       // approximate P95
-		AvgSpeechRatio:      0.6,                          // telephony typical
+		AvgLatencyP95Ms:     r.AvgLatencyMs * 1.5,      // approximate P95
+		AvgSpeechRatio:      0.6,                       // telephony typical
 	}
 	tuned := TuneFromBatchSummary(pseudo)
 	r.TunedConfig = &tuned

@@ -20,6 +20,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"flag"
@@ -227,8 +228,23 @@ func main() {
 		var processed []int16
 		for i := 0; i+frameSize <= len(samples); i += frameSize {
 			frame := samples[i : i+frameSize]
-			out := pipe.ProcessFrame(frame)
-			processed = append(processed, out...)
+			// Convert []int16 -> []byte for ProcessFrames API
+			inBytes := make([]byte, len(frame)*2)
+			for j, s := range frame {
+				inBytes[j*2] = byte(s)
+				inBytes[j*2+1] = byte(s >> 8)
+			}
+			var outBuf bytes.Buffer
+			if err := pipe.ProcessFrames(inBytes, &outBuf); err != nil {
+				log.Printf("WARN pipeline error: %v", err)
+				processed = append(processed, frame...)
+				totalFrames++
+				continue
+			}
+			outBytes := outBuf.Bytes()
+			for j := 0; j+1 < len(outBytes); j += 2 {
+				processed = append(processed, int16(outBytes[j])|int16(outBytes[j+1])<<8)
+			}
 			totalFrames++
 		}
 
@@ -265,18 +281,18 @@ func writeWAV(path string, samples []int16, src *wavHeader) error {
 	byteRate := sampleRate * uint32(blockAlign)
 
 	// RIFF header
-	f.Write([]byte("RIFF"))                                          //nolint:errcheck
-	binary.Write(f, binary.LittleEndian, 36+dataSize)               //nolint:errcheck
-	f.Write([]byte("WAVE"))                                          //nolint:errcheck
-	f.Write([]byte("fmt "))                                          //nolint:errcheck
-	binary.Write(f, binary.LittleEndian, uint32(16))                 //nolint:errcheck — PCM fmt size
-	binary.Write(f, binary.LittleEndian, uint16(1))                  //nolint:errcheck — PCM
-	binary.Write(f, binary.LittleEndian, numCh)                      //nolint:errcheck
-	binary.Write(f, binary.LittleEndian, sampleRate)                 //nolint:errcheck
-	binary.Write(f, binary.LittleEndian, byteRate)                   //nolint:errcheck
-	binary.Write(f, binary.LittleEndian, blockAlign)                 //nolint:errcheck — uint16
-	binary.Write(f, binary.LittleEndian, bitsPerSample)              //nolint:errcheck
-	f.Write([]byte("data"))                                          //nolint:errcheck
-	binary.Write(f, binary.LittleEndian, dataSize)                   //nolint:errcheck
+	f.Write([]byte("RIFF"))                             //nolint:errcheck
+	binary.Write(f, binary.LittleEndian, 36+dataSize)   //nolint:errcheck
+	f.Write([]byte("WAVE"))                             //nolint:errcheck
+	f.Write([]byte("fmt "))                             //nolint:errcheck
+	binary.Write(f, binary.LittleEndian, uint32(16))    //nolint:errcheck — PCM fmt size
+	binary.Write(f, binary.LittleEndian, uint16(1))     //nolint:errcheck — PCM
+	binary.Write(f, binary.LittleEndian, numCh)         //nolint:errcheck
+	binary.Write(f, binary.LittleEndian, sampleRate)    //nolint:errcheck
+	binary.Write(f, binary.LittleEndian, byteRate)      //nolint:errcheck
+	binary.Write(f, binary.LittleEndian, blockAlign)    //nolint:errcheck — uint16
+	binary.Write(f, binary.LittleEndian, bitsPerSample) //nolint:errcheck
+	f.Write([]byte("data"))                             //nolint:errcheck
+	binary.Write(f, binary.LittleEndian, dataSize)      //nolint:errcheck
 	return binary.Write(f, binary.LittleEndian, samples)
 }

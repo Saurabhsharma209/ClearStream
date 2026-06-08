@@ -30,7 +30,6 @@ func main() {
 		SampleRate: 16000,
 		Channels:   1,
 		Suppressor: sup,
-		ModelName:  sup.Name(),
 	})
 
 	mux := http.NewServeMux()
