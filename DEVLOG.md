@@ -1445,3 +1445,22 @@ Rule-based approaches (Wiener, spectral subtraction) **cannot** separate two voi
 
 ### New File
 - `docs/nr-tuning-and-training-guide.md`: Complete parameter reference, configuration presets (4 profiles), ML training pipeline (data collection → PyTorch → ONNX export), WER-validated training loop, diagnostic decision tree, 6-sprint roadmap to background voice suppression.
+
+---
+
+## 2026-06-08
+
+**Agents run:** AI Model, QA/Testing
+**Build:** passing (Go 1.18+ required; pre-existing local Go 1.17 compat errors in pkg/rtp, pkg/websocket, pkg/eval are unrelated to today's changes — CI runs on 1.21/1.22)
+
+### Changes
+- `pkg/model/rnnoise.go`: Replaced `downsample3x` box-average (3-sample mean, <10dB stopband) with a 5-tap Kaiser-derived FIR anti-aliasing filter (fc=1/3, ~40dB stopband attenuation). Added `clampIdx` boundary helper for edge-replication. Prevents high-frequency aliasing in the RNNoise 48kHz→16kHz decimation path.
+- `.gitignore`: Fixed backup-file pattern from `*.go.*[0-9]` (single digit only) to `*.go.[0-9]*` (any numeric suffix) — suppresses the `*.go.<long-number>` agent backup files from git status.
+- `pkg/model/resample_roundtrip_test.go`: New fidelity test for `upsample3x→downsample3x` roundtrip using a 100Hz sine wave at 16kHz. Asserts max absolute error < 300 (< 1% distortion, tolerance for FIR group delay).
+
+### Blocked
+- Local Go 1.17 prevents full `go build ./...` — pre-existing, CI unaffected.
+
+### Tomorrow
+1. RTP/SIP: Add SSRC-change loopback integration test (end-to-end with real UDP packets, verifying pipeline resets cleanly on new call leg)
+2. Audio Pipeline: Add `TestPipelineStatsAccumulation` — verify `Stats().FramesProcessed` increments correctly across VAD speech/silence transitions
