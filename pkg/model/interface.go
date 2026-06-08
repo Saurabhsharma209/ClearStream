@@ -46,6 +46,17 @@ type SuppressorConfig struct {
 	// 2=medium, 3=aggressive. The passthrough backend ignores this field.
 	// RNNoise and future backends use it to tune their internal parameters.
 	Aggressiveness int
+
+	// ServerURL is the base URL of the DeepFilterNet Python inference server.
+	// Used when Backend is "deepfilter-server". Default: "http://127.0.0.1:7878".
+	// Start the server with: python3 scripts/df_server.py
+	ServerURL string
+
+	// AutoStartPath is the path to df_server.py.
+	// When set and Backend is "deepfilter-server", ClearStream will auto-start
+	// the Python server if it is not already running.
+	// Example: "scripts/df_server.py"
+	AutoStartPath string
 }
 
 // DefaultSuppressorConfig returns a SuppressorConfig using the passthrough
@@ -71,10 +82,13 @@ func NewSuppressor(cfg SuppressorConfig) (Suppressor, error) {
 		}
 		logger, _ := zap.NewProduction()
 		return newDeepFilterSuppressor(cfg.ModelPath, logger)
+	case "deepfilter-server":
+		logger, _ := zap.NewProduction()
+		return newDeepFilterServerSuppressor(cfg.ServerURL, cfg.AutoStartPath, logger)
 	case "passthrough":
 		return NewPassthrough(), nil
 	default:
-		return nil, fmt.Errorf("model: unknown backend %q (valid: rnnoise, rnnoise-onnx, deepfilter, passthrough)", cfg.Backend)
+		return nil, fmt.Errorf("model: unknown backend %q (valid: rnnoise, rnnoise-onnx, deepfilter, deepfilter-server, passthrough)", cfg.Backend)
 	}
 }
 
