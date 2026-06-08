@@ -3,7 +3,8 @@
 *.dll
 *.dylib
 *.exe
-*.go.*[0-9]
+# Dev agent backup files (*.go.<numeric-suffix>)
+*.go.[0-9]*
 *.out
 *.so
 *.test
