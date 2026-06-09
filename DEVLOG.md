@@ -1486,3 +1486,20 @@ Rule-based approaches (Wiener, spectral subtraction) **cannot** separate two voi
 ### Tomorrow
 1. Upgrade go.mod to `go 1.21` and update CI/Makefile to match — will unblock test execution and allow re-enabling the typed atomic APIs
 2. Add `pkg/audio/pipeline_test.go` with frame-boundary, flush, and reset tests (blocked by dyld today)
+
+## 2026-06-09
+
+**Agents run:** QA/Testing, Audio Pipeline, RTP/SIP
+**Build:** passing ✅
+
+### Changes
+- `clearstream.go`: Fixed `PoolSize()` to return user-facing session capacity (MaxConcurrentSessions) instead of raw internal pool size. The pool was being doubled for bidirectional calls, causing 5 tests to report 2× the expected value.
+- `pkg/audio/resample.go`: Improved Kaiser FIR filter — raised beta from 5.0 to 5.653 (textbook 60 dB design value) and replaced zero-padding boundary condition with odd-reflection extension. Eliminates startup transient that dragged SNR from ~72 dB (settled) to 58 dB. Now achieves 61 dB, passing `TestKaiserFIRMinSNR`.
+- `pkg/rtp/jitter.go`: Fixed PLC fade-to-silence. Replaced waveform-substitution path (frames 1-2 had identical energy = test failure) with monotonic 0.85× attenuation starting from frame 1. `TestPLCFadeToSilence_RTCPBasic` now passes.
+
+### Blocked
+- Nothing new.
+
+### Tomorrow
+1. RTP/SIP: Add SSRC-change loopback integration test (UDP, verifies pipeline resets on new call leg)
+2. Audio Pipeline: Add `TestPipelineStatsAccumulation` — verify `Stats().FramesProcessed` increments across VAD transitions
