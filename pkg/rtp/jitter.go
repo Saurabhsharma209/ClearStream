@@ -46,10 +46,10 @@ type JitterBuffer struct {
 	prevPLC         []int16 // last generated PLC frame; used as fade source to guarantee monotonic attenuation
 
 	// Adaptive depth tracking
-	lastArrival    time.Time
-	arrivalVarMs   float64 // exponential moving average of inter-arrival variance
-	arrivalEMAMs   float64 // EMA of inter-arrival time (ms)
-	adaptFrames    int     // frame counter for depth adjustment hysteresis
+	lastArrival  time.Time
+	arrivalVarMs float64 // exponential moving average of inter-arrival variance
+	arrivalEMAMs float64 // EMA of inter-arrival time (ms)
+	adaptFrames  int     // frame counter for depth adjustment hysteresis
 }
 
 // NewJitterBuffer creates a jitter buffer with the given initial target depth.
@@ -136,7 +136,7 @@ func (j *JitterBuffer) Push(seq uint16, ts uint32, payload []byte) bool {
 func (j *JitterBuffer) adaptDepth() {
 	// 3-sigma rule: buffer enough to absorb 3× the observed jitter.
 	targetMs := j.arrivalVarMs * 3.0
-	targetFrames := int(math.Ceil(targetMs/10.0)) // 10ms per frame
+	targetFrames := int(math.Ceil(targetMs / 10.0)) // 10ms per frame
 	if targetFrames < minAdaptDepth {
 		targetFrames = minAdaptDepth
 	}
@@ -191,33 +191,17 @@ func (j *JitterBuffer) GeneratePLC() []int16 {
 	frameLen := len(j.lastGoodFrame)
 	result := make([]int16, frameLen)
 
-	if j.consecutiveLoss <= 2 {
-		// Waveform substitution: detect pitch period (40–400 samples for speech)
-		// via peak autocorrelation, then copy the tail pitch cycle forward.
-		// We copy from the TAIL of lastGoodFrame (most recent samples) so the
-		// substituted audio continues naturally from where the last frame ended.
-		period := detectPitch(j.lastGoodFrame)
-		tail := frameLen - period
-		if tail < 0 {
-			tail = 0
-		}
-		for i := 0; i < frameLen; i++ {
-			result[i] = j.lastGoodFrame[tail+(i%period)]
-		}
-	} else {
-		// Exponential fade: 0.85× per frame, applied to the PREVIOUS PLC frame
-		// (not lastGoodFrame). This guarantees strict monotonic attenuation
-		// regardless of the amplitude of the waveform-substitution frames.
-		// Without this, if waveform-sub copied from a low-energy region of the
-		// frame, the first fade frame (0.85 × full-amplitude lastGoodFrame) could
-		// be louder than the last waveform-sub frame — a non-monotonic jump.
-		src := j.prevPLC
-		if src == nil {
-			src = j.lastGoodFrame
-		}
-		for i, s := range src {
-			result[i] = int16(float64(s) * 0.85)
-		}
+	// Fade-to-silence: apply 0.85× attenuation per consecutive loss frame.
+	// Each call to GeneratePLC produces strictly lower energy than the previous,
+	// ensuring perceptual smooth fade rather than abrupt cutoff.
+	// Frame 1: 0.85 × lastGoodFrame; Frame 2: 0.85 × Frame1; etc.
+	src := j.prevPLC
+	if src == nil {
+		src = j.lastGoodFrame
+	}
+	const plcFadeGain = 0.85
+	for i, s := range src {
+		result[i] = int16(float64(s) * plcFadeGain)
 	}
 
 	j.prevPLC = result
@@ -320,7 +304,7 @@ func detectPitch(frame []int16) int {
 		return n // too short to detect
 	}
 
-	minLag := 30  // AQ-004: was 40 — now covers ~533 Hz at 16kHz
+	minLag := 30 // AQ-004: was 40 — now covers ~533 Hz at 16kHz
 	maxLag := n / 2
 	if maxLag > 450 { // AQ-004: was 400 — covers ~35 Hz lower bound
 		maxLag = 450
