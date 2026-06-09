@@ -35,10 +35,11 @@ const Version = "0.1.0"
 
 // ClearStream is the main SDK entry point.
 type ClearStream struct {
-	cfg    Config
-	model  model.Suppressor
-	pool   *model.SuppressorPool
-	logger *zap.Logger
+	cfg         Config
+	model       model.Suppressor
+	pool        *model.SuppressorPool
+	logger      *zap.Logger
+	maxSessions int
 }
 
 // Config holds top-level SDK configuration.
@@ -187,6 +188,7 @@ func New(cfg Config) (*ClearStream, error) {
 	if poolSize <= 0 {
 		poolSize = 32
 	}
+	sessions := poolSize
 	// Bidirectional calls need 2 suppressors per call (one per direction).
 	// Forward-only (bot receives audio only) needs 1 suppressor per call.
 	if !cfg.ForwardOnly {
@@ -202,10 +204,11 @@ func New(cfg Config) (*ClearStream, error) {
 	}
 
 	return &ClearStream{
-		cfg:    cfg,
-		model:  sup,
-		pool:   pool,
-		logger: logger,
+		cfg:         cfg,
+		model:       sup,
+		pool:        pool,
+		logger:      logger,
+		maxSessions: sessions,
 	}, nil
 }
 
@@ -299,12 +302,9 @@ func (cs *ClearStream) PipelineStats() audio.PipelineStats {
 	return cs.Pipeline().Stats()
 }
 
-// PoolSize returns the suppressor pool capacity (max concurrent RTP sessions).
+// PoolSize returns the number of concurrent sessions this instance supports.
 func (cs *ClearStream) PoolSize() int {
-	if cs.pool == nil {
-		return 0
-	}
-	return cs.pool.Size()
+	return cs.maxSessions
 }
 
 // Close releases resources held by the SDK (model handles, etc.).
