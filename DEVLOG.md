@@ -1503,3 +1503,19 @@ Rule-based approaches (Wiener, spectral subtraction) **cannot** separate two voi
 ### Tomorrow
 1. RTP/SIP: Add SSRC-change loopback integration test (UDP, verifies pipeline resets on new call leg)
 2. Audio Pipeline: Add `TestPipelineStatsAccumulation` — verify `Stats().FramesProcessed` increments across VAD transitions
+
+## 2026-06-10
+
+**Agents run:** Audio Pipeline, RTP/SIP
+**Build:** passing ✅
+
+### Changes
+- `pkg/audio/pipeline_test.go`: Added `TestPipelineStatsAccumulation` — feeds 5 speech frames (RMS=10000 > threshold) then 3 silence frames (RMS=0), asserts FramesProcessed=8, FramesSuppressed=5, FramesSilent=3, and the invariant FramesProcessed==FramesSuppressed+FramesSilent.
+- `pkg/rtp/session_test.go`: Replaced stub SSRC test with full UDP loopback `TestSSRCChangeResetsSession` — binds real Session+ForwardAddr, sends 4 RTP packets with SSRC=1000, then 4 with SSRC=2000, verifies PacketsReceived grows across the reset boundary confirming pipeline reset doesn't crash the session.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 (Tahoe) prevents CGO test execution; CGO_ENABLED=0 tests pass. Pre-existing issue — upgrade to Go 1.21+ recommended.
+
+### Tomorrow
+1. API Layer: Add `pkg/http/handler.go` with POST /enhance HTTP endpoint
+2. QA/Testing: Create Makefile with build/test/lint/fmt targets
