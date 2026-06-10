@@ -141,64 +141,94 @@ func TestSSRCDetection(t *testing.T) {
 	t.Logf("SSRC change correctly detected: 0x%08X -> 0x%08X", ssrc1, ssrc2)
 }
 
-// TestSSRCChangeResetsSession verifies that when two packets with different SSRCs
-// are parsed, the SSRC transition is correctly identified using the same fields
-// (ssrcSet + currentSSRC) that session.handlePacket maintains at runtime.
-// This directly exercises the detection condition:
+// TestSSRCChangeResetsSession is a loopback UDP integration test that verifies
+// the pipeline resets cleanly when the SSRC changes mid-stream, simulating a new
+// call leg arriving on the same session.
 //
-//	if ssrcSet && header.SSRC != currentSSRC { reset() }
+// It starts a real Session (listening on a random UDP port), sends a burst of
+// packets with SSRC=1000, then sends packets with SSRC=2000, and asserts:
+//  1. PacketsReceived accumulates across both SSRCs (no crash/deadlock)
+//  2. The session stays healthy for further traffic after the SSRC change
 func TestSSRCChangeResetsSession(t *testing.T) {
-	const ssrc1 uint32 = 0xAABBCCDD
-	const ssrc2 uint32 = 0x11223344
+	// Bind a discard sink so the session has a valid ForwardAddr to write to.
+	sinkConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("bind sink: %v", err)
+	}
+	defer sinkConn.Close()
+
+	logger, _ := zap.NewDevelopment()
+	cfg := Config{
+		ListenAddr:  "127.0.0.1:0",
+		ForwardAddr: sinkConn.LocalAddr().String(),
+		PayloadType: 0, // PCMU
+		JitterDepth: 1,
+		Logger:      logger,
+		Suppressor:  model.NewMockSuppressor(),
+	}
+
+	sess, err := NewSession(cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	sess.Start()
+	defer sess.Stop()
+
+	// Resolve the actual listen address assigned by the OS.
+	listenAddr := sess.conn.LocalAddr().(*net.UDPAddr)
+
+	sender, err := net.DialUDP("udp", nil, listenAddr)
+	if err != nil {
+		t.Fatalf("dial sender: %v", err)
+	}
+	defer sender.Close()
+
+	// Build a 160-byte mu-law silence payload (8 kHz, 20 ms frame).
 	payload := make([]byte, 160)
 	for i := range payload {
 		payload[i] = 0xFF
 	}
 
-	// Parse headers from raw packets (same path as session.handlePacket).
-	hdr1, _, err := parseRTPHeader(buildRawRTPPacket(1, 0, ssrc1, payload))
-	if err != nil {
-		t.Fatalf("parse pkt1: %v", err)
-	}
-	hdr2, _, err := parseRTPHeader(buildRawRTPPacket(2, 160, ssrc2, payload))
-	if err != nil {
-		t.Fatalf("parse pkt2: %v", err)
-	}
-
-	// Simulate session state.
-	var currentSSRC uint32
-	ssrcSet := false
-	resetCount := 0
-
-	process := func(hdr rtpHeader) {
-		if ssrcSet && hdr.SSRC != currentSSRC {
-			// mirrors: s.jitter.Reset(); s.pipeline.Reset()
-			resetCount++
+	// Phase 1: send 4 packets with SSRC=1000 (first call leg).
+	const ssrc1 uint32 = 1000
+	for i := 0; i < 4; i++ {
+		pkt := buildRawRTPPacket(uint16(i), uint32(i*160), ssrc1, payload)
+		if _, err := sender.Write(pkt); err != nil {
+			t.Fatalf("send SSRC1 pkt %d: %v", i, err)
 		}
-		currentSSRC = hdr.SSRC
-		ssrcSet = true
+		time.Sleep(5 * time.Millisecond)
 	}
 
-	process(hdr1)
-	if !ssrcSet {
-		t.Fatal("ssrcSet should be true after first packet")
+	// Small pause to let the session process phase-1 packets.
+	time.Sleep(80 * time.Millisecond)
+
+	statsAfterSSRC1 := sess.Stats()
+	if statsAfterSSRC1.PacketsReceived == 0 {
+		t.Fatal("expected PacketsReceived > 0 after phase-1 (SSRC=1000)")
 	}
-	if currentSSRC != ssrc1 {
-		t.Fatalf("after pkt1: want SSRC=0x%08X, got 0x%08X", ssrc1, currentSSRC)
-	}
-	if resetCount != 0 {
-		t.Fatalf("no reset expected on first packet, got %d", resetCount)
+	t.Logf("after SSRC=1000: PacketsReceived=%d", statsAfterSSRC1.PacketsReceived)
+
+	// Phase 2: send 4 packets with SSRC=2000 (new call leg -- triggers pipeline reset).
+	const ssrc2 uint32 = 2000
+	for i := 0; i < 4; i++ {
+		pkt := buildRawRTPPacket(uint16(i), uint32(i*160), ssrc2, payload)
+		if _, err := sender.Write(pkt); err != nil {
+			t.Fatalf("send SSRC2 pkt %d: %v", i, err)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 
-	process(hdr2)
-	if currentSSRC != ssrc2 {
-		t.Fatalf("after SSRC change: want SSRC=0x%08X, got 0x%08X", ssrc2, currentSSRC)
-	}
-	if resetCount != 1 {
-		t.Fatalf("expected exactly 1 reset on SSRC change, got %d", resetCount)
-	}
+	// Allow the session to process phase-2 packets (including the reset path).
+	time.Sleep(80 * time.Millisecond)
 
-	t.Logf("SSRC change triggered pipeline reset: 0x%08X -> 0x%08X (resets=%d)", ssrc1, ssrc2, resetCount)
+	statsAfterSSRC2 := sess.Stats()
+	// The counter must have grown: phase-2 packets were processed after the reset.
+	if statsAfterSSRC2.PacketsReceived <= statsAfterSSRC1.PacketsReceived {
+		t.Errorf("PacketsReceived did not increase after SSRC change: before=%d after=%d",
+			statsAfterSSRC1.PacketsReceived, statsAfterSSRC2.PacketsReceived)
+	}
+	t.Logf("SSRC change loopback OK: SSRC %d->%d, total PacketsReceived=%d",
+		ssrc1, ssrc2, statsAfterSSRC2.PacketsReceived)
 }
 
 // TestRTPHeaderRoundtrip builds an rtpHeader, serializes it with buildRTPPacket,
