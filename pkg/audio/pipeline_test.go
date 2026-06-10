@@ -105,6 +105,95 @@ func TestPipelinePassthroughFidelity(t *testing.T) {
 	}
 }
 
+// TestPipelineStatsAccumulation verifies that Stats().FramesProcessed,
+// FramesSilent, and FramesSuppressed are updated correctly after feeding
+// batches of speech and silence frames through the pipeline.
+//
+// It uses a static VAD with HangoverFrames=0 so that the speech/silence
+// classification is deterministic: frames with high RMS (>= ThresholdRMS)
+// are speech, frames with zero energy are silence.
+//
+// InputSampleRate is set to 16000 (== ProcessorSampleRate) so that no
+// resampling occurs and FrameSizeBytes (320) is used directly.
+func TestPipelineStatsAccumulation(t *testing.T) {
+	const threshold = 5000.0 // RMS threshold; speech frames will be well above this
+
+	vad := &audio.VAD{
+		ThresholdRMS:   threshold,
+		HangoverFrames: 0, // no hangover - silence is silent immediately
+	}
+
+	p := audio.NewPipeline(audio.PipelineConfig{
+		SampleRate:      16000,
+		InputSampleRate: 16000, // no resampling; frame size stays FrameSizeBytes
+		Channels:        1,
+		Suppressor:      model.NewPassthrough(),
+		VAD:             vad,
+		Logger:          zap.NewNop(),
+	})
+
+	// speechFrame: all samples = 10000, RMS = 10000 > threshold, classified as speech
+	speechFrame := make([]byte, audio.FrameSizeBytes)
+	for i := 0; i < audio.FrameSizeSamples; i++ {
+		var s int16 = 10000
+		speechFrame[2*i] = byte(s)
+		speechFrame[2*i+1] = byte(s >> 8)
+	}
+
+	// silenceFrame: all samples = 0, RMS = 0 < threshold, classified as silence
+	silenceFrame := make([]byte, audio.FrameSizeBytes)
+
+	const speechCount = 5
+	const silenceCount = 3
+
+	var out bytes.Buffer
+
+	// Feed speech frames one at a time.
+	for i := 0; i < speechCount; i++ {
+		if err := p.ProcessFrames(speechFrame, &out); err != nil {
+			t.Fatalf("speech frame %d: ProcessFrames error: %v", i, err)
+		}
+	}
+	s := p.Stats()
+	if s.FramesProcessed != speechCount {
+		t.Errorf("after speech: FramesProcessed want %d, got %d", speechCount, s.FramesProcessed)
+	}
+	if s.FramesSuppressed != speechCount {
+		t.Errorf("after speech: FramesSuppressed want %d, got %d", speechCount, s.FramesSuppressed)
+	}
+	if s.FramesSilent != 0 {
+		t.Errorf("after speech: FramesSilent want 0, got %d", s.FramesSilent)
+	}
+
+	// Feed silence frames one at a time.
+	for i := 0; i < silenceCount; i++ {
+		if err := p.ProcessFrames(silenceFrame, &out); err != nil {
+			t.Fatalf("silence frame %d: ProcessFrames error: %v", i, err)
+		}
+	}
+	s = p.Stats()
+	total := uint64(speechCount + silenceCount)
+	if s.FramesProcessed != total {
+		t.Errorf("after silence: FramesProcessed want %d, got %d", total, s.FramesProcessed)
+	}
+	if s.FramesSuppressed != speechCount {
+		t.Errorf("after silence: FramesSuppressed want %d, got %d", speechCount, s.FramesSuppressed)
+	}
+	if s.FramesSilent != silenceCount {
+		t.Errorf("after silence: FramesSilent want %d, got %d", silenceCount, s.FramesSilent)
+	}
+	if s.FramesProcessed != s.FramesSuppressed+s.FramesSilent {
+		t.Errorf("invariant: FramesProcessed(%d) != FramesSuppressed(%d)+FramesSilent(%d)",
+			s.FramesProcessed, s.FramesSuppressed, s.FramesSilent)
+	}
+
+	// Output must contain all frames (passthrough suppressor writes every frame).
+	wantBytes := int(total) * audio.FrameSizeBytes
+	if out.Len() != wantBytes {
+		t.Errorf("output bytes: want %d, got %d", wantBytes, out.Len())
+	}
+}
+
 func TestPipelineWithMock(t *testing.T) {
 	mock := model.NewMockSuppressor()
 	mock.Gain = 0.5
