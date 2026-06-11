@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -366,21 +367,21 @@ func TestRTPMonitor_FiresAlert(t *testing.T) {
 	var rx uint64 = 1000
 	var lost uint64 = 50 // 5% loss > 3% threshold
 
-	var alertFired bool
+	var alertFired int32 // 0=false, 1=true (atomic)
 	m := NewRTPMonitor(RTPMonitorConfig{
 		StatsFn: func() RTPStats {
 			return RTPStats{PacketsReceived: rx, PacketsLost: lost, LatencyAvgMs: 1.0}
 		},
 		SampleInterval: 20 * time.Millisecond,
 		OnAlert: func(msg string) {
-			alertFired = true
+			atomic.StoreInt32(&alertFired, 1)
 		},
 	})
 	m.Start()
 	time.Sleep(80 * time.Millisecond)
 	report, _ := m.Stop()
 
-	if !alertFired {
+	if atomic.LoadInt32(&alertFired) == 0 {
 		t.Error("expected alert to fire on 5% packet loss")
 	}
 	if report.AlertCount == 0 {

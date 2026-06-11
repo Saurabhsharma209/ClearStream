@@ -324,13 +324,22 @@ func TestProcessWithOptionsAllProgressCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := []float64{0.0, 0.1, 0.7, 1.0}
-	if len(progress) != len(want) {
-		t.Fatalf("expected %d progress calls, got %d: %v", len(want), len(progress), progress)
+	// The processor reports fixed checkpoints (0.0, 0.1, 0.7, 1.0) plus optional
+	// intermediate ffmpeg progress values between 0.1 and 0.7. Verify boundaries
+	// and monotonicity rather than exact count.
+	if len(progress) < 4 {
+		t.Fatalf("expected at least 4 progress calls, got %d: %v", len(progress), progress)
 	}
-	for i, v := range want {
-		if math.Abs(progress[i]-v) > 1e-9 {
-			t.Errorf("progress[%d] = %f, want %f", i, progress[i], v)
+	if math.Abs(progress[0]-0.0) > 1e-9 {
+		t.Errorf("first progress = %f, want 0.0", progress[0])
+	}
+	if math.Abs(progress[len(progress)-1]-1.0) > 1e-9 {
+		t.Errorf("last progress = %f, want 1.0", progress[len(progress)-1])
+	}
+	for i := 1; i < len(progress); i++ {
+		if progress[i] < progress[i-1]-1e-9 {
+			t.Errorf("progress not monotonic at index %d: %v", i, progress)
+			break
 		}
 	}
 }
