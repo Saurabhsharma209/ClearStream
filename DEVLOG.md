@@ -481,7 +481,7 @@ git push origin main
 - examples/asterisk/agi/main.go: Asterisk EAGI handler (live call noise suppression)
 - examples/asterisk/ari_bridge/main.go: Asterisk ARI bridge via HTTP + WebSocket
 - examples/asterisk/extensions.conf: sample dialplan (3 integration patterns)
-- examples/exotel_integration/agentstream_connector.go: drop-in ClearStreamClient for AgentStream STT pipeline
+- examples/telephony_integration/agentstream_connector.go: drop-in ClearStreamClient for AgentStream STT pipeline
 - examples/media_gateway/README.md: 5 integration options (SIP B2BUA, RTP fork, WSS gate, HTTP batch, EAGI)
 - tools/gen_test_audio/main.go: generates 3 test WAV files (clean, noisy, office)
 - tools/snr_benchmark/main.go: measures SNR before/after, prints comparison table
@@ -510,7 +510,7 @@ git push origin main
 ### Tomorrow (Day 4)
 - DeepFilterNet ONNX integration (much better SNR than RNNoise)
 - Load test: 100 concurrent RTP sessions
-- ECC (Exotel Contact Center) integration hook
+- ECC (production telephony Contact Center) integration hook
 - Prometheus /metrics scrape config
 
 ## 2026-06-02 (Day 4 — Model Quality + Scale)
@@ -540,7 +540,7 @@ git push origin main
 - pkg/audio: 25 tests passing
 - pkg/model: benchmarks + concurrency test added
 - pkg/rtp: 4 new tests, fade PLC tested
-- Integration examples: 6 (file, rtp, webrtc, asterisk, ecc, exotel/agentstream)
+- Integration examples: 6 (file, rtp, webrtc, asterisk, ecc, telephony/agentstream)
 
 ### Blocked
 - go mod tidy: needs manual run (cd ~/ClearStream && go mod tidy) — adds onnxruntime_go, prometheus deps to go.sum
@@ -723,7 +723,7 @@ git push origin main
 
 ## 2026-06-02 (Days 14 & 15 — Load Testing + POC Integration)
 
-**Agents run:** SDK, Audio, HTTP, QA/Load, Compat, Exotel
+**Agents run:** SDK, Audio, HTTP, QA/Load, Compat, production telephony
 **Build:** passing | **Tests:** 10 packages green (-race)
 
 ### Changes
@@ -734,8 +734,8 @@ git push origin main
 - pkg/http/handler_test.go: TestEnhanceWithWAVFile (real 44-byte RIFF header + sine PCM), TestEnhanceResponseHeaders (X-ClearStream-Model, X-ClearStream-Duration-Ms), TestCORSPreflightHeaders
 - pkg/loadtest/loadtest.go: in-process load test runner — N concurrent pipeline sessions via semaphore, atomic frame/error counters, FPS metric
 - pkg/loadtest/loadtest_test.go: TestLoadTest10Sessions (1000 frames, 0 errors), TestLoadTest50Sessions (2500 frames, 0 errors), BenchmarkPipeline; observed 1.6M FPS on passthrough
-- pkg/compat/compat_test.go: 13 tests covering all platforms — Asterisk/FreeSWITCH/Kamailio/RTPEngine/Janus/Exotel/WSS/RTP; version parsing, GTE comparison, Recommend() for each platform
-- examples/exotel_poc/main.go: runnable Exotel vSIP POC — RTP session (PCMA, JitterDepth=4), HTTP webhook stub, /health with pipeline stats, graceful shutdown with final stats
+- pkg/compat/compat_test.go: 13 tests covering all platforms — Asterisk/FreeSWITCH/Kamailio/RTPEngine/Janus/production telephony/WSS/RTP; version parsing, GTE comparison, Recommend() for each platform
+- examples/telephony_poc/main.go: runnable production telephony vSIP POC — RTP session (PCMA, JitterDepth=4), HTTP webhook stub, /health with pipeline stats, graceful shutdown with final stats
 
 ### Metrics
 - Concurrent pipeline throughput: **1.6M frames/sec** (passthrough, 50 sessions)
@@ -747,7 +747,7 @@ git push origin main
 - DeepFilterNet: requires ONNX Runtime + exported model
 
 ### POC command
-    go run examples/exotel_poc/main.go --rtp-listen :5004 --rtp-forward AGENT:5004 --http :8080
+    go run examples/telephony_poc/main.go --rtp-listen :5004 --rtp-forward AGENT:5004 --http :8080
 
 ## 2026-06-03 (Days 15 & 16 — README, Streaming, Config Presets, Coverage)
 
@@ -761,7 +761,7 @@ git push origin main
 - pkg/rtp/session.go: AGC *audio.AGCConfig wired into config; QualityReport() combining RTP stats + pipeline stats
 - pkg/rtp/session_test.go: TestSessionQualityReport, TestRTPLoopback fix (MockSuppressor)
 - pkg/http/handler.go: POST /enhance/stream chunked streaming; writeJSONError(); CORS; /info endpoint; response headers
-- clearstream.go: TelephonyConfig(), FileProcessingConfig(), ExotelConfig() presets; Validate()
+- clearstream.go: TelephonyConfig(), FileProcessingConfig(), production telephonyConfig() presets; Validate()
 - cmd/clearstream/main.go: dir batch subcommand; version with runtime info
 - Makefile: coverage, coverage-html targets
 - Coverage: pkg/audio 87.2%, pkg/sip 75.0%
@@ -838,8 +838,8 @@ G.722 declares `a=rtpmap:9 G722/8000` in SDP but the actual audio is 16kHz wideb
 - pkg/model/profile.go (NEW): NoiseProfile struct; IndiaCallCenterProfile() (NB, VAD=0.25, AGC=0.35, aggressiveness=2); IndiaWidebandProfile() (WB, VAD=0.20, aggressiveness=1); GenericOfficeProfile()
 - pkg/model/profile_test.go (NEW): 3 profile validation tests
 - pkg/model/interface.go: Aggressiveness int field on SuppressorConfig (0=default, 1=mild, 2=medium, 3=aggressive)
-- clearstream.go: ExotelCallCenterConfig() (8kHz, VAD=0.25, MaxConcurrentSessions=100)
-- clearstream_presets_test.go: TestExotelCallCenterConfig
+- clearstream.go: production telephonyCallCenterConfig() (8kHz, VAD=0.25, MaxConcurrentSessions=100)
+- clearstream_presets_test.go: Testproduction telephonyCallCenterConfig
 
 ### Architecture
 - AEC sits before VAD/suppressor in the pipeline chain: AEC → VAD → Suppressor → AGC → Diarizer → output
@@ -1254,10 +1254,10 @@ Out of scope Sprint 24: Flink jobs, billing dashboard UI, invoice PDF generation
 ### Open Questions (needs Saurabh decision)
 
 1. **Pulse**: Start 6s minimum, or 1s (more complex metering)?
-2. **Kafka vs HTTP**: Kafka already in Exotel infra? Or start with HTTP CDR forwarder?
-3. **ClickHouse vs existing DWH**: Does Exotel use ClickHouse for CDRs already?
+2. **Kafka vs HTTP**: Kafka already in production telephony infra? Or start with HTTP CDR forwarder?
+3. **ClickHouse vs existing DWH**: Does production telephony use ClickHouse for CDRs already?
 4. **Spend caps**: Hard block on new sessions, or soft alert + grace period?
-5. **Channel vs consumption**: What billing model do existing Exotel customers already use?
+5. **Channel vs consumption**: What billing model do existing production telephony customers already use?
 
 ### Full design doc
 `docs/billing-architecture.md` — includes ClickHouse schema, Flink topology, SDK integration examples.
@@ -1296,14 +1296,14 @@ git push origin main
 - `billing_test.go`: 6 tests, all passing
 
 #### Eval System Extensions
-- `pkg/eval/transcript.go`: Char/Word/LLM scoring — matches Exotel VoiceBot framework exactly. LCS-based SequenceMatcher, Azure OpenAI LLM scorer, all 3 schema types (VADEvalRow, DenoiserAggRow, GroupSummaryRow).
+- `pkg/eval/transcript.go`: Char/Word/LLM scoring — matches production telephony VoiceBot framework exactly. LCS-based SequenceMatcher, Azure OpenAI LLM scorer, all 3 schema types (VADEvalRow, DenoiserAggRow, GroupSummaryRow).
 - `scripts/denoiser_analysis.py`: Enhanced version of team's `denoiser_analysis.py` — same Char/Word/LLM pipeline, adds audio-level SNR/noise/VAD metrics, same output format (`denoiser_results.md`).
 
 #### Docs
-- `docs/competitive-analysis.md`: ClearStream vs Krisp 100/95/90, Sanas, Hector — using Exotel's own eval numbers. Proves +24.3 dB SNR, −4.2% WER, < 0.5ms latency vs Krisp's 15-25ms.
+- `docs/competitive-analysis.md`: ClearStream vs Krisp 100/95/90, Sanas, Hector — using production telephony's own eval numbers. Proves +24.3 dB SNR, −4.2% WER, < 0.5ms latency vs Krisp's 15-25ms.
 - `docs/scaling.md`: 1B calls/day architecture — 6.25M concurrent channels, WAL→Kafka→Flink→ClickHouse, Kubernetes deployment.
 - `docs/billing-architecture.md`: Full billing design with ClickHouse schema, Redis spend caps, CDR schema.
-- `docs/denoiser-eval-raw-audio.md`: Full eval of raw_audio.wav matching Exotel Confluence format.
+- `docs/denoiser-eval-raw-audio.md`: Full eval of raw_audio.wav matching production telephony Confluence format.
 
 ### Audio Quality Results (raw_audio.wav)
 | Metric | Raw | Old Gate | Adaptive NR (new) |
@@ -1389,7 +1389,7 @@ go build -tags onnx ./...
 # Target: violations < 2%, background ratio ≤ 0.50
 ```
 
-Fine-tuning roadmap in `docs/nr-tuning-and-training-guide.md` (Sprint 27–30: collect 20h Exotel babble → fine-tune → ONNX export → A/B pass).
+Fine-tuning roadmap in `docs/nr-tuning-and-training-guide.md` (Sprint 27–30: collect 20h production telephony babble → fine-tune → ONNX export → A/B pass).
 
 ### Blocked (needs Saurabh)
 ```bash
@@ -1441,7 +1441,7 @@ git push origin main
 Note: SNR improvement is lower with the conservative fix — this is intentional. Aggressive suppression caused the jitter. The +7.2 dB is clean, artifact-free improvement.
 
 ### Background Voice — Honest Assessment
-Rule-based approaches (Wiener, spectral subtraction) **cannot** separate two voices. See `docs/nr-tuning-and-training-guide.md` for the full explanation and the ML training path (RNNoise fine-tune on Exotel data, DeepFilterNet, Conv-TasNet speaker separation).
+Rule-based approaches (Wiener, spectral subtraction) **cannot** separate two voices. See `docs/nr-tuning-and-training-guide.md` for the full explanation and the ML training path (RNNoise fine-tune on production telephony data, DeepFilterNet, Conv-TasNet speaker separation).
 
 ### New File
 - `docs/nr-tuning-and-training-guide.md`: Complete parameter reference, configuration presets (4 profiles), ML training pipeline (data collection → PyTorch → ONNX export), WER-validated training loop, diagnostic decision tree, 6-sprint roadmap to background voice suppression.

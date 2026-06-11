@@ -338,9 +338,9 @@ func FileProcessingConfig() Config {
 	return cfg
 }
 
-// ExotelConfig returns a Config recommended for Exotel vSIP integration.
+// ContactCenterConfig returns a Config recommended for cloud telephony / vSIP integration.
 // PCMA (A-law) codec, adaptive VAD, AGC enabled, 32 concurrent sessions.
-func ExotelConfig() Config {
+func ContactCenterConfig() Config {
 	cfg := TelephonyConfig()
 	cfg.MaxConcurrentSessions = 32
 	return cfg
@@ -348,7 +348,7 @@ func ExotelConfig() Config {
 
 // IndiaTelephonyConfig returns a Config tuned for Indian PSTN deployments.
 // Indian operators mandate G.711 µ-law (PCMU) or A-law (PCMA) at 8kHz narrowband.
-// This is the correct config for Exotel PSTN trunk integration.
+// Suitable for PSTN trunk integration with 8kHz narrow-band audio.
 func IndiaTelephonyConfig() Config {
 	return Config{
 		SampleRate:            8000,
@@ -363,7 +363,7 @@ func IndiaTelephonyConfig() Config {
 }
 
 // WidebandConfig returns a Config for wideband VoIP (16kHz, e.g. G.722 SIP trunks).
-// Use this for Exotel VoIP customers, WebRTC, or any SIP UA advertising G.722.
+// Use this for VoIP customers, WebRTC, or any SIP UA advertising G.722.
 func WidebandConfig() Config {
 	return Config{
 		SampleRate:            16000,
@@ -407,10 +407,10 @@ func (cs *ClearStream) NewHTTPHandler() http.Handler {
 	})
 }
 
-// ExotelCallCenterConfig returns a Config optimized for Exotel's Indian call center deployments.
-// This is the recommended starting point for Exotel customers.
+// CallCenterConfig returns a Config optimized for contact center deployments.
+// Suitable for high-volume inbound/outbound call processing.
 // It combines India PSTN narrowband settings with call-center-specific tuning.
-func ExotelCallCenterConfig() Config {
+func CallCenterConfig() Config {
 	return Config{
 		SampleRate:            8000, // Indian PSTN: always 8kHz
 		Channels:              1,
@@ -418,7 +418,7 @@ func ExotelCallCenterConfig() Config {
 		EnableVAD:             true,
 		AdaptiveVAD:           true,
 		VADThreshold:          0.25, // Indian English phonetics
-		MaxConcurrentSessions: 100,  // Exotel scale
+		MaxConcurrentSessions: 100,  // recommended for high-volume deploymentr
 		// Profile: IndiaCallCenterProfile (available via model package)
 	}
 }

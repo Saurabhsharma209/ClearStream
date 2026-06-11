@@ -239,7 +239,7 @@ func TestPresetConfigs(t *testing.T) {
 	}{
 		{"Telephony", clearstream.TelephonyConfig()},
 		{"FileProcessing", clearstream.FileProcessingConfig()},
-		{"Exotel", clearstream.ExotelConfig()},
+		{"your telephony platform", clearstream.ContactCenterConfig()},
 	}
 	for _, tc := range configs {
 		t.Run(tc.name, func(t *testing.T) {

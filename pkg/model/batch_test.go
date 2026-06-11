@@ -14,7 +14,7 @@ func TestBatchWrapper_MatchesSequential(t *testing.T) {
 	for i := range frames {
 		f := make([]int16, 160)
 		for j := range f {
-			f[j] = int16((i+1) * (j + 1) % 32767)
+			f[j] = int16((i + 1) * (j + 1) % 32767)
 		}
 		frames[i] = f
 	}

@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#!/usr/local/bin/python3.13
+
 """
 finetune_deepfilter.py — Fine-tune DeepFilterNet on ClearStream telephony data.
 

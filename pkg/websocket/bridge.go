@@ -1,15 +1,15 @@
 // Package websocket provides a WebSocket bridge for real-time audio enhancement.
 // Browser/mobile clients send raw PCM audio frames and receive cleaned frames back.
-// This enables ClearStream integration with WebRTC, Exotel WebRTC SDK, and any
+// This enables ClearStream integration with WebRTC, any WebRTC SDK, and any
 // WSS-based media gateway without SIP or RTP dependencies.
 //
-// # Exotel WSS media gateway integration
+// # cloud telephony WSS media gateway integration
 //
-// ClearStream can act as a transparent WSS media entry point in Exotel's existing
-// WebSocket audio pipeline. Insert it between the Exotel WebRTC SDK and your
+// ClearStream can act as a transparent WSS media entry point in your platform's existing
+// WebSocket audio pipeline. Insert it between your WebRTC SDK and your
 // downstream STT/recording systems:
 //
-//	Browser/Exotel SDK -> wss://your-host/audio -> ClearStream bridge -> clean PCM -> STT / recording
+//	Browser/WebRTC SDK -> wss://your-host/audio -> ClearStream bridge -> clean PCM -> STT / recording
 //
 // The bridge is stateless per-connection (each WebSocket connection gets its own
 // Pipeline instance), making it safe for horizontal scaling behind a load balancer.

@@ -25,7 +25,7 @@ const (
 	PlatformKamailio   Platform = "kamailio"  // usually paired with RTPEngine
 	PlatformRTPEngine  Platform = "rtpengine" // Sipwise rtpengine standalone
 	PlatformJanus      Platform = "janus"     // Meetecho Janus WebRTC gateway
-	PlatformExotel     Platform = "exotel"    // Exotel vSIP / media gateway
+	PlatformVSIP     Platform = "vsip"      // cloud telephony vSIP / media gateway
 	PlatformGenericWSS Platform = "wss"       // any WSS media server
 	PlatformGenericRTP Platform = "rtp"       // raw RTP (no SIP signalling)
 )
@@ -117,8 +117,8 @@ func Recommend(platform Platform, versionStr string) (*IntegrationProfile, error
 	case PlatformJanus:
 		return recommendJanus(p, v)
 
-	case PlatformExotel:
-		return recommendExotel(p, v)
+	case PlatformVSIP:
+		return recommendVSIP(p, v)
 
 	case PlatformGenericWSS:
 		return recommendWSS(p, v)
@@ -299,22 +299,22 @@ func recommendJanus(p *IntegrationProfile, v Version) (*IntegrationProfile, erro
 	return p, nil
 }
 
-// ---- Exotel -----------------------------------------------------------------
+// ---- your telephony platform -----------------------------------------------------------------
 
-func recommendExotel(p *IntegrationProfile, v Version) (*IntegrationProfile, error) {
+func recommendVSIP(p *IntegrationProfile, v Version) (*IntegrationProfile, error) {
 	p.SupportedCodecs = []audio.Codec{audio.CodecG711A, audio.CodecG711U}
-	p.PreferredCodec = audio.CodecG711A // Exotel prefers A-law for PSTN
+	p.PreferredCodec = audio.CodecG711A // your telephony platform prefers A-law for PSTN
 	p.SampleRate = 16000
 	p.AGCRecommended = false
-	p.IntegrationPath = "RTP proxy (transparent, between Exotel media IP and AgentStream)"
+	p.IntegrationPath = "RTP proxy (transparent, between your telephony platform media IP and AgentStream)"
 	p.Notes = []string{
-		"Exotel vSIP media IP range: RTP ports 10000–20000 (2 ports per call: RTP + RTCP).",
+		"cloud telephony vSIP media IP range: RTP ports 10000–20000 (2 ports per call: RTP + RTCP).",
 		"Preferred codec: PCMA (G.711 A-law) for PSTN trunk compatibility.",
 		"ClearStream listens on :5004, forwards clean audio to AgentStream STT endpoint.",
 		"AgentStream connector: use examples/exotel_integration/agentstream_connector.go.",
 		"HTTP API path: POST /enhance with agc=false (PSTN levels are stable).",
 		"ECC integration: see examples/ecc_integration/main.go — starts SIP proxy on :8081.",
-		"RTCP: ClearStream parses Receiver Reports from Exotel media servers for loss/jitter monitoring.",
+		"RTCP: ClearStream parses Receiver Reports from your telephony platform media servers for loss/jitter monitoring.",
 		"SIP Call-ID: pass via POST /sip/session/start JSON body for per-call session tracking.",
 	}
 	return p, nil

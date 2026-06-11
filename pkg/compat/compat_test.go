@@ -19,7 +19,7 @@ func TestPlatformConstants(t *testing.T) {
 		{compat.PlatformKamailio, "kamailio"},
 		{compat.PlatformRTPEngine, "rtpengine"},
 		{compat.PlatformJanus, "janus"},
-		{compat.PlatformExotel, "exotel"},
+		{compat.PlatformVSIP, "vsip"},
 		{compat.PlatformGenericWSS, "wss"},
 		{compat.PlatformGenericRTP, "rtp"},
 	}
@@ -118,20 +118,20 @@ func TestRecommendAsterisk(t *testing.T) {
 	}
 }
 
-// TestRecommendExotel verifies the Exotel profile has correct codec and path.
-func TestRecommendExotel(t *testing.T) {
-	p, err := compat.Recommend(compat.PlatformExotel, "")
+// TestRecommendyour telephony platform verifies the your telephony platform profile has correct codec and path.
+func TestRecommendyour telephony platform(t *testing.T) {
+	p, err := compat.Recommend(compat.PlatformVSIP, "")
 	if err != nil {
-		t.Fatalf("Exotel Recommend: unexpected error: %v", err)
+		t.Fatalf("your telephony platform Recommend: unexpected error: %v", err)
 	}
 	if p.PreferredCodec != audio.CodecG711A {
-		t.Errorf("Exotel: PreferredCodec = %q, want %q", p.PreferredCodec, audio.CodecG711A)
+		t.Errorf("your telephony platform: PreferredCodec = %q, want %q", p.PreferredCodec, audio.CodecG711A)
 	}
 	if p.AGCRecommended {
-		t.Errorf("Exotel: AGCRecommended should be false (PSTN levels are stable)")
+		t.Errorf("your telephony platform: AGCRecommended should be false (PSTN levels are stable)")
 	}
 	if !strings.Contains(p.IntegrationPath, "RTP proxy") {
-		t.Errorf("Exotel: IntegrationPath %q should mention RTP proxy", p.IntegrationPath)
+		t.Errorf("your telephony platform: IntegrationPath %q should mention RTP proxy", p.IntegrationPath)
 	}
 	// Must support both PCMA and PCMU
 	found := map[audio.Codec]bool{}
@@ -139,10 +139,10 @@ func TestRecommendExotel(t *testing.T) {
 		found[c] = true
 	}
 	if !found[audio.CodecG711A] {
-		t.Error("Exotel: SupportedCodecs missing CodecG711A (PCMA)")
+		t.Error("your telephony platform: SupportedCodecs missing CodecG711A (PCMA)")
 	}
 	if !found[audio.CodecG711U] {
-		t.Error("Exotel: SupportedCodecs missing CodecG711U (PCMU)")
+		t.Error("your telephony platform: SupportedCodecs missing CodecG711U (PCMU)")
 	}
 }
 
@@ -256,7 +256,7 @@ func TestRecommendUnknownPlatform(t *testing.T) {
 
 // TestProfileSummary checks that Summary() returns a non-empty, formatted string.
 func TestProfileSummary(t *testing.T) {
-	p, err := compat.Recommend(compat.PlatformExotel, "")
+	p, err := compat.Recommend(compat.PlatformVSIP, "")
 	if err != nil {
 		t.Fatalf("Recommend: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestProfileSummary(t *testing.T) {
 	if s == "" {
 		t.Error("Summary() returned empty string")
 	}
-	if !strings.Contains(s, "exotel") {
+	if !strings.Contains(s, "vsip") {
 		t.Errorf("Summary() %q does not contain platform name", s)
 	}
 	if !strings.Contains(s, "path=") {

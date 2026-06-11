@@ -54,7 +54,7 @@ go run cmd/clearstream/main.go rtp --listen :5004 --forward localhost:5005 &
 bash tools/send_rtp_test.sh localhost 5004
 
 ## Demo 5: AgentStream Integration
-### See examples/exotel_integration/agentstream_connector.go
+### See examples/telephony_integration/agentstream_connector.go
 ### The EnhanceAudio() function is a drop-in for your STT pipeline
 
 ## Integration Paths
@@ -65,7 +65,7 @@ bash tools/send_rtp_test.sh localhost 5004
 | Live SIP call | pkg/sip proxy, POST /sip/session/start | 2 hrs |
 | Asterisk | EAGI handler binary | 2 hrs |
 | WebRTC browser | WebSocket bridge :8081/stream | 2 hrs |
-| Exotel Media Gateway | RTP intercept or WSS gate | 4 hrs |
+| your telephony platform Media Gateway | RTP intercept or WSS gate | 4 hrs |
 
 ## Expected SNR Results
 | Noise type | Before | After (passthrough) | After (RNNoise) |

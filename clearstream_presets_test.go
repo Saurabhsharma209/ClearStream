@@ -29,16 +29,16 @@ func TestFileProcessingConfig(t *testing.T) {
 	}
 }
 
-func TestExotelConfig(t *testing.T) {
-	cfg := clearstream.ExotelConfig()
+func TestContactCenterConfig(t *testing.T) {
+	cfg := clearstream.ContactCenterConfig()
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("ExotelConfig Validate() = %v, want nil", err)
+		t.Fatalf("ContactCenterConfig Validate() = %v, want nil", err)
 	}
 	if cfg.MaxConcurrentSessions != 32 {
-		t.Errorf("ExotelConfig: MaxConcurrentSessions = %d, want 32", cfg.MaxConcurrentSessions)
+		t.Errorf("ContactCenterConfig: MaxConcurrentSessions = %d, want 32", cfg.MaxConcurrentSessions)
 	}
 	if !cfg.EnableVAD {
-		t.Error("ExotelConfig: EnableVAD should be true")
+		t.Error("ContactCenterConfig: EnableVAD should be true")
 	}
 }
 
@@ -54,10 +54,10 @@ func TestNewWithTelephonyConfig(t *testing.T) {
 	}
 }
 
-func TestExotelCallCenterConfig(t *testing.T) {
-	cfg := clearstream.ExotelCallCenterConfig()
+func TestCallCenterConfig(t *testing.T) {
+	cfg := clearstream.CallCenterConfig()
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("ExotelCallCenterConfig Validate() = %v, want nil", err)
+		t.Fatalf("CallCenterConfig Validate() = %v, want nil", err)
 	}
 	if cfg.SampleRate != 8000 {
 		t.Errorf("SampleRate: got %d, want 8000", cfg.SampleRate)

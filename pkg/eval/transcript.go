@@ -12,7 +12,7 @@ import (
 	"unicode/utf8"
 )
 
-// ─── Transcript comparison — matches Exotel VoiceBot eval framework ───────────
+// ─── Transcript comparison — matches production VoiceBot eval framework ───────────
 //
 // Three metrics, identical to denoiser_analysis.py:
 //
@@ -71,7 +71,7 @@ type DenoiserSummary struct {
 }
 
 // ─── VAD + WER per-file schema ────────────────────────────────────────────────
-// Matches the TSV/CSV columns from the Exotel eval pipeline.
+// Matches the TSV/CSV columns from the production eval pipeline.
 
 // VADEvalRow is one row from the per-file VAD evaluation output.
 // Column order matches: filename, language, gt_transcript, original_duration,

@@ -4,7 +4,7 @@
 
 ## What it does
 
-ClearStream suppresses background noise from live voice calls and recorded audio using AI-based noise suppression (RNNoise / DeepFilter). It works as a transparent RTP proxy sitting in the media path between a carrier (Exotel, Asterisk, FreeSWITCH) and an agent endpoint, or as an HTTP batch processor for cleaning up recorded files. Supported codecs: G.711 µ-law (PCMU), G.711 A-law (PCMA), G.722, and Opus. Built for Exotel/AgentStream, Asterisk, FreeSWITCH, Kamailio, and Janus.
+ClearStream suppresses background noise from live voice calls and recorded audio using AI-based noise suppression (RNNoise / DeepFilter). It works as a transparent RTP proxy sitting in the media path between a carrier (Asterisk, FreeSWITCH, Kamailio) and an agent endpoint, or as an HTTP batch processor for cleaning up recorded files. Supported codecs: G.711 µ-law (PCMU), G.711 A-law (PCMA), G.722, and Opus. Compatible with Asterisk, FreeSWITCH, Kamailio, Janus, and any SIP/RTP infrastructure.
 
 ---
 
@@ -31,14 +31,14 @@ go build ./cmd/clearstream/
 ./clearstream dir -i ./recordings/ -o ./clean/ --workers 8
 ```
 
-### 3. Live RTP (Exotel / Asterisk)
+### 3. Live RTP
 
 ```bash
 ./clearstream rtp --listen :5004 --forward AGENT_IP:5004 --codec pcmu
 ```
 
 ```
-Caller ──► Exotel ──► ClearStream :5004 ──► (suppress) ──► Agent :5004
+Caller ──► SBC/Carrier ──► ClearStream :5004 ──► (suppress) ──► Agent :5004
                            │
                      UDP RTP packets
                      G.711 / Opus / G.722
@@ -201,25 +201,23 @@ Set `CLEARSTREAM_MODEL` environment variable to override model at runtime (usefu
 
 ---
 
-## Exotel Integration
+## Cloud Telephony / vSIP Integration
 
 ### Transparent RTP proxy (recommended)
 
 ```bash
-go run examples/exotel_poc/main.go \
-  --rtp-listen :5004 \
-  --rtp-forward AGENT_IP:5004 \
-  --http :8080 \
-  --model passthrough
+./clearstream rtp --listen :5004 --forward AGENT_IP:5004 --codec pcma
+# Also start HTTP server:
+./clearstream server --http :8080
 ```
 
-Exotel sends RTP (G.711 A-law, payload type 8) to ClearStream on `:5004`. ClearStream suppresses noise and forwards clean packets to the agent SIP phone. A companion HTTP server on `:8080` accepts Exotel call webhooks at `/webhook/exotel` and exposes `/health` and Prometheus metrics.
+Your carrier sends RTP (G.711 A-law or µ-law) to ClearStream on `:5004`. ClearStream suppresses noise and forwards clean packets to the agent endpoint. The HTTP server on `:8080` exposes `/health`, `/enhance`, and Prometheus metrics.
 
-**Preferred codec:** PCMA (G.711 A-law) — Exotel PSTN trunks prefer A-law (PT 8). Switch to PCMU (PT 0) if your trunk uses µ-law.
+**Preferred codec:** PCMA (G.711 A-law) — Most PSTN trunks prefer A-law (PT 8). Switch to PCMU (PT 0) if your trunk uses µ-law.
 
-**RTP port range:** Exotel media uses 10000–20000; ClearStream listens on `:5004` by default.
+**RTP port range:** Configure to match your carrier (e.g. 10000–20000); ClearStream listens on `:5004` by default.
 
-**AGC:** Disabled by default on the Exotel path — PSTN levels are normalized at the carrier.
+**AGC:** Disabled by default on PSTN paths — levels are typically normalized at the carrier.
 
 **VAD:** Enabled by default in the POC — saves ~30% CPU on typical call silence.
 
@@ -233,8 +231,8 @@ Point AgentStream's pre-STT step at `POST /enhance`. The handler accepts any aud
 
 | Platform | Status | Integration Path |
 |----------|--------|-----------------|
-| **Exotel vSIP / ECC / AgentStream** | Full | Transparent RTP proxy; HTTP `/enhance` for STT pipeline |
-| **Exotel WebRTC SDK / Kamailio/Obelix** | Full | WebSocket bridge (binary PCM); RTP proxy via SIP SDP |
+| **Cloud Telephony vSIP / Contact Center** | Full | Transparent RTP proxy; HTTP `/enhance` for STT pipeline |
+| **WebRTC SDK / Kamailio / RTPEngine** | Full | WebSocket bridge (binary PCM); RTP proxy via SIP SDP |
 | **Asterisk 20.x LTS / 22.x / 23.x** | Full | EAGI + ARI media WebSocket |
 | **Asterisk 18.x LTS** | Full (EOL — upgrade recommended) | EAGI + ARI media WebSocket |
 | **FreeSWITCH 20.26.x / 1.10.x** | Full | `mod_audio_stream` WebSocket |

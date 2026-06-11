@@ -159,21 +159,21 @@ const cs = new WebSocket('wss://clearstream-host/stream');
 
 ---
 
-## Exotel Media Infrastructure
+## Cloud Telephony / vSIP Infrastructure
 
 | Component | Supported | Notes |
 |-----------|-----------|-------|
-| **vSIP / Virtual SIP Trunking** ✅ | Full | Transparent RTP proxy between Exotel and AgentStream |
+| **vSIP / Virtual SIP Trunking** ✅ | Full | Transparent RTP proxy between carrier and agent endpoint |
 | **ECC (Contact Centre)** ✅ | Full | SIP proxy + Prometheus metrics for ops visibility |
 | **AgentStream (STT pipeline)** ✅ | Full | HTTP `/enhance` or Go client `EnhanceAudio()` |
-| **Exotel WebRTC SDK** ✅ | Full | WebSocket bridge (WS binary PCM) |
+| **cloud telephony WebRTC SDK** ✅ | Full | WebSocket bridge (WS binary PCM) |
 | **Kamailio/Obelix** ✅ | Full | RTP proxy path via SIP SDP auto-detection |
 
-**Preferred codec:** PCMA (G.711 A-law) — Exotel PSTN trunks prefer A-law  
-**RTP ports:** 10000–20000 (Exotel media range); ClearStream listens on 5004 by default  
-**AGC:** Off — Exotel PSTN levels are normalised at the carrier
+**Preferred codec:** PCMA (G.711 A-law) — cloud telephony PSTN trunks prefer A-law  
+**RTP ports:** 10000–20000 (cloud telephony media range); ClearStream listens on 5004 by default  
+**AGC:** Off — cloud telephony PSTN levels are normalised at the carrier
 
-### Quick start with Exotel vSIP
+### Quick start with cloud telephony vSIP
 ```bash
 # Start ClearStream as a transparent RTP proxy:
 go run cmd/clearstream/main.go rtp \
@@ -217,7 +217,7 @@ location /stream {
 | Codec | Wire Rate | ClearStream Processing | Re-encode | Notes |
 |-------|-----------|----------------------|-----------|-------|
 | **PCMU** (G.711 µ-law) | 8kHz | 16kHz | PCMU | RTP PT 0 — auto-detected |
-| **PCMA** (G.711 A-law) | 8kHz | 16kHz | PCMA | RTP PT 8 — Exotel preferred |
+| **PCMA** (G.711 A-law) | 8kHz | 16kHz | PCMA | RTP PT 8 — cloud telephony preferred |
 | **G.722** | 16kHz (wideband) | 16kHz native | G.722 | RTP PT 9 |
 | **G.729** | 8kHz | 16kHz via FFmpeg | G.729 | Requires FFmpeg g729 decoder |
 | **Opus** | 8/16/48kHz | 16kHz via FFmpeg resample | Opus | WebRTC standard |
@@ -229,12 +229,12 @@ location /stream {
 
 | Platform | AGC Default | Recommended TargetRMS | MaxGain | Reason |
 |----------|-------------|----------------------|---------|--------|
-| Exotel PSTN trunk | Off | — | — | Carrier normalises levels |
+| cloud telephony PSTN trunk | Off | — | — | Carrier normalises levels |
 | Asterisk PSTN | Off | — | — | Stable PSTN levels |
 | FreeSWITCH PSTN | Off | — | — | Stable |
 | FreeSWITCH WebRTC | On | 3000 | 4.0 | Browser mic varies |
 | Janus WebRTC | **On** | 3000 | 4.0 | Browser mic varies widely |
-| Exotel WebRTC SDK | **On** | 2500 | 3.0 | Mobile mic has high variance |
+| cloud telephony WebRTC SDK | **On** | 2500 | 3.0 | Mobile mic has high variance |
 | Generic WSS | **On** | 3000 | 4.0 | Unknown input source |
 | Asterisk conference | On | 2000 | 3.0 | Multiple speakers, mixed levels |
 

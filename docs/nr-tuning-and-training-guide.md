@@ -227,7 +227,7 @@ True speaker separation models. Trained on LibriMix / WSJ0-2mix. These can isola
 
 ---
 
-## 6. Training RNNoise on Exotel's Noise Types
+## 6. Training RNNoise on production telephony platform's Noise Types
 
 ### 6.1 What You Need
 
@@ -238,7 +238,7 @@ True speaker separation models. Trained on LibriMix / WSJ0-2mix. These can isola
 | Python environment | PyTorch ≥ 2.0, torchaudio, pesq, pystoi |
 | Compute | 1× A100 or 2× V100 for ~12h training |
 
-### 6.2 Collecting Exotel-Specific Noise Data
+### 6.2 Collecting production telephony platform-Specific Noise Data
 
 The key to good performance on Indian telephony is training on **the actual noise types your customers experience**:
 
@@ -307,7 +307,7 @@ def build_dataset(speech_dir, noise_dir, output_dir, n_pairs=50000):
 
 ### 6.4 Training RNNoise Fine-Tune
 
-RNNoise uses a hand-crafted feature set (Bark-scale bands + pitch). For fine-tuning on Exotel data, the most effective approach is to **retrain just the GRU weights** with your data while keeping the feature extraction fixed.
+RNNoise uses a hand-crafted feature set (Bark-scale bands + pitch). For fine-tuning on production telephony platform data, the most effective approach is to **retrain just the GRU weights** with your data while keeping the feature extraction fixed.
 
 ```python
 # scripts/train_rnnoise_finetune.py
@@ -373,7 +373,7 @@ def train(model, train_loader, val_loader, epochs=50, lr=1e-3):
 
 ### 6.5 WER-Validated Training Loop
 
-The most important metric for ClearStream is not SDR or PESQ — it is WER improvement, which maps directly to the Char/Word/LLM scores from the Exotel eval framework. Use WER as the primary stop criterion:
+The most important metric for ClearStream is not SDR or PESQ — it is WER improvement, which maps directly to the Char/Word/LLM scores from the production telephony platform eval framework. Use WER as the primary stop criterion:
 
 ```python
 # After each 5 epochs, run ASR on a held-out validation set and measure WER delta.
@@ -407,7 +407,7 @@ After training, export the model for ClearStream:
 dummy_input = torch.zeros(1, 100, 42)   # batch=1, T=100, features=42
 torch.onnx.export(
     model, dummy_input,
-    "models/rnnoise_exotel_v1.onnx",
+    "models/rnnoise_telephony_v1.onnx",
     input_names=["features"],
     output_names=["gains"],
     dynamic_axes={"features": {1: "time"}, "gains": {1: "time"}},
@@ -415,7 +415,7 @@ torch.onnx.export(
 )
 
 # In ClearStream config:
-# suppressor_model: "models/rnnoise_exotel_v1.onnx"
+# suppressor_model: "models/rnnoise_telephony_v1.onnx"
 ```
 
 ---
@@ -494,7 +494,7 @@ print(f"Gain flips >0.3x: {flips}  (target < 500 per 4-min call)")
 |---|---|---|
 | 25 (current) | Port Ephraim-Malah to Go, add PeakLimiter | Jitter fixed, burst events handled |
 | 26 | Integrate RNNoise via ONNX, A/B test vs spectral gate | +5–8% LLM score on babble calls |
-| 27 | Collect 20h Exotel-specific noise data | Training data ready |
-| 28 | Fine-tune RNNoise on Exotel data, WER validation loop | +3–5% WER on Indian English |
+| 27 | Collect 20h production telephony platform-specific noise data | Training data ready |
+| 28 | Fine-tune RNNoise on production telephony platform data, WER validation loop | +3–5% WER on Indian English |
 | 29 | Conv-TasNet speaker separation MVP | Background voice suppression |
 | 30 | Online A/B: ClearStream DeepFilterNet vs Krisp 100 on same conversation set | Head-to-head Char/Word/LLM numbers |

@@ -1,0 +1,17 @@
+{
+  "timestamp": "example_run",
+  "conditions": {
+    "A": "noisy bypass ClearStream",
+    "B": "passthrough L0 latency contract",
+    "C": "rnnoise L1 quality"
+  },
+  "latency_l0": {
+    "p99_ms": 0.05,
+    "l0_pass": true
+  },
+  "snr_delta_db": {
+    "B": 0.0,
+    "C": 15.0
+  },
+  "note": "Replace with output from eval/run_matrix.sh"
+}

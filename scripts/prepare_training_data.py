@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#!/usr/local/bin/python3.13
+
 """
 prepare_training_data.py — Build synthetic noisy/clean pairs for DeepFilterNet fine-tuning.
 
@@ -19,12 +20,34 @@ Copy this file to ~/ClearStream/scripts/prepare_training_data.py
 """
 
 import argparse
+import os
 import random
+import ssl
 import sys
 import tarfile
 import urllib.request
 import zipfile
 from pathlib import Path
+
+# Fix SSL cert verification on macOS Python 3.13 (python.org installer missing certs).
+# Try certifi first; fall back to unverified for these known public dataset URLs.
+try:
+    import certifi
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    _ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    _ssl_ctx = None
+
+# Build openers: one verified (certifi), one unverified fallback
+_ssl_ctx_unverified = ssl._create_unverified_context()
+_OPENER_UNVERIFIED = urllib.request.build_opener(
+    urllib.request.HTTPSHandler(context=_ssl_ctx_unverified)
+)
+if _ssl_ctx is not None:
+    _OPENER = urllib.request.build_opener(urllib.request.HTTPSHandler(context=_ssl_ctx))
+else:
+    _OPENER = _OPENER_UNVERIFIED
+urllib.request.install_opener(_OPENER_UNVERIFIED)  # default to unverified for all urlopen
 
 import torch
 import torchaudio
@@ -48,10 +71,26 @@ def download(url: str, dest: Path, desc: str = "") -> Path:
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
     print(f"  Downloading {desc or url} …")
-    def _prog(count, block, total):
-        pct = min(100, count * block * 100 // (total or 1))
-        sys.stdout.write(f"\r    {pct}%  "); sys.stdout.flush()
-    urllib.request.urlretrieve(url, dest, _prog)
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    # Try verified SSL first, fall back to unverified (macOS 3.13 cert chain issues)
+    try:
+        resp_ctx = _OPENER.open(req)
+    except Exception:
+        resp_ctx = _OPENER_UNVERIFIED.open(req)
+    with resp_ctx as resp:
+        total = int(resp.headers.get("Content-Length", 0))
+        downloaded = 0
+        with open(dest, "wb") as f:
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                f.write(chunk)
+                downloaded += len(chunk)
+                if total:
+                    pct = downloaded * 100 // total
+                    sys.stdout.write(f"\r    {pct}%  ({downloaded//1_000_000}MB/{total//1_000_000}MB)  ")
+                    sys.stdout.flush()
     print()
     return dest
 
@@ -61,8 +100,15 @@ def extract_zip(zip_path: Path, out_dir: Path):
         print(f"  [skip] {out_dir.name} already extracted"); return
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"  Extracting {zip_path.name} …")
-    with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(out_dir)
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(out_dir)
+    except (zipfile.BadZipFile, EOFError) as e:
+        print(f"  [warn] Corrupt archive: {e}. Deleting and will re-download on next run.")
+        import shutil
+        shutil.rmtree(out_dir, ignore_errors=True)
+        zip_path.unlink(missing_ok=True)
+        raise
 
 
 def extract_tar(tar_path: Path, out_dir: Path):
@@ -70,8 +116,16 @@ def extract_tar(tar_path: Path, out_dir: Path):
         print(f"  [skip] {out_dir.name} already extracted"); return
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"  Extracting {tar_path.name} …")
-    with tarfile.open(tar_path) as tf:
-        tf.extractall(out_dir)
+    try:
+        with tarfile.open(tar_path) as tf:
+            tf.extractall(out_dir, filter="data")
+    except (EOFError, tarfile.TarError) as e:
+        # Corrupt archive — delete both so next run re-downloads
+        print(f"  [warn] Corrupt archive: {e}. Deleting and will re-download on next run.")
+        import shutil
+        shutil.rmtree(out_dir, ignore_errors=True)
+        tar_path.unlink(missing_ok=True)
+        raise
 
 
 # ── Dataset acquisition ──────────────────────────────────────────────────────

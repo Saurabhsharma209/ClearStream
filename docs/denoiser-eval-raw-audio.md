@@ -1,12 +1,12 @@
 # Denoiser Evaluation — Transcript Comparison & Audio Analysis
 **ClearStream Benchmarking Report | raw_audio.wav**
-Generated: 2026-06-04 | Framework: Exotel VoiceBot (Char / Word / LLM)
+Generated: 2026-06-04 | Framework: production telephony VoiceBot (Char / Word / LLM)
 
 ---
 
 ## 1. Evaluation Framework
 
-Matches the Exotel VoiceBot team's `denoiser_analysis.py` exactly. Three metrics:
+Matches the production telephony VoiceBot team's `denoiser_analysis.py` exactly. Three metrics:
 
 | Metric | How it works | Best for | Limitation |
 |--------|-------------|----------|------------|
@@ -27,7 +27,7 @@ ClearStream adds 4 audio-level metrics on top:
 
 ---
 
-## 2. Benchmark — Exotel Team Results (from Confluence)
+## 2. Benchmark — production telephony Team Results (from Confluence)
 
 Reference conversation: `42b4bd75-9b8b-41f4-8dee-76a9e882b206`
 Evaluated: Krisp 90 / 95 / 100, Sanas, Hector, Hector Human

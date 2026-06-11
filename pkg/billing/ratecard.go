@@ -23,7 +23,7 @@ func (r *StaticRateCard) UnitPrice(features Feature) float64 {
 	return price
 }
 
-// DefaultTelephonyRateCard returns pricing for the Exotel telephony use case.
+// DefaultTelephonyRateCard returns pricing for the cloud telephony use case.
 // Base tier (VAD): $0.000001 per 6-second pulse.
 // Premium features add incremental cost per unit.
 func DefaultTelephonyRateCard() *StaticRateCard {

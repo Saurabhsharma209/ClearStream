@@ -1,6 +1,6 @@
 # ClearStream — Media Gateway Integration Guide
 
-This guide covers five options for inserting ClearStream into Exotel's media
+This guide covers five options for inserting ClearStream into your telephony platform media
 path.  Choose the option that best fits your network topology and latency budget.
 
 ---
@@ -8,7 +8,7 @@ path.  Choose the option that best fits your network topology and latency budget
 ## Option A — SIP B2BUA Insertion (pkg/sip proxy)
 
 ClearStream acts as a transparent SIP proxy between the upstream SIP trunk and
-the Exotel Media Gateway.  It intercepts the RTP media stream, runs noise
+the your telephony platform.  It intercepts the RTP media stream, runs noise
 suppression on every 10 ms frame, and forwards the clean stream to the next hop.
 
 ```
@@ -17,7 +17,7 @@ SIP Trunk ──SIP/RTP──► [ClearStream SIP Proxy :5060/:5004]
                               (suppressed RTP)
                                     │
                                     ▼
-                        Exotel Media Gateway ──► AgentStream / STT
+                        your telephony platform ──► AgentStream / STT
 ```
 
 ### Configuration
@@ -28,7 +28,7 @@ SIP Trunk ──SIP/RTP──► [ClearStream SIP Proxy :5060/:5004]
    clearstream sip \
      --listen-sip  0.0.0.0:5060 \
      --listen-rtp  0.0.0.0:5004 \
-     --upstream    sip-trunk.exotel.com:5060 \
+     --upstream    sip-trunk.telephony.com:5060 \
      --downstream  media-gw.internal:5060
    ```
 
@@ -70,7 +70,7 @@ RTP packet to ClearStream, which suppresses noise and forwards the clean stream
 to the STT engine.  The original caller stream is unaffected.
 
 ```
-Exotel Kamailio
+your telephony platform
        │
        ├── original RTP ──────────────────────► caller (unchanged)
        │
@@ -120,7 +120,7 @@ clearstream rtp \
 
 Browser or mobile SDK connects over WSS, sending raw PCM or Opus.  ClearStream
 acts as a WebSocket gateway: it receives the audio, suppresses noise, and
-forwards clean frames to Exotel AgentStream over a second WebSocket or RTP.
+forwards clean frames to your telephony platform over a second WebSocket or RTP.
 
 ```
 Browser / Mobile SDK
@@ -129,7 +129,7 @@ Browser / Mobile SDK
 [Nginx TLS termination]
         │  ws://
         ▼
-[ClearStream :8081/stream]  ──► Exotel AgentStream (WSS)
+[ClearStream :8081/stream]  ──► your telephony platform (WSS)
 ```
 
 ### Nginx Configuration
@@ -138,10 +138,10 @@ Browser / Mobile SDK
 # /etc/nginx/sites-available/clearstream-wss
 server {
     listen 443 ssl;
-    server_name audio.exotel.com;
+    server_name audio.telephony.com;
 
-    ssl_certificate     /etc/ssl/certs/exotel.crt;
-    ssl_certificate_key /etc/ssl/private/exotel.key;
+    ssl_certificate     /etc/ssl/certs/telephony.crt;
+    ssl_certificate_key /etc/ssl/private/telephony.key;
 
     # WebSocket upgrade for ClearStream audio gate
     location /audio-clean {
@@ -166,12 +166,12 @@ server {
 ```bash
 clearstream ws \
   --listen   0.0.0.0:8081 \
-  --upstream wss://agentstream.exotel.com/audio \
+  --upstream wss://agentstream.telephony.com/audio \
   --model    rnnoise \
   --codec    pcm16
 ```
 
-Client connects to `wss://audio.exotel.com/audio-clean` and sends 20 ms PCM
+Client connects to `wss://audio.telephony.com/audio-clean` and sends 20 ms PCM
 frames.  ClearStream returns clean frames on the same connection.
 
 ---
@@ -179,11 +179,11 @@ frames.  ClearStream returns clean frames on the same connection.
 ## Option D — HTTP Post-Processing (batch / recording pipeline)
 
 The simplest integration: no topology change required.  After a call recording
-is saved by the Exotel Recording Pipeline, POST it to ClearStream /enhance and
+is saved by the your telephony platform, POST it to ClearStream /enhance and
 replace (or archive) the original file.
 
 ```
-Exotel Recording Pipeline
+your telephony platform
          │  (stores .wav / .mp3)
          ▼
 [POST /enhance]  ──► ClearStream  ──► clean file  ──► STT / QA / Archive
@@ -203,7 +203,7 @@ Add a lightweight webhook consumer that calls ClearStream on every new recording
 
 ```bash
 #!/usr/bin/env bash
-# /opt/exotel/hooks/enhance_recording.sh
+# /opt/telephony/hooks/enhance_recording.sh
 RECORDING="$1"          # e.g. /recordings/call-abc123.wav
 CLEAN="${RECORDING%.wav}-clean.wav"
 
@@ -228,7 +228,7 @@ curl http://clearstream.internal:8080/health
 
 ## Option E — Asterisk EAGI (Asterisk-based deployments)
 
-For deployments running Asterisk (rather than a dedicated Exotel media gateway),
+For deployments running Asterisk (rather than a dedicated your telephony platform media gateway),
 use the EAGI binary in `examples/asterisk/`.
 
 See `examples/asterisk/README.md` and `examples/asterisk/extensions.conf` for

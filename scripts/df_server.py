@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#!/usr/local/bin/python3.13
+
 """
 df_server.py — DeepFilterNet HTTP inference server for ClearStream.
 
