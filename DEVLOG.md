@@ -1519,3 +1519,19 @@ Rule-based approaches (Wiener, spectral subtraction) **cannot** separate two voi
 ### Tomorrow
 1. API Layer: Add `pkg/http/handler.go` with POST /enhance HTTP endpoint
 2. QA/Testing: Create Makefile with build/test/lint/fmt targets
+
+## 2026-06-11
+
+**Agents run:** AI Model, QA/Testing
+**Build:** passing ✅
+
+### Changes
+- `pkg/model/rnnoise.go`: Upgraded `upsample3x` from linear interpolation to 4-point Catmull-Rom cubic interpolation. Linear (2-point) provides only ~13dB image rejection during 16kHz→48kHz upsampling; Catmull-Rom achieves ~40dB. Spectral images in the 0–8kHz speech band from linear upsampling can corrupt RNNoise suppression decisions. Consolidated boundary helper into existing `clampIdx`. Fixed-point coefficients at t=1/3: [-8,84,36,-4]/108, at t=2/3: [-4,36,84,-8]/108.
+- `pkg/model/resample_roundtrip_test.go`: Added `TestUpsampleHighFreqRoundtrip` (3kHz sine, tolerance 600 = 6% amplitude — requires Catmull-Rom, fails with linear) and `TestUpsampleMonotonicity` (1kHz sine, verifies no output exceeds input amplitude by >10% to catch cubic overshoot bugs).
+
+### Blocked
+- Nothing new.
+
+### Tomorrow
+1. Audio Pipeline: Add sinc FIR for the generic `linearResample` fallback path (11025Hz→16kHz and similar rates)
+2. RTP/SIP: Add RTCP receiver report parsing test
