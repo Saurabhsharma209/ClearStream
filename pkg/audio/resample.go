@@ -120,23 +120,111 @@ func besselI0(x float64) float64 {
 	return sum
 }
 
-// linearResample is a fallback for arbitrary rate conversions using linear interpolation.
+// linearResample resamples PCM audio between arbitrary sample rates using a
+// Kaiser-windowed sinc FIR filter (polyphase-style per-output-sample evaluation).
+//
+// Design parameters:
+//   L    = 64 taps  — reasonable quality/performance tradeoff for telephony
+//   beta = 5.653    — Kaiser shape parameter targeting ~60 dB stopband attenuation
+//   fc   = 0.5 * min(srcRate,dstRate) / max(srcRate,dstRate)
+//          normalised to the higher of the two rates; this places the cutoff at
+//          half the lower Nyquist so aliasing and imaging are both suppressed.
+//
+// For each output sample i the fractional source position is
+//   srcPos = i * srcRate / dstRate
+// A 64-tap windowed sinc centred at srcPos is evaluated directly in the
+// continuous (fractional-delay) domain — no polyphase table is pre-built,
+// which keeps code simple at the cost of a small per-sample multiply loop.
 func linearResample(samples []int16, srcRate, dstRate int) ([]int16, error) {
+	const (
+		L    = 64    // filter length (number of taps)
+		beta = 5.653 // Kaiser beta (60 dB stopband, same as kaiserFIRUpsample2x)
+	)
+
+	N := len(samples)
 	ratio := float64(dstRate) / float64(srcRate)
-	outLen := int(math.Round(float64(len(samples)) * ratio))
+	outLen := int(math.Round(float64(N) * ratio))
+	if outLen == 0 {
+		return []int16{}, nil
+	}
+
+	// Normalised cutoff: half the Nyquist of the lower-rate side, expressed as a
+	// fraction of the higher sample rate (so both src and dst spectra stay intact).
+	var fc float64
+	if srcRate < dstRate {
+		fc = 0.5 * float64(srcRate) / float64(dstRate)
+	} else {
+		fc = 0.5 * float64(dstRate) / float64(srcRate)
+	}
+
+	// Pre-compute Kaiser window denominator I0(beta).
+	i0beta := besselI0(beta)
+
+	// Windowed sinc kernel evaluated at a fractional tap offset t (in src samples).
+	// The sinc is normalised to fc so its passband gain is 1.0.
+	kaiserSinc := func(t float64) float64 {
+		// Kaiser window argument: t ranges over [-L/2, L/2].
+		half := float64(L) / 2.0
+		// Normalised position in [0,1] for the Kaiser window formula.
+		u := t / half // u in [-1, 1]
+		arg := 1.0 - u*u
+		if arg < 0 {
+			arg = 0
+		}
+		window := besselI0(beta*math.Sqrt(arg)) / i0beta
+
+		// Sinc kernel scaled by 2*fc so the DC gain equals 1.
+		var sinc float64
+		if t == 0 {
+			sinc = 2.0 * fc
+		} else {
+			sinc = math.Sin(2*math.Pi*fc*t) / (math.Pi * t)
+		}
+		return window * sinc
+	}
+
+	// Compute DC gain of the filter for a 0-offset sample to apply gain correction.
+	// Sum h[k] for k = -(L/2-1)..L/2  at integer taps (no fractional shift).
+	var dcGain float64
+	for k := -(L/2 - 1); k <= L/2; k++ {
+		dcGain += kaiserSinc(float64(k))
+	}
+	if dcGain == 0 {
+		dcGain = 1
+	}
+
 	out := make([]int16, outLen)
 	for i := 0; i < outLen; i++ {
-		srcPos := float64(i) / ratio
-		srcIdx := int(srcPos)
-		frac := srcPos - float64(srcIdx)
-		var a, b int16
-		a = samples[srcIdx]
-		if srcIdx+1 < len(samples) {
-			b = samples[srcIdx+1]
-		} else {
-			b = a
+		// Continuous source position for this output sample.
+		srcPos := float64(i) * float64(srcRate) / float64(dstRate)
+
+		// Centre tap index (nearest input sample).
+		centre := int(math.Floor(srcPos + 0.5))
+
+		var acc float64
+		for k := 0; k < L; k++ {
+			// Map tap k to a source index. The filter is centred at `centre`.
+			// Tap 0 corresponds to source index centre - L/2 + 1.
+			srcIdx := centre - (L/2 - 1) + k
+			if srcIdx < 0 || srcIdx >= N {
+				// Zero-padding at boundaries.
+				continue
+			}
+			// Fractional offset from srcPos to this source sample (in src samples).
+			t := float64(srcIdx) - srcPos
+			acc += kaiserSinc(t) * float64(samples[srcIdx])
 		}
-		out[i] = int16(float64(a)*(1-frac) + float64(b)*frac)
+
+		// Normalise by DC gain so the filter has unity passband gain.
+		acc /= dcGain
+
+		v := math.Round(acc)
+		if v > 32767 {
+			v = 32767
+		} else if v < -32768 {
+			v = -32768
+		}
+		out[i] = int16(v)
 	}
 	return out, nil
 }

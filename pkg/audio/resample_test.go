@@ -294,6 +294,55 @@ func TestKaiserFIRMinSNR(t *testing.T) {
 	}
 }
 
+
+// TestLinearResampleSNR verifies that the Kaiser-windowed sinc linearResample
+// achieves >30 dB SNR for telephony rate conversions (11025->16000, 22050->16000).
+// The old linear-interpolation fallback typically achieved only 15-20 dB.
+func TestLinearResampleSNR(t *testing.T) {
+	cases := []struct {
+		srcRate int
+		dstRate int
+	}{
+		{11025, 16000},
+		{22050, 16000},
+	}
+	const (
+		freq   = 440.0 // Hz
+		minSNR = 30.0  // dB - linear interp gets ~15-20 dB, sinc should get 40+
+		durMs  = 500   // ms
+	)
+	for _, tc := range cases {
+		nSamples := tc.srcRate * durMs / 1000
+		input := make([]int16, nSamples)
+		for i := range input {
+			v := math.Sin(2 * math.Pi * freq * float64(i) / float64(tc.srcRate))
+			input[i] = int16(v * 16000)
+		}
+		out, err := linearResample(input, tc.srcRate, tc.dstRate)
+		if err != nil {
+			t.Errorf("%d->%d: linearResample error: %v", tc.srcRate, tc.dstRate, err)
+			continue
+		}
+		var sigPow, noisePow float64
+		for i, s := range out {
+			ideal := math.Sin(2*math.Pi*freq*float64(i)/float64(tc.dstRate)) * 16000
+			actual := float64(s)
+			sigPow += ideal * ideal
+			diff := ideal - actual
+			noisePow += diff * diff
+		}
+		var snr float64
+		if noisePow == 0 {
+			snr = 100
+		} else {
+			snr = 10 * math.Log10(sigPow/noisePow)
+		}
+		t.Logf("%d->%d SNR = %.2f dB (min %.0f dB)", tc.srcRate, tc.dstRate, snr, minSNR)
+		if snr < minSNR {
+			t.Errorf("%d->%d SNR %.2f dB below minimum %.0f dB", tc.srcRate, tc.dstRate, snr, minSNR)
+		}
+	}
+}
 // ── helpers used by Day-21 tests ─────────────────────────────────────────────
 
 // resampleNopWriter is a package-unique name to avoid conflict with diarize_test.go's nopWriter.
