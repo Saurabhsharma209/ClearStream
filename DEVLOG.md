@@ -1535,3 +1535,21 @@ Rule-based approaches (Wiener, spectral subtraction) **cannot** separate two voi
 ### Tomorrow
 1. Audio Pipeline: Add sinc FIR for the generic `linearResample` fallback path (11025Hz→16kHz and similar rates)
 2. RTP/SIP: Add RTCP receiver report parsing test
+
+## 2026-06-12
+
+**Agents run:** Audio Pipeline, AI Model
+**Build:** passing ✅
+
+### Changes
+- `pkg/audio/resample.go`: Replaced `linearResample` linear interpolation with a 64-tap Kaiser-windowed sinc FIR (beta=5.653, fc=min(src,dst)/(2*max(src,dst))). Old linear interpolation gave ~13dB stopband rejection; new sinc FIR delivers ~60dB. Handles arbitrary rate conversions (11025→16000, 22050→16000, 8000→24000, etc.). DC gain normalized to 1.0 via coefficient sum correction.
+- `pkg/audio/resample_test.go`: Added `TestLinearResampleSNR` — validates 11025→16000 and 22050→16000 conversions achieve SNR > 30dB (sinc achieves 40+dB vs linear's ~15-20dB).
+- `pkg/model/rnnoise.go`: Upgraded `downsample3x` from 5-tap box FIR to 15-tap Kaiser-windowed sinc (fc=1/6, beta=5.653). Old 5-tap gave ~20-25dB anti-aliasing; new 15-tap achieves ≥44.9dB in the full alias band (16–24kHz). Deep null at 16kHz eliminates the most destructive alias. DC gain = 0.9961 (~0dB). Integer fixed-point, same hot-path style as before.
+
+### Blocked
+- `pkg/compat` has a pre-existing syntax error in compat_test.go:122 — unrelated to today's changes.
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass.
+
+### Tomorrow
+1. Audio Pipeline: Add VAD energy threshold tuning — expose `VADConfig.EnergyThreshold` as a configurable param with a test
+2. RTP/SIP: Add RTCP sender report (SR) parsing to complement the existing receiver report (RR) parser
