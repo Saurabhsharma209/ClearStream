@@ -1553,3 +1553,22 @@ Rule-based approaches (Wiener, spectral subtraction) **cannot** separate two voi
 ### Tomorrow
 1. Audio Pipeline: Add VAD energy threshold tuning — expose `VADConfig.EnergyThreshold` as a configurable param with a test
 2. RTP/SIP: Add RTCP sender report (SR) parsing to complement the existing receiver report (RR) parser
+
+## 2026-06-13
+
+**Agents run:** RTP/SIP, Audio Pipeline
+**Build:** passing ✅
+
+### Changes
+- `pkg/rtp/rtcp.go`: Added `RTCPSenderReport` struct and `ParseRTCPSenderReport` function. RFC 3550 §6.4.1 layout: SSRC, NTPSec, NTPFrac, RTPTimestamp, PacketCount, OctetCount (all uint32). Previously PT=200 was silently ignored by the RR parser. Now SR packets can be parsed and used for sync/quality diagnostics.
+- `pkg/rtp/rtcp_test.go`: Added `TestParseRTCPSenderReport` (all 6 fields), `TestParseRTCPSRTooShort` (error on <28 bytes), `TestParseRTCPSRWrongType` (nil/nil for RR packet).
+- `pkg/audio/pipeline.go`: Added `VADConfig` struct with `EnergyThreshold float64` and `HangoverFrames int`. Added `VADConfig *VADConfig` field to `PipelineConfig`. Wired in `NewPipeline`: if `VAD==nil && VADConfig!=nil`, constructs a `*VAD` from config. Explicit `VAD` field and `UseAdaptiveVAD` still take priority.
+- `pkg/audio/vadconfig_test.go`: New test file. `TestVADConfigWiring` verifies threshold classification and 3-frame hangover. `TestVADConfigDoesNotOverrideExplicitVAD` verifies precedence rules.
+
+### Blocked
+- `pkg/compat` pre-existing syntax error (compat_test.go:122) — unrelated to today's changes.
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass.
+
+### Tomorrow
+1. RTP/SIP: Wire `ParseRTCPSenderReport` into `session.go` `listenRTCP` — store SR in session state and use NTP timestamp for RTT calculation
+2. Audio Pipeline: Add `TestVADConfigDefaults` — verify zero-value VADConfig fields get sensible defaults (threshold=300, hangover=8)
