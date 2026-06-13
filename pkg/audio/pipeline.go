@@ -29,6 +29,18 @@ type VADer interface {
 	Reset()
 }
 
+// VADConfig configures the static (non-adaptive) VAD.
+// When set in PipelineConfig, it takes precedence over a manually constructed PipelineConfig.VAD
+// only when VAD is nil.
+type VADConfig struct {
+	// EnergyThreshold is the RMS amplitude below which a frame is treated as silence.
+	// Typical range: 100–800 for 16-bit telephony PCM. Default: 300.
+	EnergyThreshold float64
+	// HangoverFrames is how many consecutive silent frames to keep treating as speech
+	// after the last speech frame (prevents clipping at word ends). Default: 8 (~80ms).
+	HangoverFrames int
+}
+
 // PipelineConfig configures a Pipeline.
 type PipelineConfig struct {
 	SampleRate int
@@ -90,6 +102,11 @@ type PipelineConfig struct {
 	// the suppressor pool at 1× MaxConcurrentSessions instead of 2×.
 	// The pipeline itself behaves identically regardless of this flag.
 	ForwardOnly bool
+
+	// VADConfig, when non-nil and VAD is nil, constructs a static *VAD using
+	// EnergyThreshold and HangoverFrames. Provides a named, discoverable way
+	// for audio-package users to configure VAD without building *VAD manually.
+	VADConfig *VADConfig
 }
 
 // PipelineStats holds real-time pipeline quality metrics.
@@ -143,6 +160,12 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 	vad := cfg.VAD
 	if vad == nil && cfg.UseAdaptiveVAD {
 		vad = DefaultAdaptiveVAD()
+	}
+	if vad == nil && cfg.VADConfig != nil {
+		vad = &VAD{
+			ThresholdRMS:   cfg.VADConfig.EnergyThreshold,
+			HangoverFrames: cfg.VADConfig.HangoverFrames,
+		}
 	}
 	var agc *AGC
 	if cfg.AGC != nil {

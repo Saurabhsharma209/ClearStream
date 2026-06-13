@@ -73,3 +73,49 @@ func ParseRTCPReceiverReport(data []byte) (*RTCPReceiverReport, error) {
 
 	return rr, nil
 }
+
+// RTCPSenderReport holds the sender information fields from an RTCP SR packet.
+// RFC 3550 §6.4.1
+type RTCPSenderReport struct {
+	SSRC         uint32
+	NTPSec       uint32 // NTP timestamp, most significant word
+	NTPFrac      uint32 // NTP timestamp, least significant word
+	RTPTimestamp uint32
+	PacketCount  uint32
+	OctetCount   uint32
+}
+
+// ParseRTCPSenderReport parses a raw RTCP packet as a Sender Report.
+// Returns nil if the packet is not a Sender Report (PT=200).
+// The SR fixed header is 28 bytes: 4-byte common header + 4-byte sender SSRC +
+// 20 bytes of sender info (NTP MSW, NTP LSW, RTP TS, packet count, octet count).
+func ParseRTCPSenderReport(data []byte) (*RTCPSenderReport, error) {
+	if len(data) < 8 {
+		return nil, fmt.Errorf("rtcp: packet too short (%d bytes)", len(data))
+	}
+
+	version := (data[0] >> 6) & 0x3
+	if version != 2 {
+		return nil, fmt.Errorf("rtcp: invalid version %d", version)
+	}
+
+	pt := RTCPPacketType(data[1])
+	if pt != RTCPTypeSenderReport {
+		return nil, nil // not an SR, silently ignore
+	}
+
+	// SR fixed header requires 28 bytes minimum.
+	if len(data) < 28 {
+		return nil, fmt.Errorf("rtcp: SR too short (%d bytes, need 28)", len(data))
+	}
+
+	sr := &RTCPSenderReport{}
+	sr.SSRC = binary.BigEndian.Uint32(data[4:8])
+	sr.NTPSec = binary.BigEndian.Uint32(data[8:12])
+	sr.NTPFrac = binary.BigEndian.Uint32(data[12:16])
+	sr.RTPTimestamp = binary.BigEndian.Uint32(data[16:20])
+	sr.PacketCount = binary.BigEndian.Uint32(data[20:24])
+	sr.OctetCount = binary.BigEndian.Uint32(data[24:28])
+
+	return sr, nil
+}

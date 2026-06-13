@@ -90,3 +90,69 @@ func TestPLCFadeToSilence_RTCPBasic(t *testing.T) {
 		t.Error("PLC frame 2 should be louder than frame 3 (fade to silence)")
 	}
 }
+
+func TestParseRTCPSenderReport(t *testing.T) {
+	// Craft a minimal RTCP SR packet (28 bytes, no report blocks)
+	// V=2, P=0, RC=0, PT=200, length=6 (6+1 * 4 = 28 bytes)
+	pkt := []byte{
+		0x80, 0xC8, 0x00, 0x06, // header: V=2,P=0,RC=0,PT=200,len=6
+		0x00, 0x00, 0x00, 0x02, // sender SSRC = 2
+		0xE6, 0x01, 0x23, 0x45, // NTP MSW
+		0xAB, 0xCD, 0xEF, 0x00, // NTP LSW
+		0x00, 0x00, 0x03, 0xE8, // RTP timestamp = 1000
+		0x00, 0x00, 0x00, 0x64, // packet count = 100
+		0x00, 0x00, 0x28, 0x00, // octet count = 10240
+	}
+
+	sr, err := ParseRTCPSenderReport(pkt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sr == nil {
+		t.Fatal("expected SR, got nil")
+	}
+
+	if sr.SSRC != 2 {
+		t.Errorf("SSRC: got %d, want 2", sr.SSRC)
+	}
+	if sr.NTPSec != 0xE6012345 {
+		t.Errorf("NTPSec: got 0x%08X, want 0xE6012345", sr.NTPSec)
+	}
+	if sr.NTPFrac != 0xABCDEF00 {
+		t.Errorf("NTPFrac: got 0x%08X, want 0xABCDEF00", sr.NTPFrac)
+	}
+	if sr.RTPTimestamp != 1000 {
+		t.Errorf("RTPTimestamp: got %d, want 1000", sr.RTPTimestamp)
+	}
+	if sr.PacketCount != 100 {
+		t.Errorf("PacketCount: got %d, want 100", sr.PacketCount)
+	}
+	if sr.OctetCount != 10240 {
+		t.Errorf("OctetCount: got %d, want 10240", sr.OctetCount)
+	}
+}
+
+func TestParseRTCPSRTooShort(t *testing.T) {
+	// Only 20 bytes — shorter than the 28-byte SR minimum
+	pkt := make([]byte, 20)
+	pkt[0] = 0x80 // V=2, P=0, RC=0
+	pkt[1] = 0xC8 // PT=200 SR
+	_, err := ParseRTCPSenderReport(pkt)
+	if err == nil {
+		t.Error("expected error for SR packet shorter than 28 bytes")
+	}
+}
+
+func TestParseRTCPSRWrongType(t *testing.T) {
+	// PT=201 (RR) passed to SR parser — should return nil, nil
+	pkt := make([]byte, 32)
+	pkt[0] = 0x81 // V=2, RC=1
+	pkt[1] = 0xC9 // PT=201 RR
+	sr, err := ParseRTCPSenderReport(pkt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sr != nil {
+		t.Error("expected nil for non-SR packet")
+	}
+}
