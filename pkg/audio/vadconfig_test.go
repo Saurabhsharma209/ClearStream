@@ -92,3 +92,67 @@ func TestVADConfigDoesNotOverrideExplicitVAD(t *testing.T) {
 		t.Errorf("expected explicit VAD to be used; got %+v", p.vad)
 	}
 }
+
+// TestVADConfigDefaults verifies that zero-value VADConfig fields get sensible
+// defaults: EnergyThreshold=300.0 and HangoverFrames=8.
+func TestVADConfigDefaults(t *testing.T) {
+	sup := &noopSuppressor{}
+	cfg := PipelineConfig{
+		SampleRate: 16000,
+		Suppressor: sup,
+		// Intentionally zero-value: both EnergyThreshold and HangoverFrames are 0.
+		VADConfig: &VADConfig{},
+	}
+	p := NewPipeline(cfg)
+	if p.vad == nil {
+		t.Fatal("expected NewPipeline to create a VAD from zero-value VADConfig, got nil")
+	}
+	staticVAD, ok := p.vad.(*VAD)
+	if !ok {
+		t.Fatalf("expected p.vad to be *VAD, got %T", p.vad)
+	}
+
+	// Verify EnergyThreshold default = 300.
+	if staticVAD.ThresholdRMS != 300.0 {
+		t.Errorf("EnergyThreshold default: want 300.0, got %.2f", staticVAD.ThresholdRMS)
+	}
+
+	// Verify HangoverFrames default = 8.
+	if staticVAD.HangoverFrames != 8 {
+		t.Errorf("HangoverFrames default: want 8, got %d", staticVAD.HangoverFrames)
+	}
+
+	// Borderline speech test: a frame whose RMS equals threshold (300) should be
+	// classified as speech (>= threshold, not strictly >).
+	borderlineFrame := make([]int16, FrameSizeSamples)
+	// RMS of a constant value v over N samples = v. Set all samples to 300.
+	for i := range borderlineFrame {
+		borderlineFrame[i] = 300
+	}
+	if !staticVAD.IsSpeech(borderlineFrame) {
+		t.Error("expected IsSpeech=true for frame with RMS=300 (equal to threshold=300)")
+	}
+
+	// Hangover test: confirm default of 8 silent frames after speech are still
+	// treated as speech (prevents word-end clipping).
+	staticVAD.Reset()
+	staticVAD.IsSpeech(borderlineFrame) // prime the hangover counter
+
+	silenceFrame := make([]int16, FrameSizeSamples) // all zeros, RMS=0
+	hangoverCount := 0
+	for i := 0; i < 20; i++ {
+		if staticVAD.IsSpeech(silenceFrame) {
+			hangoverCount++
+		} else {
+			break
+		}
+	}
+	if hangoverCount != 8 {
+		t.Errorf("HangoverFrames default=8: expected 8 hangover frames, got %d", hangoverCount)
+	}
+
+	// The frame immediately after hangover expiry must be silence.
+	if staticVAD.IsSpeech(silenceFrame) {
+		t.Error("frame after hangover expiry (8 frames) should be classified as silence")
+	}
+}

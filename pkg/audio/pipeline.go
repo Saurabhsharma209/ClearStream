@@ -162,6 +162,13 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 		vad = DefaultAdaptiveVAD()
 	}
 	if vad == nil && cfg.VADConfig != nil {
+		// Apply zero-value defaults before constructing the VAD.
+		if cfg.VADConfig.EnergyThreshold == 0 {
+			cfg.VADConfig.EnergyThreshold = 300.0
+		}
+		if cfg.VADConfig.HangoverFrames == 0 {
+			cfg.VADConfig.HangoverFrames = 8
+		}
 		vad = &VAD{
 			ThresholdRMS:   cfg.VADConfig.EnergyThreshold,
 			HangoverFrames: cfg.VADConfig.HangoverFrames,
