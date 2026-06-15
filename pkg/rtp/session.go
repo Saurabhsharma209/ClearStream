@@ -120,26 +120,28 @@ type Stats struct {
 // It reads RTP from ListenAddr, suppresses noise, and forwards to all configured
 // ForwardAddr / ForwardAddrs destinations simultaneously (fan-out / RTP fork).
 type Session struct {
-	cfg      Config
-	conn     *net.UDPConn
-	fwdAddr  *net.UDPAddr    // primary forward destination (agent)
+	cfg       Config
+	conn      *net.UDPConn
+	fwdAddr   *net.UDPAddr   // primary forward destination (agent)
 	forkAddrs []*net.UDPAddr // additional fork destinations (recorders, etc.)
-	jitter   *JitterBuffer
-	pipeline *audio.Pipeline
-	dtmf     *DTMFDetector
-	playback *PlaybackQueue
+	jitter    *JitterBuffer
+	pipeline  *audio.Pipeline
+	dtmf      *DTMFDetector
+	playback  *PlaybackQueue
 
 	currentSSRC uint32
 	ssrcSet     bool
 
-	mu        sync.Mutex
-	stats     Stats
-	RTCPStats RTCPReceiverReport // most recent RTCP RR stats
-	rtcpConn  *net.UDPConn
-	rtcpReady chan struct{} // closed once rtcpConn is assigned (or binding fails)
-	cancel    context.CancelFunc
-	done      chan struct{}
-	logger    *zap.Logger
+	mu               sync.Mutex
+	stats            Stats
+	RTCPStats        RTCPReceiverReport // most recent RTCP RR stats
+	LastSR           RTCPSenderReport   // most recent RTCP SR received
+	LastSRReceivedAt time.Time          // wall-clock time we got the last SR
+	rtcpConn         *net.UDPConn
+	rtcpReady        chan struct{} // closed once rtcpConn is assigned (or binding fails)
+	cancel           context.CancelFunc
+	done             chan struct{}
+	logger           *zap.Logger
 }
 
 // NewSession creates (but does not start) an RTP session.
@@ -192,17 +194,17 @@ func NewSession(cfg Config) (*Session, error) {
 	})
 
 	return &Session{
-		cfg:        cfg,
-		conn:       conn,
-		fwdAddr:    fwdAddr,
-		forkAddrs:  forkAddrs,
-		jitter:     NewJitterBuffer(cfg.JitterDepth),
-		pipeline:   pipe,
-		dtmf:       NewDTMFDetector(cfg.SampleRate),
-		playback:   NewPlaybackQueue(50),
-		done:       make(chan struct{}),
-		rtcpReady:  make(chan struct{}),
-		logger:     cfg.Logger,
+		cfg:       cfg,
+		conn:      conn,
+		fwdAddr:   fwdAddr,
+		forkAddrs: forkAddrs,
+		jitter:    NewJitterBuffer(cfg.JitterDepth),
+		pipeline:  pipe,
+		dtmf:      NewDTMFDetector(cfg.SampleRate),
+		playback:  NewPlaybackQueue(50),
+		done:      make(chan struct{}),
+		rtcpReady: make(chan struct{}),
+		logger:    cfg.Logger,
 	}, nil
 }
 
@@ -484,7 +486,47 @@ func (s *Session) listenRTCP() {
 				zap.Uint32("jitter_samples", rr.Jitter),
 			)
 		}
+
+		// SR (PT=200): store sender report and arrival time for RTT calculation.
+		sr, srErr := ParseRTCPSenderReport(buf[:n])
+		if srErr != nil {
+			s.logger.Warn("rtcp SR parse error", zap.Error(srErr))
+			continue
+		}
+		if sr != nil {
+			s.mu.Lock()
+			s.LastSR = *sr
+			s.LastSRReceivedAt = time.Now()
+			s.mu.Unlock()
+			s.logger.Info("RTCP sender report",
+				zap.Uint32("ntp_sec", sr.NTPSec),
+				zap.Uint32("ntp_frac", sr.NTPFrac),
+				zap.Uint32("packet_count", sr.PacketCount),
+			)
+		}
 	}
+}
+
+// RTTMs returns the estimated round-trip time in milliseconds using the RFC 3550
+// formula: RTT = elapsed_since_last_SR - DLSR.
+// Returns -1 if there is not enough data (no SR received yet, or DLSR is zero).
+func (s *Session) RTTMs() float64 {
+	s.mu.Lock()
+	lastSRAt := s.LastSRReceivedAt
+	dlsr := s.RTCPStats.DelaySinceLastSR
+	s.mu.Unlock()
+
+	if lastSRAt.IsZero() || dlsr == 0 {
+		return -1
+	}
+
+	elapsed := time.Since(lastSRAt).Seconds()
+	dlsrSec := float64(dlsr) / 65536.0 // DLSR is in 1/65536 sec units (RFC 3550)
+	rtt := elapsed - dlsrSec
+	if rtt < 0 {
+		rtt = 0
+	}
+	return rtt * 1000 // convert to milliseconds
 }
 
 // QualityReport returns a human-readable summary of session quality metrics,
@@ -503,11 +545,12 @@ func (s *Session) QualityReport() string {
 	if s.cfg.SampleRate >= 44100 {
 		band = "fullband(48kHz)"
 	}
+	rttMs := s.RTTMs()
 	return fmt.Sprintf(
-		"RTP: rx=%d tx=%d lost=%d(%.1f%%) latency=%.1fms | Jitter: %.1fms (depth=%d frames) | Band: %s [PT=%d %s] | Pipeline: %s",
+		"RTP: rx=%d tx=%d lost=%d(%.1f%%) latency=%.1fms | Jitter: %.1fms (depth=%d frames) | Band: %s [PT=%d %s] | RTT: %.1fms | Pipeline: %s",
 		rtp.PacketsReceived, rtp.PacketsSent, rtp.PacketsLost, lossRate,
 		rtp.LatencyAvgMs, s.jitter.JitterMs(), s.jitter.Depth(),
-		band, s.cfg.PayloadType, s.cfg.Codec, pipe.String(),
+		band, s.cfg.PayloadType, s.cfg.Codec, rttMs, pipe.String(),
 	)
 }
 
