@@ -1572,3 +1572,21 @@ Rule-based approaches (Wiener, spectral subtraction) **cannot** separate two voi
 ### Tomorrow
 1. RTP/SIP: Wire `ParseRTCPSenderReport` into `session.go` `listenRTCP` — store SR in session state and use NTP timestamp for RTT calculation
 2. Audio Pipeline: Add `TestVADConfigDefaults` — verify zero-value VADConfig fields get sensible defaults (threshold=300, hangover=8)
+
+## 2026-06-15
+
+**Agents run:** RTP/SIP, Audio Pipeline
+**Build:** passing ✅
+
+### Changes
+- `pkg/rtp/session.go`: Wired `ParseRTCPSenderReport` into `listenRTCP`. Added `LastSR RTCPSenderReport` and `LastSRReceivedAt time.Time` fields to Session struct. SR packets (PT=200) now stored on arrival with Info-level logging. Added `RTTMs() float64` method implementing RFC 3550 RTT formula (elapsed - DLSR/65536 → ms, clamped ≥0, returns -1 if insufficient data). Wired RTT into `QualityReport()` output.
+- `pkg/audio/pipeline.go`: Added zero-value default-filling for VADConfig in NewPipeline — EnergyThreshold=0 → 300.0, HangoverFrames=0 → 8. Prevents silent misconfiguration when caller passes &VADConfig{}.
+- `pkg/audio/vadconfig_test.go`: Added `TestVADConfigDefaults` — verifies threshold=300 and hangover=8 defaults, tests borderline speech classification at RMS=300, and verifies 8-frame hangover boundary exactly.
+
+### Blocked
+- `pkg/compat/compat_test.go:122` pre-existing syntax error — unrelated to today's changes.
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass.
+
+### Tomorrow
+1. API Layer: Add `pkg/http/handler.go` POST /enhance HTTP endpoint (was deferred from backlog)
+2. QA/Testing: Create Makefile with build/test/lint/fmt targets
