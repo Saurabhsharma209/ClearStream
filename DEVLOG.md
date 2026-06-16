@@ -1607,3 +1607,38 @@ Rule-based approaches (Wiener, spectral subtraction) **cannot** separate two voi
 ### Tomorrow
 1. QA/Testing: Add tests to pkg/file to raise coverage from 46.9 pct (ProcessDir, StreamProcess, typed error paths)
 2. QA/Testing: Add tests to pkg/eval to raise coverage from 48.4 pct
+
+## 2026-06-16 — Sprint 27: Real RNNoise A/B Test
+
+**Build:** passing ✅ CGO_ENABLED=1 -tags rnnoise
+
+**Tool:** `tools/rnnoise_process/main.go` — reads 16kHz mono PCM16 WAV, processes 160-sample frames via `model.NewRNNoise()` (real CGO, librnnoise_ladspa.dylib), writes denoised WAV.
+
+**Audio corpus:** `raw_audio.wav` — 60s synthetic telephony (16kHz mono PCM16), 6000 frames (10ms each): 42.2% speech, 14.5% background/babble, 43.3% silence.
+
+### A/B Results (real CGO RNNoise vs Ephraim-Malah Spectral Gate)
+
+#### Speech frame RMS preservation (higher = better, 1.0 = no change)
+| Processor | Mean RMS ratio | Speech violations (>5% degradation) |
+|---|---|---|
+| Spectral Gate (A) | 0.9970 | 30 / 2532 |
+| RNNoise CGO  (B) | 0.7646 | 1089 / 2532 |
+
+#### Background / babble suppression (higher SNR delta = more noise removed)
+| Processor | Mean background RMS ratio | SNR improvement (dB) |
+|---|---|---|
+| Spectral Gate (A) | 0.8172 | +4.34 dB |
+| RNNoise CGO  (B) | 2.6593 | +33.51 dB |
+
+### Verdict
+**FAIL** — RNNoise CGO is disqualified for production in current form.
+
+RNNoise achieved dramatically better background suppression (+33.51 dB vs +4.34 dB), confirming the AI model genuinely learns noise vs speech. However, 1089/2532 speech frames (43%) were degraded >5% vs raw, versus only 30/2532 (1.2%) for the spectral gate. The RMS ratio of 0.7646 (vs 0.9970) confirms significant speech energy loss through the 16kHz→48kHz upsample/process/downsample path.
+
+**Root cause hypothesis:** The Catmull-Rom upsample + Kaiser FIR downsample chain introduces phase and amplitude distortion on the 160→480→160 sample path that confuses RNNoise's internal state. RNNoise was designed for native 48kHz operation; forcing 16kHz input through 3x resampling may corrupt the feature vectors it uses to distinguish speech from noise.
+
+### Next steps
+1. **Fix resampling pipeline** — profile the upsample/downsample against a known 48kHz reference; measure SNR through the round-trip to quantify distortion
+2. **Native 48kHz mode** — add a `Process48k(frame []int16)` path that takes 480-sample frames at 48kHz without resampling, wrapping it with ClearStream's existing resample infrastructure
+3. **Speech-aware gain floor** — add a post-RNNoise gain floor (min 0.85 on detected speech frames) to prevent over-suppression while retaining background removal
+4. **Re-run Sprint 28 A/B** — target: RNNoise speech violations < 50 (< 2%) AND background SNR > 10 dB to pass for production promotion
