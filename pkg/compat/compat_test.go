@@ -118,20 +118,20 @@ func TestRecommendAsterisk(t *testing.T) {
 	}
 }
 
-// TestRecommendyour telephony platform verifies the your telephony platform profile has correct codec and path.
-func TestRecommendyour telephony platform(t *testing.T) {
+// TestRecommendVSIP verifies the VSIP profile has correct codec and path.
+func TestRecommendVSIP(t *testing.T) {
 	p, err := compat.Recommend(compat.PlatformVSIP, "")
 	if err != nil {
-		t.Fatalf("your telephony platform Recommend: unexpected error: %v", err)
+		t.Fatalf("VSIP Recommend: unexpected error: %v", err)
 	}
 	if p.PreferredCodec != audio.CodecG711A {
-		t.Errorf("your telephony platform: PreferredCodec = %q, want %q", p.PreferredCodec, audio.CodecG711A)
+		t.Errorf("VSIP: PreferredCodec = %q, want %q", p.PreferredCodec, audio.CodecG711A)
 	}
 	if p.AGCRecommended {
-		t.Errorf("your telephony platform: AGCRecommended should be false (PSTN levels are stable)")
+		t.Errorf("VSIP: AGCRecommended should be false (PSTN levels are stable)")
 	}
 	if !strings.Contains(p.IntegrationPath, "RTP proxy") {
-		t.Errorf("your telephony platform: IntegrationPath %q should mention RTP proxy", p.IntegrationPath)
+		t.Errorf("VSIP: IntegrationPath %q should mention RTP proxy", p.IntegrationPath)
 	}
 	// Must support both PCMA and PCMU
 	found := map[audio.Codec]bool{}
@@ -139,10 +139,10 @@ func TestRecommendyour telephony platform(t *testing.T) {
 		found[c] = true
 	}
 	if !found[audio.CodecG711A] {
-		t.Error("your telephony platform: SupportedCodecs missing CodecG711A (PCMA)")
+		t.Error("VSIP: SupportedCodecs missing CodecG711A (PCMA)")
 	}
 	if !found[audio.CodecG711U] {
-		t.Error("your telephony platform: SupportedCodecs missing CodecG711U (PCMU)")
+		t.Error("VSIP: SupportedCodecs missing CodecG711U (PCMU)")
 	}
 }
 
