@@ -3,7 +3,8 @@
 package model
 
 /*
-#cgo LDFLAGS: -lrnnoise
+#cgo LDFLAGS: -L/Users/saurabh.sharma/.homebrew/Caskroom/rnnoise/1.10/macos-rnnoise/ladspa -lrnnoise_ladspa -Wl,-rpath,/Users/saurabh.sharma/.homebrew/Caskroom/rnnoise/1.10/macos-rnnoise/ladspa
+#cgo CFLAGS: -I/Users/saurabh.sharma/ClearStream/include/rnnoise
 #include <rnnoise.h>
 #include <stdlib.h>
 
@@ -158,8 +159,9 @@ func upsample3x(in []int16) []int16 {
 // h[n] = sinc(2*fc*(n-M/2)) * kaiser(n, beta, M), M=14, scaled so sum=256.
 //
 // Integer coefficients (symmetric, scale=256):
-//   [0, 0, -3, -7, 0, 28, 67, 85, 67, 28, 0, -7, -3, 0, 0]
-//   Sum=255, DC gain=255/256=0.9961 (~0dB).
+//
+//	[0, 0, -3, -7, 0, 28, 67, 85, 67, 28, 0, -7, -3, 0, 0]
+//	Sum=255, DC gain=255/256=0.9961 (~0dB).
 //
 // Stopband attenuation: null at 16kHz (1/3*Fs), >=44dB across alias band
 // [16kHz,24kHz], vs ~20-25dB for the old 5-tap box FIR. Prevents high-

@@ -169,11 +169,16 @@ func TestNewRNNoise_ReturnsPassthrough(t *testing.T) {
 		t.Fatal("NewRNNoise() returned nil")
 	}
 	defer s.Close()
-	out, err := s.Process([]int16{100, 200, 300})
+	// RNNoise operates on 160-sample 16kHz frames; passthrough returns input length.
+	frame := make([]int16, 160)
+	for i := range frame {
+		frame[i] = int16(i * 100 % 32767)
+	}
+	out, err := s.Process(frame)
 	if err != nil {
 		t.Errorf("Process() error: %v", err)
 	}
-	if len(out) != 3 {
-		t.Errorf("expected 3 samples, got %d", len(out))
+	if len(out) != 160 {
+		t.Errorf("expected 160 samples, got %d", len(out))
 	}
 }
