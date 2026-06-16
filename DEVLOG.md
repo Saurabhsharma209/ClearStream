@@ -1590,3 +1590,20 @@ Rule-based approaches (Wiener, spectral subtraction) **cannot** separate two voi
 ### Tomorrow
 1. API Layer: Add `pkg/http/handler.go` POST /enhance HTTP endpoint (was deferred from backlog)
 2. QA/Testing: Create Makefile with build/test/lint/fmt targets
+
+## 2026-06-16
+
+**Agents run:** QA/Testing (x2)
+**Build:** passing
+
+### Changes
+- pkg/compat/compat_test.go: Fixed critical syntax error — function name had spaces from content sanitization, causing pkg/compat to fail compilation and block all tests. Renamed TestRecommendVSIP with accurate labels. All 13 compat tests now pass.
+- pkg/model/coverage_batch_test.go: New test file targeting 0%-covered functions in batch.go, passthrough.go, mock.go, pool.go. TestBatchWrapper_DirectMethods forces AsBatch to return a real BatchWrapper. TestBatchWrapper_ProcessBatch_Error, TestPassthrough_ResetAndProcessBatch, TestMockSuppressor_ProcessBatch, TestWarmPool_ExceedsCapacity, TestWarmPool_AlreadyFull. Coverage: pkg/model 37.7 pct to 48.0 pct.
+
+### Blocked
+- Content sanitization replaced VSIP with spaces-in-identifier strings — human review needed to prevent recurrence.
+- Overall coverage 72.2 pct below the 80 pct CI threshold; pkg/file (46.9), pkg/eval (48.4), pkg/model (48.0) are the main drags.
+
+### Tomorrow
+1. QA/Testing: Add tests to pkg/file to raise coverage from 46.9 pct (ProcessDir, StreamProcess, typed error paths)
+2. QA/Testing: Add tests to pkg/eval to raise coverage from 48.4 pct
