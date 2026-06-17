@@ -1642,3 +1642,21 @@ RNNoise achieved dramatically better background suppression (+33.51 dB vs +4.34 
 2. **Native 48kHz mode** — add a `Process48k(frame []int16)` path that takes 480-sample frames at 48kHz without resampling, wrapping it with ClearStream's existing resample infrastructure
 3. **Speech-aware gain floor** — add a post-RNNoise gain floor (min 0.85 on detected speech frames) to prevent over-suppression while retaining background removal
 4. **Re-run Sprint 28 A/B** — target: RNNoise speech violations < 50 (< 2%) AND background SNR > 10 dB to pass for production promotion
+
+## 2026-06-17
+
+**Agents run:** QA/Testing (pkg/file + pkg/eval)
+**Build:** passing ✅
+
+### Changes
+- `pkg/file/internal_test.go`: New whitebox test file (package file). Tests inferOutputCodec (14 extension cases), parseFFmpegTime (9 cases incl. edge cases), parseFFmpegError (7 cases covering all 3 typed error branches). Coverage: 46.9% → 55.9%.
+- `pkg/eval/transcript_test.go`: 21 new tests covering normaliseText, charScore, wordScore, lcsMatcher, lcsMatcherStr, NewTranscriptScorer, Score (without LLM), ScoreAll (skip empty pairs). Coverage: 48.4% → 63.2%.
+
+### Blocked
+- `pkg/compat/compat_test.go:122` pre-existing syntax error — unrelated to today's changes.
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass.
+- Overall coverage ~66% average across tested packages; pkg/file (55.9%), pkg/eval (63.2%) still below 80% CI threshold.
+
+### Tomorrow
+1. QA/Testing: Add tests for pkg/eval/batch.go (0% coverage) — NewBatchRunner, collectFiles, bytesToInt16, lastLine; these don't need ffmpeg
+2. QA/Testing: Add tests for pkg/file encodeAndMux and decodeAndSuppress error paths (requires mock or fake ffmpeg binary)
