@@ -1660,3 +1660,20 @@ RNNoise achieved dramatically better background suppression (+33.51 dB vs +4.34 
 ### Tomorrow
 1. QA/Testing: Add tests for pkg/eval/batch.go (0% coverage) — NewBatchRunner, collectFiles, bytesToInt16, lastLine; these don't need ffmpeg
 2. QA/Testing: Add tests for pkg/file encodeAndMux and decodeAndSuppress error paths (requires mock or fake ffmpeg binary)
+
+## 2026-06-18
+
+**Agents run:** QA/Testing (pkg/eval/batch.go + pkg/file error paths)
+**Build:** passing ✅
+
+### Changes
+- `pkg/eval/batch_test.go`: New file (package eval, whitebox). 17 tests covering NewBatchRunner defaults/panics, collectFiles extension filtering + predicate + error on bad dir + subdir skipping, bytesToInt16 (6 cases incl. edge values), lastLine (7 cases). pkg/eval batch coverage: 0% → meaningful coverage of all non-ffmpeg paths.
+- `pkg/file/internal_test.go`: 9 new tests for ProcessDir/ProcessDirFull (subdir skip, unsupported ext, MkdirAll error), StreamProcess flush/suppress error paths, ProcessWithOptions OnProgress(0.0). Coverage: 55.9% → 59.7%.
+
+### Blocked
+- `pkg/file` hitting 65%+ blocked by ffmpeg dependency in decodeAndSuppress/encodeAndMux — those paths only run with a real ffmpeg binary.
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass.
+
+### Tomorrow
+1. QA/Testing: Add MockSuppressor in pkg/model/mock_test.go + pkg/audio/pipeline_test.go (frame boundary, flush, reset) to push model/audio coverage
+2. RTP/SIP: Fix G.711 µ-law/A-law round-trip correctness (add roundtrip test for all 256 values)
