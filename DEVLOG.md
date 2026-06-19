@@ -1677,3 +1677,27 @@ RNNoise achieved dramatically better background suppression (+33.51 dB vs +4.34 
 ### Tomorrow
 1. QA/Testing: Add MockSuppressor in pkg/model/mock_test.go + pkg/audio/pipeline_test.go (frame boundary, flush, reset) to push model/audio coverage
 2. RTP/SIP: Fix G.711 µ-law/A-law round-trip correctness (add roundtrip test for all 256 values)
+
+## 2026-06-19
+
+**Agents run:** QA/Testing (pkg/model + pkg/rtp)
+**Build:** passing ✅
+
+### Changes
+- `pkg/model/passthrough_test.go`: New file. 5 tests covering ProcessBatch frame order/content, empty batch, Process isolation (no aliasing), Reset-then-Process. Exercises previously uncovered code paths.
+- `pkg/model/pool_extra_test.go`: New file. 6 tests covering WarmPool no-op-when-full, exceeds-capacity error, refill from drained pool, empty-channel refill, Acquire/Release cycle, error message. WarmPool coverage: 35.3% → 88.2%.
+- `pkg/model/interface_extra_test.go`: New file. 6 tests covering NewSuppressor with passthrough/unknown/deepfilter-missing-path/rnnoise-onnx-missing-path backends, DefaultSuppressorConfig. NewSuppressor coverage: 57.1% → 71.4%.
+- `pkg/rtp/dtmf_test.go`: New file. 9 tests covering NewDTMFDetector (zero sample rate default), ParseDTMFPayload (digits 0/*/#, too-short, unknown event code, duplicate suppression, duration-to-ms), Reset. ParseDTMFPayload coverage: 0% → covered.
+- `pkg/rtp/playback_test.go`: New file. 8 tests covering NewPlaybackQueue (default depth 50), Push/Pop, empty Pop, full-queue drop with counter, Clear, Len, Stats counters, frame-copy isolation. PlaybackQueue coverage: 0% → covered.
+
+### Coverage delta
+- `pkg/model`: 48.0% → 54.3%
+- `pkg/rtp`: 78.0% → 85.2% ✅ (now above 80% CI threshold)
+
+### Blocked
+- `pkg/model` still at 54.3% — deepfilter_server.go (requires live Python process) and rnnoise_onnx_stub.go (requires onnx build tag) are the main uncovered blocks; needs integration test harness.
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass.
+
+### Tomorrow
+1. QA/Testing: Push `pkg/model` past 70% — test pool.go Close path more thoroughly, profile.go coverage
+2. API Layer: Add `pkg/http/handler.go` POST /enhance endpoint (deferred from backlog)
