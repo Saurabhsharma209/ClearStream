@@ -1701,3 +1701,26 @@ RNNoise achieved dramatically better background suppression (+33.51 dB vs +4.34 
 ### Tomorrow
 1. QA/Testing: Push `pkg/model` past 70% — test pool.go Close path more thoroughly, profile.go coverage
 2. API Layer: Add `pkg/http/handler.go` POST /enhance endpoint (deferred from backlog)
+
+## 2026-06-22
+
+**Agents run:** QA/Testing (pkg/model + pkg/http)
+**Build:** passing ✅
+
+### Changes
+- `pkg/model/deepfilter_server_test.go`: New file — fake httptest DeepFilterNet server covers all previously-0% functions: newDeepFilterServerSuppressor, ping, Process, Name, Reset, Close. Also exercises NewSuppressor("deepfilter-server") branch.
+- `pkg/model/batch_extra_test.go`: Covers BatchWrapper ProcessBatch error early-exit path, Reset, Close, Name.
+- `pkg/model/passthrough_extra_test.go`: Covers Passthrough Reset, Close, ProcessBatch edge cases.
+- `pkg/model/pool_close_test.go`: Covers SuppressorPool Close when full, when drained, and idempotent double-close.
+- `pkg/model/interface_batch_test.go`: Covers AsBatch wrapping and NewSuppressor default branch.
+- `pkg/http/handler_enhance_test.go`: 13 new tests covering handleEnhance missing-audio (400), invalid form (400), audio_only, normalize_peak, AGC param parsing (all 4 float params), invalid float graceful ignore, full success path via fake ffmpeg binary.
+- **pkg/model coverage: 54.3% → 82.9%** ✅ (above 80% CI threshold)
+- **pkg/http coverage: 80.8% → 92.1%** ✅
+
+### Blocked
+- pkg/model deepfilter_server.go Process graceful-degradation path: 95.5% (4.5% in timeout edge case requiring network delay mock).
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass.
+
+### Tomorrow
+1. RTP/SIP: Fix G.711 µ-law/A-law round-trip correctness — add roundtrip test for all 256 values
+2. Audio Pipeline: Add VAD energy threshold / skip-suppression-on-silence (reduce CPU ~30% on silent calls)
