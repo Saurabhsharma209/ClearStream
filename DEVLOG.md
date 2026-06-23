@@ -1724,3 +1724,20 @@ RNNoise achieved dramatically better background suppression (+33.51 dB vs +4.34 
 ### Tomorrow
 1. RTP/SIP: Fix G.711 µ-law/A-law round-trip correctness — add roundtrip test for all 256 values
 2. Audio Pipeline: Add VAD energy threshold / skip-suppression-on-silence (reduce CPU ~30% on silent calls)
+
+## 2026-06-23
+
+**Agents run:** QA/Testing (pkg/file + pkg/eval)
+**Build:** passing ✅
+
+### Changes
+- `pkg/file/processor_withffmpeg_test.go`: New whitebox test file using fake ffmpeg shell scripts. 8 tests covering ProcessWithOptions happy path, OnProgress callbacks, AudioOnly option, all 8 codec branches, encodeAndMux error path (ErrFileNotFound), decodeAndSuppress ffmpeg start failure, explicit OutputSampleRate, and empty OutputCodec. Coverage: 59.7% → 88.6%.
+- `pkg/eval/coverage_boost_test.go` + `pkg/eval/coverage_boost2_test.go`: 60+ new tests covering NewRTPMonitor nil/default configs, sample() all pipeline branches (high-loss/jitter/recovery/SNR), recommend() all 5 branches, ComputeSNR edge cases, RMSLevel edge cases, ComputeVADStats both branches, WriteAllReports error path, Score context cancellation + empty comparison, llmScore via mock HTTP server, LatencyAccumulator.Stats insertion-sort coverage, TuneFromBatchSummary medium-SNR path, WriteConfigYAML AGC branch. Coverage: 69.5% → 78.9%.
+
+### Blocked
+- pkg/file hitting 100% blocked by ffmpeg-dependent paths requiring live encoder (libopus, libmp3lame) not present in CI.
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass.
+
+### Tomorrow
+1. Audio Pipeline: Add Stats() method improvements or RTP/SIP SSRC change detection improvements
+2. API Layer: Add Go doc comments to all exported symbols in clearstream.go
