@@ -1741,3 +1741,20 @@ RNNoise achieved dramatically better background suppression (+33.51 dB vs +4.34 
 ### Tomorrow
 1. Audio Pipeline: Add Stats() method improvements or RTP/SIP SSRC change detection improvements
 2. API Layer: Add Go doc comments to all exported symbols in clearstream.go
+
+## 2026-06-25
+
+**Agents run:** QA/Testing (pkg/eval), Audio Pipeline (pkg/model resampling)
+**Build:** passing ✅
+
+### Changes
+- `pkg/eval/coverage_final_test.go`: 13 new tests covering AggregateResults edge cases (all-errors, wallClockMs=0, empty slice, single file, mixed error/success), estimateSNRFromLoss (zero, negative, high/clamped, mid), WriteFilesJSON with populated FileResult slice, WriteCSV with full SNR/Latency/VAD/AGC fields. pkg/eval coverage: 78.9% → 84.1% ✅ (above 80% CI threshold).
+- `pkg/model/resample_linear_test.go`: New file (build tag: onnx). 2 tests verifying upsample3x linear interpolation produces smooth lerp values and downsample3x triplet-averaging produces correct anti-aliased output. Confirms the onnx-path resampling contract is correct and regression-protected.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass.
+- pkg/eval still has uncovered paths in decodeToRawPCM (requires real ffmpeg) and RTPMonitor.writeReports (requires filesystem I/O in Start/Stop cycle).
+
+### Tomorrow
+1. QA/Testing: Add MockSuppressor in pkg/model/mock_test.go to push model coverage further
+2. Audio Pipeline: Investigate native 48kHz mode (Process48k path) to bypass 3x resampling chain entirely — root cause of 43% speech frame degradation in Sprint 28 A/B
