@@ -538,3 +538,72 @@ func (p *Pipeline) Reconfigure(cfg PipelineConfig) {
 		p.agc.cfg.TargetRMS = cfg.AGC.TargetRMS
 	}
 }
+
+// Frame48kSamples is the number of PCM samples per 10ms frame at 48kHz.
+const Frame48kSamples = 480
+
+// Process48k processes a single 480-sample frame of 48kHz mono PCM.
+// It downsamples 3:1 to 160 samples at 16kHz via 3-sample averaging,
+// runs noise suppression, then upsamples 3:1 back to 480 samples via
+// linear interpolation. This path avoids the quality-degrading
+// 8kHz->16kHz->8kHz round-trip used for narrowband PSTN input.
+// Returns a 480-sample enhanced frame and any suppressor error.
+func (p *Pipeline) Process48k(frame []int16) ([]int16, error) {
+	if len(frame) != Frame48kSamples {
+		return nil, fmt.Errorf("audio: Process48k requires %d samples, got %d", Frame48kSamples, len(frame))
+	}
+
+	// Step 1: Downsample 480 -> 160 via 3-sample averaging (better anti-alias).
+	down := make([]int16, FrameSizeSamples)
+	for i := 0; i < FrameSizeSamples; i++ {
+		j := i * 3
+		avg := (int32(frame[j]) + int32(frame[j+1]) + int32(frame[j+2])) / 3
+		down[i] = int16(avg)
+	}
+
+	p.statsMu.Lock()
+	p.framesProcessed++
+	p.statsMu.Unlock()
+
+	// Step 2: VAD gate — skip suppressor on silence.
+	isSpeech := true
+	if p.vad != nil {
+		isSpeech = p.vad.IsSpeech(down)
+	}
+
+	var processed []int16
+	if !isSpeech {
+		p.statsMu.Lock()
+		p.framesSilent++
+		p.statsMu.Unlock()
+		processed = down
+	} else if p.cfg.Suppressor == nil {
+		processed = down
+	} else {
+		var err error
+		processed, err = p.cfg.Suppressor.Process(down)
+		if err != nil {
+			return nil, err
+		}
+		p.statsMu.Lock()
+		p.framesSuppressed++
+		p.statsMu.Unlock()
+	}
+
+	// Step 3: Upsample 160 -> 480 via linear interpolation.
+	out := make([]int16, Frame48kSamples)
+	for i := 0; i < FrameSizeSamples-1; i++ {
+		a := int32(processed[i])
+		b := int32(processed[i+1])
+		out[i*3] = int16(a)
+		out[i*3+1] = int16((a*2 + b) / 3)
+		out[i*3+2] = int16((a + b*2) / 3)
+	}
+	// Last triplet: hold last sample.
+	last := int32(processed[FrameSizeSamples-1])
+	out[477] = int16(last)
+	out[478] = int16(last)
+	out[479] = int16(last)
+
+	return out, nil
+}
