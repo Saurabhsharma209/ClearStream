@@ -1758,3 +1758,21 @@ RNNoise achieved dramatically better background suppression (+33.51 dB vs +4.34 
 ### Tomorrow
 1. QA/Testing: Add MockSuppressor in pkg/model/mock_test.go to push model coverage further
 2. Audio Pipeline: Investigate native 48kHz mode (Process48k path) to bypass 3x resampling chain entirely — root cause of 43% speech frame degradation in Sprint 28 A/B
+
+## 2026-06-26
+
+**Agents run:** QA/Testing (pkg/billing), Audio Pipeline (pkg/audio Process48k)
+**Build:** passing
+
+### Changes
+- pkg/billing/billing_extra_test.go: New whitebox test file. 6 tests covering CDR.BilledSeconds(), CDR.Cost(), NewCDR negative-duration path, NewSessionMeter hostname fallback, SessionMeter.Finalize with WAL write (async goroutine, verified via RecoverAndFlush), WALWriter.rotate() triggered by RotateInterval=1ns. Coverage: 69.6% -> 84.4%.
+- pkg/audio/pipeline.go: Added Frame48kSamples=480 constant and Process48k(frame []int16) method. Accepts 480-sample 48kHz frames, downsamples 3:1 via averaging decimation, applies VAD gate and noise suppression, upsamples 3:1 via linear interpolation. Bypasses the 8kHz 3x-resample chain that caused 43% speech frame degradation in Sprint 28 A/B.
+- pkg/audio/pipeline_48k_test.go: 4 tests covering passthrough (nil suppressor), mock suppressor with stats verification, VAD silence bypass (suppressor not called), wrong-length error. Coverage: 85.3% -> 85.8%.
+
+### Blocked
+- pkg/eval at 78.9% still below 80% CI threshold.
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass.
+
+### Tomorrow
+1. QA/Testing: Push pkg/eval past 80% threshold (currently 78.9% - needs small push)
+2. Audio Pipeline: A/B test Process48k vs current 8kHz path - measure SNR improvement on real calls
