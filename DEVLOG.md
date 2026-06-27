@@ -1776,3 +1776,19 @@ RNNoise achieved dramatically better background suppression (+33.51 dB vs +4.34 
 ### Tomorrow
 1. QA/Testing: Push pkg/eval past 80% threshold (currently 78.9% - needs small push)
 2. Audio Pipeline: A/B test Process48k vs current 8kHz path - measure SNR improvement on real calls
+## 2026-06-27
+
+**Agents run:** QA/Testing (pkg/eval + pkg/rtp)
+**Build:** passing ?
+
+### Changes
+- `pkg/eval/eval_extra_test.go`: New file. 6 tests covering `max` (both branches: first-greater, second-greater) and `llmScore` error paths (empty-choices, bad-JSON, bad-score-content, valid-response). Coverage: 78.9% ? 80.0% ? (now at CI threshold).
+- `pkg/rtp/session_playback_test.go`: New file. 4 Session-level tests covering InjectBotAudio (single frame, multi-frame with remainder padding), ClearPlayback (discard count + empty-queue verification), PlaybackStats counters (Pushed/Cleared). Coverage: 84.8% ? 88.3% ?.
+
+### Blocked
+- pkg/eval `max`, `evalFile`, `decodeToRawPCM` still 0% Ñ require ffmpeg binary, not testable without integration harness.
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass.
+
+### Tomorrow
+1. Audio Pipeline: A/B test Process48k vs 8kHz path Ñ measure SNR on real call samples
+2. API Layer: Add pkg/http/handler.go POST /enhance endpoint (add streaming support)
