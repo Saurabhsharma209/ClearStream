@@ -22,6 +22,13 @@ func Resample(samples []int16, srcRate, dstRate int) ([]int16, error) {
 		return kaiserFIRUpsample2x(samples), nil
 	}
 
+	// Use Kaiser-windowed FIR for the 16kHz→8kHz (2x downsample) path.
+	// Without an anti-alias filter, frequencies above 4kHz fold into the
+	// 0–4kHz passband on G.711 output, causing audible aliasing distortion.
+	if srcRate == 16000 && dstRate == 8000 {
+		return kaiserFIRDownsample2x(samples), nil
+	}
+
 	return linearResample(samples, srcRate, dstRate)
 }
 
@@ -94,6 +101,82 @@ func kaiserFIRUpsample2x(samples []int16) []int16 {
 		}
 		// Scale by 2 (the upsampling factor) to compensate for zero insertion
 		v := math.Round(acc * 2.0)
+		if v > 32767 {
+			v = 32767
+		} else if v < -32768 {
+			v = -32768
+		}
+		out[i] = int16(v)
+	}
+	return out
+}
+
+// kaiserFIRDownsample2x downsamples by exactly 2x using a 31-tap Kaiser-windowed sinc FIR
+// as an anti-alias filter followed by decimation (keep every other sample).
+//
+// Same Kaiser parameters as kaiserFIRUpsample2x: beta=5.653, L=31 taps, fc=0.25.
+// fc=0.25 places the cutoff at 4kHz (the Nyquist of the 8kHz output), normalised
+// to the 16kHz input rate (4000/16000 = 0.25). This suppresses all energy above 4kHz
+// before decimation, preventing aliasing on the G.711 output path.
+//
+// Odd-reflection boundary extension at the left edge (same as kaiserFIRUpsample2x)
+// pre-warms the filter and eliminates the startup transient.
+//
+// Output length = ceil(len(samples)/2).
+func kaiserFIRDownsample2x(samples []int16) []int16 {
+	const (
+		L    = 31    // filter length (odd) — same as upsample path
+		beta = 5.653 // Kaiser window shape parameter (targets 60 dB stopband attenuation)
+		fc   = 0.25  // normalised cutoff: 4kHz / 16kHz input rate
+	)
+
+	// Build Kaiser-windowed sinc coefficients (identical design to upsample path).
+	h := make([]float64, L)
+	M := L - 1
+	i0beta := besselI0(beta)
+	for n := 0; n < L; n++ {
+		t := float64(n) - float64(M)/2.0
+		var sinc float64
+		if t == 0 {
+			sinc = 2.0 * fc
+		} else {
+			sinc = math.Sin(2*math.Pi*fc*t) / (math.Pi * t)
+		}
+		arg := 1.0 - (2.0*float64(n)/float64(M)-1.0)*(2.0*float64(n)/float64(M)-1.0)
+		if arg < 0 {
+			arg = 0
+		}
+		window := besselI0(beta*math.Sqrt(arg)) / i0beta
+		h[n] = sinc * window
+	}
+
+	N := len(samples)
+	half := M / 2 // filter group delay in input samples
+
+	// Output length = ceil(N/2): each output sample i corresponds to input index 2*i.
+	outLen := (N + 1) / 2
+	out := make([]int16, outLen)
+
+	for i := 0; i < outLen; i++ {
+		// Centre of the convolution window in the input signal.
+		centre := 2 * i
+		var acc float64
+		for k := 0; k < L; k++ {
+			// Source index in the input signal.
+			srcIdx := centre - half + k
+			if srcIdx >= 0 && srcIdx < N {
+				acc += h[k] * float64(samples[srcIdx])
+			} else if srcIdx < 0 {
+				// Odd-reflection boundary extension: x[-n] = -x[n].
+				// Keeps the filter pre-warmed for continuous audio streams.
+				reflected := -srcIdx
+				if reflected < N {
+					acc += h[k] * (-float64(samples[reflected]))
+				}
+			}
+			// srcIdx >= N: implicit zero-padding at the right boundary.
+		}
+		v := math.Round(acc)
 		if v > 32767 {
 			v = 32767
 		} else if v < -32768 {
