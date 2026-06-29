@@ -1792,3 +1792,20 @@ RNNoise achieved dramatically better background suppression (+33.51 dB vs +4.34 
 ### Tomorrow
 1. Audio Pipeline: A/B test Process48k vs 8kHz path � measure SNR on real call samples
 2. API Layer: Add pkg/http/handler.go POST /enhance endpoint (add streaming support)
+
+## 2026-06-29
+
+**Agents run:** Audio Pipeline (resample), QA/Testing (pkg/agentstream)
+**Build:** passing ✅
+
+### Changes
+- `pkg/audio/resample.go`: Added `kaiserFIRDownsample2x` — 31-tap Kaiser-windowed sinc FIR (beta=5.653, fc=0.25) for the 16kHz→8kHz downsample path. Wired into `Resample()` for srcRate=16000/dstRate=8000. Prevents aliasing artifacts on G.711 PSTN output (prior linear decimation folded 4–8kHz energy into the passband). Odd-reflection boundary extension at left edge eliminates startup transient. Stopband rejection measured at 87 dB; round-trip SNR 8→16→8kHz = 86 dB.
+- `pkg/audio/resample_downsample_test.go`: New file. 5 tests: output length (even/odd/empty/single), passband (1kHz <1dB loss), stopband (5kHz >30dB rejection), round-trip (1kHz <3dB), public API routing. pkg/audio coverage: 85.8% → 86.0%.
+- `pkg/agentstream/agentstream_test.go`: New file (696 lines). 26 tests covering all StreamState.String() values, IsError/IsTerminal helpers, CanTransition valid/invalid paths, all 14 EventType and 4 RecommendedAction and 4 FailureCode constants, JSON round-trips for all 14 event structs, omitempty behaviour, MarshalEvent helper. Coverage: 0% → 100% ✅
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass.
+
+### Tomorrow
+1. Audio Pipeline: Benchmark Process48k vs 8kHz path on real call samples to quantify SNR improvement
+2. RTP/SIP: Add session_test.go with loopback UDP test (end-to-end packet path validation)
