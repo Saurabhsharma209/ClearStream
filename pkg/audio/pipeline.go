@@ -607,3 +607,18 @@ func (p *Pipeline) Process48k(frame []int16) ([]int16, error) {
 
 	return out, nil
 }
+
+// IsBypass returns true when the pipeline is a pure passthrough — suppressor is
+// *model.Passthrough and no additional processing stages (AEC, AGC, noise
+// reducer, tiered NR, diarizer) are configured.  When true, the RTP session can
+// skip the entire PCM decode → suppress → encode cycle and forward the raw
+// payload bytes directly, saving significant CPU and latency.
+func (p *Pipeline) IsBypass() bool {
+	_, ok := p.cfg.Suppressor.(*model.Passthrough)
+	return ok &&
+		p.aec == nil &&
+		p.agc == nil &&
+		p.noiseReducer == nil &&
+		p.tieredNR == nil &&
+		p.diarizer == nil
+}

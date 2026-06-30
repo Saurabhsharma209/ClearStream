@@ -605,3 +605,80 @@ func TestHandlePacketTooShort(t *testing.T) {
 		t.Error("expected error for short packet, got nil")
 	}
 }
+
+// TestPassthroughBypassMode verifies that when the session uses a Passthrough
+// suppressor with no extra pipeline stages, the fast-bypass path forwards
+// packets without any PCM decode/suppress/encode cycle.
+func TestPassthroughBypassMode(t *testing.T) {
+	sinkConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("bind sink: %v", err)
+	}
+	defer sinkConn.Close()
+	sinkAddr := sinkConn.LocalAddr().(*net.UDPAddr)
+
+	logger, _ := zap.NewDevelopment()
+
+	// Use the real Passthrough suppressor -- IsBypass() checks for *model.Passthrough.
+	cfg := Config{
+		ListenAddr:  "127.0.0.1:0",
+		ForwardAddr: sinkAddr.String(),
+		PayloadType: 0, // PCMU
+		JitterDepth: 1,
+		Logger:      logger,
+		Suppressor:  model.NewPassthrough(),
+	}
+
+	sess, err := NewSession(cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	if !sess.isBypassMode() {
+		t.Fatal("expected isBypassMode() == true for Passthrough session")
+	}
+
+	sess.Start()
+	defer sess.Stop()
+
+	listenAddr := sess.conn.LocalAddr().(*net.UDPAddr)
+
+	sender, err := net.DialUDP("udp", nil, listenAddr)
+	if err != nil {
+		t.Fatalf("dial sender: %v", err)
+	}
+	defer sender.Close()
+
+	// Build 5 PCMU RTP ulaw-silence packets (160 bytes = 8kHz 20ms).
+	payload := make([]byte, 160)
+	for i := range payload {
+		payload[i] = 0xFF
+	}
+
+	const numPackets = 5
+	// First packet is buffered by the jitter buffer; subsequent ones trigger forward.
+	for i := 0; i < numPackets; i++ {
+		pkt := buildRawRTPPacket(uint16(i), uint32(i*160), 0xCAFEBABE, payload)
+		if _, err := sender.Write(pkt); err != nil {
+			t.Fatalf("send packet %d: %v", i, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+
+	stats := sess.Stats()
+	if stats.PacketsSent == 0 {
+		t.Errorf("expected PacketsSent > 0 via bypass path, got 0")
+	}
+
+	// Drain forwarded packets from the sink -- bypass should forward raw payloads.
+	sinkConn.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	recvBuf := make([]byte, 4096)
+	n, _, _ := sinkConn.ReadFromUDP(recvBuf)
+	if n == 0 {
+		t.Error("expected at least one forwarded packet at sink")
+	}
+	t.Logf("bypass: PacketsReceived=%d PacketsSent=%d forwarded_pkt_len=%d",
+		stats.PacketsReceived, stats.PacketsSent, n)
+}

@@ -32,6 +32,17 @@ var rtpPayloadInfo = map[uint8]struct {
 	110: {audio.CodecOpus, 48000},   // Opus  — alternate dynamic PT
 }
 
+// cleanBufPool pools bytes.Buffer instances to avoid per-packet heap allocations
+// in the handlePacket hot path. Always call cleanBuf.Reset() before use.
+var cleanBufPool = sync.Pool{New: func() interface{} { return &bytes.Buffer{} }}
+
+// rtpScratchPool pools []byte scratch buffers for PCM->bytes conversion in handlePacket.
+// Buffers are grown as needed and returned to the pool for reuse.
+var rtpScratchPool = sync.Pool{New: func() interface{} {
+	b := make([]byte, 320) // 160 samples * 2 bytes (PCMU 8kHz, 20ms frame)
+	return &b
+}}
+
 // resolvePayloadType fills in Codec and SampleRate from PayloadType if not set.
 func resolvePayloadType(cfg *Config) {
 	if info, ok := rtpPayloadInfo[cfg.PayloadType]; ok {
@@ -332,6 +343,24 @@ func (s *Session) handlePacket(raw []byte) error {
 		return nil
 	}
 
+	// Fast bypass: suppressor=passthrough, no pipeline stages -> forward raw payload directly.
+	// Skips the PCM decode->suppress->encode cycle, cutting per-packet CPU to near zero.
+	if s.isBypassMode() && frame != nil {
+		out := buildRTPPacket(header, frame)
+		if _, fwdErr := s.conn.WriteToUDP(out, s.fwdAddr); fwdErr != nil {
+			s.logger.Warn("bypass forward", zap.Error(fwdErr))
+		}
+		for _, fa := range s.forkAddrs {
+			if _, fwdErr := s.conn.WriteToUDP(out, fa); fwdErr != nil {
+				s.logger.Warn("bypass fork write error", zap.String("addr", fa.String()), zap.Error(fwdErr))
+			}
+		}
+		s.mu.Lock()
+		s.stats.PacketsSent++
+		s.mu.Unlock()
+		return nil
+	}
+
 	var pcm []int16
 
 	if frame == nil {
@@ -348,16 +377,30 @@ func (s *Session) handlePacket(raw []byte) error {
 		}
 	}
 
-	// Run suppressor
-	var cleanBuf bytes.Buffer
-	rawBytes := make([]byte, len(pcm)*2)
+	// Run suppressor — use pooled buffers to eliminate per-packet heap allocations.
+	cleanBuf := cleanBufPool.Get().(*bytes.Buffer)
+	cleanBuf.Reset()
+	defer cleanBufPool.Put(cleanBuf)
+
+	rawBufPtr := rtpScratchPool.Get().(*[]byte)
+	rawBytes := *rawBufPtr
+	need := len(pcm) * 2
+	if cap(rawBytes) < need {
+		rawBytes = make([]byte, need)
+	}
+	rawBytes = rawBytes[:need]
 	for i, v := range pcm {
 		rawBytes[2*i] = byte(v)
 		rawBytes[2*i+1] = byte(v >> 8)
 	}
-	if err := s.pipeline.ProcessFrames(rawBytes, &cleanBuf); err != nil {
+	if err := s.pipeline.ProcessFrames(rawBytes, cleanBuf); err != nil {
+		*rawBufPtr = rawBytes
+		rtpScratchPool.Put(rawBufPtr)
 		return fmt.Errorf("suppress: %w", err)
 	}
+	// Return rawBytes scratch to pool; cleanBuf is still needed below.
+	*rawBufPtr = rawBytes
+	rtpScratchPool.Put(rawBufPtr)
 
 	cleanPCM := bytesToInt16Slice(cleanBuf.Bytes())
 	if len(cleanPCM) > 0 {
@@ -552,6 +595,12 @@ func (s *Session) QualityReport() string {
 		rtp.LatencyAvgMs, s.jitter.JitterMs(), s.jitter.Depth(),
 		band, s.cfg.PayloadType, s.cfg.Codec, rttMs, pipe.String(),
 	)
+}
+
+// isBypassMode returns true when the pipeline is pure passthrough with no extra
+// stages — the session can then skip PCM decode/suppress/encode entirely.
+func (s *Session) isBypassMode() bool {
+	return s.pipeline.IsBypass()
 }
 
 func (s *Session) statsLoop(ctx context.Context) {
