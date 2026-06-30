@@ -682,3 +682,45 @@ func TestPassthroughBypassMode(t *testing.T) {
 	t.Logf("bypass: PacketsReceived=%d PacketsSent=%d forwarded_pkt_len=%d",
 		stats.PacketsReceived, stats.PacketsSent, n)
 }
+
+// BenchmarkHandlePacketPassthrough measures per-packet allocations in handlePacket
+// using a Passthrough suppressor. Run with -benchmem to see allocs/op.
+// Goal: near-zero heap allocations per packet after pool optimizations.
+func BenchmarkHandlePacketPassthrough(b *testing.B) {
+	sinkConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		b.Fatalf("bind sink: %v", err)
+	}
+	defer sinkConn.Close()
+
+	logger, _ := zap.NewProduction()
+	cfg := Config{
+		ListenAddr:  "127.0.0.1:0",
+		ForwardAddr: sinkConn.LocalAddr().String(),
+		PayloadType: 0, // PCMU
+		JitterDepth: 1,
+		Logger:      logger,
+		Suppressor:  model.NewPassthrough(),
+	}
+
+	sess, err := NewSession(cfg)
+	if err != nil {
+		b.Fatalf("NewSession: %v", err)
+	}
+	defer sess.conn.Close()
+
+	// Pre-build a valid PCMU RTP packet: 160 bytes of µ-law silence.
+	payload := make([]byte, 160)
+	for i := range payload {
+		payload[i] = 0xFF
+	}
+	pkt := buildRawRTPPacket(1, 0, 0xDEADBEEF, payload)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Each call goes through the jitter buffer (JitterDepth=1, so
+		// it may or may not pop on every push — acceptable for benchmarking).
+		_ = sess.handlePacket(pkt)
+	}
+}

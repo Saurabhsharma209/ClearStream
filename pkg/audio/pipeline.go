@@ -359,10 +359,12 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 		p.latencyEMA = p.latencyEMA*0.95 + elapsed*0.05
 		p.statsMu.Unlock()
 
-		// Write cleaned frame (uses pooled scratch buffer to reduce GC pressure).
+		// Write cleaned frame using a pooled byte buffer; release immediately after Write copies the data.
 		outBytes := int16ToBytes(outSamples)
-		if _, err := out.Write(outBytes); err != nil {
-			return fmt.Errorf("pipeline: write frame: %w", err)
+		_, writeErr := out.Write(outBytes)
+		releaseInt16Bytes(outBytes) // safe: Write (bytes.Buffer) has already copied the data
+		if writeErr != nil {
+			return fmt.Errorf("pipeline: write frame: %w", writeErr)
 		}
 	}
 
@@ -388,7 +390,9 @@ func (p *Pipeline) Flush(out io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("pipeline: flush suppress: %w", err)
 	}
-	_, err = out.Write(int16ToBytes(cleaned))
+	outBytes := int16ToBytes(cleaned)
+	_, err = out.Write(outBytes)
+	releaseInt16Bytes(outBytes)
 	return err
 }
 
@@ -480,13 +484,36 @@ func bytesToInt16(b []byte) []int16 {
 	return out
 }
 
+// int16ToBytes converts []int16 to little-endian []byte using a pooled buffer
+// when the output fits within FrameSizeBytes*4. The caller MUST call
+// releaseInt16Bytes(out) immediately after the data is consumed to return the
+// buffer to the pool. For oversized frames a fresh allocation is made.
 func int16ToBytes(s []int16) []byte {
-	out := make([]byte, len(s)*2)
+	need := len(s) * 2
+	if need <= FrameSizeBytes*4 {
+		ptr := framePool.Get().(*[]byte)
+		out := (*ptr)[:need]
+		for i, v := range s {
+			out[2*i] = byte(v)
+			out[2*i+1] = byte(v >> 8)
+		}
+		return out
+	}
+	out := make([]byte, need)
 	for i, v := range s {
 		out[2*i] = byte(v)
 		out[2*i+1] = byte(v >> 8)
 	}
 	return out
+}
+
+// releaseInt16Bytes returns a pooled byte slice obtained from int16ToBytes to framePool.
+// Safe to call on heap-allocated slices (cap > FrameSizeBytes*4): it is a no-op in that case.
+func releaseInt16Bytes(b []byte) {
+	if cap(b) <= FrameSizeBytes*4 {
+		buf := b[:cap(b)]
+		framePool.Put(&buf)
+	}
 }
 
 // DiarizationSegments returns all completed speaker segments if a Diarizer is configured.

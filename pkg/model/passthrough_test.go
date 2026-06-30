@@ -46,19 +46,28 @@ func TestPassthroughProcessBatchEmpty(t *testing.T) {
 	}
 }
 
-// TestPassthroughProcessIsolation verifies that mutating the output does not
-// affect the input (Process allocates a fresh slice).
-func TestPassthroughProcessIsolation(t *testing.T) {
+// TestPassthroughProcessZeroCopy verifies that Process returns the input slice directly
+// (zero-copy: no allocation, output aliases input).
+func TestPassthroughProcessZeroCopy(t *testing.T) {
 	p := NewPassthrough()
 	frame := []int16{1, 2, 3}
 	out, err := p.Process(frame)
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
-	// Mutate output; original must be unchanged.
+	// Zero-copy: output must have the same backing array as input.
+	if len(out) != len(frame) {
+		t.Fatalf("Process: got len %d, want %d", len(out), len(frame))
+	}
+	for i, v := range frame {
+		if out[i] != v {
+			t.Errorf("Process: out[%d] = %d, want %d", i, out[i], v)
+		}
+	}
+	// Confirm alias: mutating out[0] also mutates frame[0].
 	out[0] = 99
-	if frame[0] != 1 {
-		t.Errorf("Process mutated input: frame[0] = %d, want 1", frame[0])
+	if frame[0] != 99 {
+		t.Errorf("expected zero-copy alias: frame[0] = %d, want 99", frame[0])
 	}
 }
 
