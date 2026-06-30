@@ -119,4 +119,3 @@ func TestUpsampleMonotonicity(t *testing.T) {
 		t.Errorf("upsample3x overshoot: max abs %d exceeds allowed %d", maxAbs, maxAllowed)
 	}
 }
-

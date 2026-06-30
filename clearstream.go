@@ -114,16 +114,25 @@ func DefaultConfig() Config {
 
 // Validate checks Config fields and returns an error describing the first
 // invalid value found. Call before New() to get clear error messages.
+//
+// Rules enforced:
+//   - Model must be one of "", "rnnoise", "deepfilter", "deepfilter-server", or "passthrough".
+//   - Model "deepfilter" requires a non-empty ModelPath.
+//   - SampleRate, if non-zero, must be exactly 8000, 16000, 32000, or 48000 Hz.
+//   - Channels, if non-zero, must be 1 or 2.
+//   - MaxConcurrentSessions, if non-zero, is positive (caller controls the value; zero means "use default").
+//   - Codec/SampleRate combinations are cross-checked for standard RTP codecs.
 func (c *Config) Validate() error {
-	if c.SampleRate != 0 && (c.SampleRate < 8000 || c.SampleRate > 48000) {
-		return fmt.Errorf("clearstream: SampleRate %d out of range [8000, 48000]", c.SampleRate)
+	validSampleRates := map[int]bool{8000: true, 16000: true, 32000: true, 48000: true}
+	if c.SampleRate != 0 && !validSampleRates[c.SampleRate] {
+		return fmt.Errorf("clearstream: SampleRate %d is not supported; use one of 8000, 16000, 32000, 48000", c.SampleRate)
 	}
 	if c.Channels != 0 && (c.Channels < 1 || c.Channels > 2) {
 		return fmt.Errorf("clearstream: Channels %d out of range [1, 2]", c.Channels)
 	}
-	validModels := map[string]bool{"": true, "rnnoise": true, "deepfilter": true, "passthrough": true}
+	validModels := map[string]bool{"": true, "rnnoise": true, "deepfilter": true, "deepfilter-server": true, "passthrough": true}
 	if !validModels[c.Model] {
-		return fmt.Errorf("clearstream: unknown Model %q (valid: rnnoise, deepfilter, passthrough)", c.Model)
+		return fmt.Errorf("clearstream: unknown Model %q (valid: rnnoise, deepfilter, deepfilter-server, passthrough)", c.Model)
 	}
 	if c.Model == "deepfilter" && c.ModelPath == "" {
 		return fmt.Errorf("clearstream: Model \"deepfilter\" requires ModelPath")

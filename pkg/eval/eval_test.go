@@ -303,8 +303,8 @@ func TestTuneFromBatchSummary_HighSNR(t *testing.T) {
 // when P95 latency exceeds 8ms.
 func TestTuneFromBatchSummary_HighLatency(t *testing.T) {
 	s := makeSummary()
-	s.AvgSNRImprovementDB = 1.0  // low SNR → would push to 3
-	s.AvgLatencyP95Ms = 10.0     // high latency → back off 1
+	s.AvgSNRImprovementDB = 1.0 // low SNR → would push to 3
+	s.AvgLatencyP95Ms = 10.0    // high latency → back off 1
 	cfg := TuneFromBatchSummary(s)
 	// Started at 3 (low SNR), backed off to 2 (high latency).
 	if cfg.SuppressorAggressiveness != 2 {

@@ -25,7 +25,7 @@ const (
 	PlatformKamailio   Platform = "kamailio"  // usually paired with RTPEngine
 	PlatformRTPEngine  Platform = "rtpengine" // Sipwise rtpengine standalone
 	PlatformJanus      Platform = "janus"     // Meetecho Janus WebRTC gateway
-	PlatformVSIP     Platform = "vsip"      // cloud telephony vSIP / media gateway
+	PlatformVSIP       Platform = "vsip"      // cloud telephony vSIP / media gateway
 	PlatformGenericWSS Platform = "wss"       // any WSS media server
 	PlatformGenericRTP Platform = "rtp"       // raw RTP (no SIP signalling)
 )

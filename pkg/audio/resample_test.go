@@ -294,7 +294,6 @@ func TestKaiserFIRMinSNR(t *testing.T) {
 	}
 }
 
-
 // TestLinearResampleSNR verifies that the Kaiser-windowed sinc linearResample
 // achieves >30 dB SNR for telephony rate conversions (11025->16000, 22050->16000).
 // The old linear-interpolation fallback typically achieved only 15-20 dB.
@@ -343,6 +342,7 @@ func TestLinearResampleSNR(t *testing.T) {
 		}
 	}
 }
+
 // ── helpers used by Day-21 tests ─────────────────────────────────────────────
 
 // resampleNopWriter is a package-unique name to avoid conflict with diarize_test.go's nopWriter.

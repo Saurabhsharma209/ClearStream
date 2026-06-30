@@ -62,12 +62,12 @@ type TranscriptResult struct {
 
 // DenoiserSummary aggregates per-conversation results into per-denoiser averages.
 type DenoiserSummary struct {
-	Denoiser    string  `json:"denoiser"`
-	N           int     `json:"n"`
-	AvgChar     float64 `json:"avg_char_pct"`
-	AvgWord     float64 `json:"avg_word_pct"`
-	AvgLLM      float64 `json:"avg_llm_score"`
-	Skipped     int     `json:"skipped"`
+	Denoiser string  `json:"denoiser"`
+	N        int     `json:"n"`
+	AvgChar  float64 `json:"avg_char_pct"`
+	AvgWord  float64 `json:"avg_word_pct"`
+	AvgLLM   float64 `json:"avg_llm_score"`
+	Skipped  int     `json:"skipped"`
 }
 
 // ─── VAD + WER per-file schema ────────────────────────────────────────────────
@@ -79,22 +79,22 @@ type DenoiserSummary struct {
 // vad_starts, vad_stops, first_vad_start, last_vad_stop,
 // delta_vad_start, delta_vad_end, wer
 type VADEvalRow struct {
-	Filename         string  `json:"filename"`
-	Language         string  `json:"language"`
-	GTTranscript     string  `json:"gt_transcript"`
-	OriginalDuration float64 `json:"original_duration_s"`
-	SpeechStartTime  float64 `json:"speech_start_time_s"`
-	SpeechEndTime    float64 `json:"speech_end_time_s"`
-	NoiseType        string  `json:"noise_type"`
-	SNRLevel         float64 `json:"snr_level_db"`
-	STTTranscript    string  `json:"stt_transcript"`
+	Filename         string    `json:"filename"`
+	Language         string    `json:"language"`
+	GTTranscript     string    `json:"gt_transcript"`
+	OriginalDuration float64   `json:"original_duration_s"`
+	SpeechStartTime  float64   `json:"speech_start_time_s"`
+	SpeechEndTime    float64   `json:"speech_end_time_s"`
+	NoiseType        string    `json:"noise_type"`
+	SNRLevel         float64   `json:"snr_level_db"`
+	STTTranscript    string    `json:"stt_transcript"`
 	VADStarts        []float64 `json:"vad_starts"`
 	VADStops         []float64 `json:"vad_stops"`
-	FirstVADStart    float64 `json:"first_vad_start_s"`
-	LastVADStop      float64 `json:"last_vad_stop_s"`
-	DeltaVADStart    float64 `json:"delta_vad_start_s"` // first_vad_start - speech_start_time
-	DeltaVADEnd      float64 `json:"delta_vad_end_s"`   // last_vad_stop - speech_end_time
-	WER              float64 `json:"wer"`
+	FirstVADStart    float64   `json:"first_vad_start_s"`
+	LastVADStop      float64   `json:"last_vad_stop_s"`
+	DeltaVADStart    float64   `json:"delta_vad_start_s"` // first_vad_start - speech_start_time
+	DeltaVADEnd      float64   `json:"delta_vad_end_s"`   // last_vad_stop - speech_end_time
+	WER              float64   `json:"wer"`
 }
 
 // DenoiserAggRow matches: file, denoiser, tt_model, n_total, n_vad_fired,

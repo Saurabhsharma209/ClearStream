@@ -497,3 +497,111 @@ func TestSSRCChangeResetsPipeline(t *testing.T) {
 
 	t.Logf("TestSSRCChangeResetsPipeline: SSRC %d to %d triggered %d reset(s)", ssrc1, ssrc2, resetCalled)
 }
+
+// TestRTTMsNoData verifies that RTTMs returns -1 when no RTCP SR has been received
+// (the zero-value branch: lastSRAt.IsZero()).
+func TestRTTMsNoData(t *testing.T) {
+	sinkConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("bind sink: %v", err)
+	}
+	defer sinkConn.Close()
+
+	logger, _ := zap.NewDevelopment()
+	cfg := Config{
+		ListenAddr:  "127.0.0.1:0",
+		ForwardAddr: sinkConn.LocalAddr().String(),
+		PayloadType: 0,
+		Logger:      logger,
+		Suppressor:  model.NewMockSuppressor(),
+	}
+	sess, err := NewSession(cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.conn.Close()
+
+	// No RTCP SR has been received, so LastSRReceivedAt is zero.
+	got := sess.RTTMs()
+	if got != -1 {
+		t.Errorf("RTTMs() with no SR: want -1, got %.2f", got)
+	}
+}
+
+// TestRTTMsWithData verifies that RTTMs returns a non-negative value when
+// LastSRReceivedAt and DelaySinceLastSR are both set (the happy-path branch).
+func TestRTTMsWithData(t *testing.T) {
+	sinkConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("bind sink: %v", err)
+	}
+	defer sinkConn.Close()
+
+	logger, _ := zap.NewDevelopment()
+	cfg := Config{
+		ListenAddr:  "127.0.0.1:0",
+		ForwardAddr: sinkConn.LocalAddr().String(),
+		PayloadType: 0,
+		Logger:      logger,
+		Suppressor:  model.NewMockSuppressor(),
+	}
+	sess, err := NewSession(cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.conn.Close()
+
+	// Inject an SR received 100ms ago with DLSR = 0 (triggers the dlsr==0 guard).
+	sess.mu.Lock()
+	sess.LastSRReceivedAt = time.Now().Add(-100 * time.Millisecond)
+	sess.RTCPStats.DelaySinceLastSR = 0
+	sess.mu.Unlock()
+
+	got := sess.RTTMs()
+	if got != -1 {
+		t.Errorf("RTTMs() with SR set but DLSR=0: want -1, got %.2f", got)
+	}
+
+	// Now set a non-zero DLSR (1 second in 1/65536 units = 65536).
+	// elapsed ≈ 100ms, dlsr = 1s → rtt would be negative → clamped to 0.
+	sess.mu.Lock()
+	sess.LastSRReceivedAt = time.Now().Add(-100 * time.Millisecond)
+	sess.RTCPStats.DelaySinceLastSR = 6554 // ~0.1s in 1/65536 units
+	sess.mu.Unlock()
+
+	got = sess.RTTMs()
+	// elapsed ~100ms minus dlsr ~100ms → ~0ms. Accept any non-negative value.
+	if got < 0 {
+		t.Errorf("RTTMs() with valid SR+DLSR: want >= 0, got %.2f", got)
+	}
+	t.Logf("RTTMs() = %.2f ms", got)
+}
+
+// TestHandlePacketTooShort verifies that handlePacket returns an error for
+// packets shorter than the 12-byte RTP minimum header.
+func TestHandlePacketTooShort(t *testing.T) {
+	sinkConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("bind sink: %v", err)
+	}
+	defer sinkConn.Close()
+
+	logger, _ := zap.NewDevelopment()
+	cfg := Config{
+		ListenAddr:  "127.0.0.1:0",
+		ForwardAddr: sinkConn.LocalAddr().String(),
+		PayloadType: 0,
+		Logger:      logger,
+		Suppressor:  model.NewMockSuppressor(),
+	}
+	sess, err := NewSession(cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.conn.Close()
+
+	err = sess.handlePacket([]byte{0x80, 0x00, 0x01})
+	if err == nil {
+		t.Error("expected error for short packet, got nil")
+	}
+}

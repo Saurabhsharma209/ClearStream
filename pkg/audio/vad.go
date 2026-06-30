@@ -124,8 +124,8 @@ func DefaultAdaptiveVAD() *AdaptiveVAD {
 			HangoverFrames: 8,
 		},
 		CalibrationFrames: 50,
-		SensitivityFactor: 4.5,  // CS-012: was 3.0, raised to 4.5
-		MinSpeechMargin:   1.5,  // CS-012: always process if 1.5× above noise floor
+		SensitivityFactor: 4.5, // CS-012: was 3.0, raised to 4.5
+		MinSpeechMargin:   1.5, // CS-012: always process if 1.5× above noise floor
 	}
 }
 

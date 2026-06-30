@@ -30,7 +30,7 @@ func TestValidateSampleRateTooHigh(t *testing.T) {
 }
 
 func TestValidateSampleRateValid(t *testing.T) {
-	validRates := []int{8000, 16000, 44100, 48000}
+	validRates := []int{8000, 16000, 32000, 48000}
 	for _, rate := range validRates {
 		cfg := clearstream.DefaultConfig()
 		cfg.SampleRate = rate
@@ -102,5 +102,22 @@ func TestPoolSizeCustom(t *testing.T) {
 	defer cs.Close()
 	if got := cs.PoolSize(); got != 8 {
 		t.Errorf("PoolSize() = %d, want 8", got)
+	}
+}
+
+func TestValidateDeepFilterServerNoPath(t *testing.T) {
+	cfg := clearstream.DefaultConfig()
+	cfg.Model = "deepfilter-server"
+	// deepfilter-server does not require a local ModelPath (it calls a remote server)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("deepfilter-server with no ModelPath should pass Validate(), got: %v", err)
+	}
+}
+
+func TestValidateInvalidSampleRate44100(t *testing.T) {
+	cfg := clearstream.DefaultConfig()
+	cfg.SampleRate = 44100
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for SampleRate=44100 (not in {8000,16000,32000,48000}), got nil")
 	}
 }

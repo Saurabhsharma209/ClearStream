@@ -909,8 +909,14 @@ func TestRTPLoopbackPCMA(t *testing.T) {
 		buf[1] = 0x08 // PT=8 PCMA
 		buf[2] = byte(i >> 8)
 		buf[3] = byte(i)
-		buf[4] = 0; buf[5] = 0; buf[6] = byte(i * 160 >> 8); buf[7] = byte(i * 160)
-		buf[8] = 0xDE; buf[9] = 0xAD; buf[10] = 0xBE; buf[11] = 0xEF
+		buf[4] = 0
+		buf[5] = 0
+		buf[6] = byte(i * 160 >> 8)
+		buf[7] = byte(i * 160)
+		buf[8] = 0xDE
+		buf[9] = 0xAD
+		buf[10] = 0xBE
+		buf[11] = 0xEF
 		copy(buf[12:], payload)
 		sender.Write(buf)
 		time.Sleep(10 * time.Millisecond)

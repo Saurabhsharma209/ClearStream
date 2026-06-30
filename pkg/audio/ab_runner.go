@@ -86,8 +86,8 @@ type ABSummary struct {
 // ABRunner compares two Suppressors frame-by-frame on the same raw audio.
 // It does NOT produce audio output — it measures and reports quality deltas.
 type ABRunner struct {
-	A, B   model.Suppressor
-	cfg    ABConfig
+	A, B model.Suppressor
+	cfg  ABConfig
 }
 
 // NewABRunner creates an ABRunner comparing suppressors A and B.

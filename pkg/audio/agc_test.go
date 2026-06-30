@@ -27,8 +27,8 @@ func TestAGCDefaultConfig(t *testing.T) {
 // near the soft-limit threshold should be rounded rather than brick-walled.
 func TestAGCSoftLimiterNeverClips(t *testing.T) {
 	cfg := DefaultAGCConfig()
-	cfg.MaxGain = 100.0         // force extreme gain
-	cfg.TargetRMS = 32000       // push toward full scale
+	cfg.MaxGain = 100.0            // force extreme gain
+	cfg.TargetRMS = 32000          // push toward full scale
 	cfg.SoftLimitThreshold = 20000 // limiter kicks in at ~-4 dBFS
 	cfg.SampleRate = 16000
 	agc := NewAGC(cfg)
@@ -453,8 +453,8 @@ func (g *gainSuppressor) Name() string { return "gainSuppressor" }
 // effectively complete by frame 120 (~1.2 s of audio).
 func TestASRConfigNoClipping(t *testing.T) {
 	const (
-		peakLimit       = int16(23197) // -3 dBFS
-		convergenceFrame = 150         // frames needed for 300 ms release to settle
+		peakLimit        = int16(23197) // -3 dBFS
+		convergenceFrame = 150          // frames needed for 300 ms release to settle
 	)
 
 	cfg := ASRConfig()

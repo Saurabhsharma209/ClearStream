@@ -149,13 +149,13 @@ func NewAdaptiveNoiseReducer() *AdaptiveNoiseReducer {
 	r := &AdaptiveNoiseReducer{
 		AlphaG:          0.96,
 		AlphaP:          0.94,
-		OversubFactor:   0.65,  // AQ-001: was 0.85
+		OversubFactor:   0.65, // AQ-001: was 0.85
 		SpeechThresh:    280,
-		MinGainSpeech:   0.70,  // AQ-001: was 0.55
-		MinGainNoise:    0.15,  // AQ-001: was 0.08
-		HangoverFrames:  16,    // AQ-003: was 12
+		MinGainSpeech:   0.70, // AQ-001: was 0.55
+		MinGainNoise:    0.15, // AQ-001: was 0.08
+		HangoverFrames:  16,   // AQ-003: was 12
 		GateAttenuation: 0.08,
-		MaxGainDelta:    0.15,  // AQ-002: new — clamps gain steps
+		MaxGainDelta:    0.15, // AQ-002: new — clamps gain steps
 		NoiseEMACoeff:   0.997,
 	}
 	// Initialise per-band gain to 1.0 (pass-through) — avoids a silent
