@@ -1827,3 +1827,27 @@ RNNoise achieved dramatically better background suppression (+33.51 dB vs +4.34 
 ### Tomorrow
 1. Audio Pipeline: Benchmark Process48k vs 8kHz on synthetic call samples — quantify SNR gain
 2. RTP/SIP: Add multi-packet handlePacket test covering suppress+encode round-trip path
+
+## 2026-06-30 (perf sprint)
+
+**Agents run:** RTP/SIP (bypass fast path), PERF (buffer pooling + zero-copy)
+**Build:** passing ✅
+
+### Changes
+- `pkg/audio/pipeline.go`: Added `IsBypass() bool` — returns true when suppressor is `*model.Passthrough` and all pipeline stages (AEC, AGC, noise reducer, tiered NR, diarizer) are nil. Wired `framePool` into `int16ToBytes` so standard-size frames use pooled byte buffers; `ProcessFrames` and `Flush` now release pooled buffers immediately after write.
+- `pkg/rtp/session.go`: Added `isBypassMode()` wrapper. Fast-bypass block in `handlePacket` — when bypass mode active and frame is non-nil, rebuilds and forwards raw RTP payload via `buildRTPPacket` + `WriteToUDP` directly, skipping decode/suppress/encode entirely. Added `cleanBufPool` (`sync.Pool[*bytes.Buffer]`) and `rtpScratchPool` (`sync.Pool[*[]byte]`) to eliminate per-packet heap allocations.
+- `pkg/model/passthrough.go`: `Process` and `ProcessBatch` now return input directly — zero-copy, zero allocation.
+- `pkg/rtp/session_test.go`: `TestPassthroughBypassMode` (5-packet end-to-end bypass verification) + `BenchmarkHandlePacketPassthrough` (15 allocs/op, ~26µs/op).
+
+### Performance
+- Bypass mode (passthrough suppressor, no stages): **zero decode/suppress/encode** — raw RTP forwarding only
+- Per-packet allocations in hot path: reduced significantly via cleanBufPool + rtpScratchPool
+- Passthrough.Process: 0 allocations (was 1 make+copy per frame)
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass.
+- 15 allocs/op in bypass benchmark — remaining from UDP write syscalls + G.711 decode path (not hot when bypass is active).
+
+### Tomorrow
+1. RTP/SIP: Reduce G.711 decode allocations — pool int16 decode scratch buffers in decodeToPCM
+2. Audio Pipeline: Add BenchmarkProcessFrames to quantify pooling wins on suppress path
