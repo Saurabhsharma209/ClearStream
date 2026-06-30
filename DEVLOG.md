@@ -1851,3 +1851,27 @@ RNNoise achieved dramatically better background suppression (+33.51 dB vs +4.34 
 ### Tomorrow
 1. RTP/SIP: Reduce G.711 decode allocations — pool int16 decode scratch buffers in decodeToPCM
 2. Audio Pipeline: Add BenchmarkProcessFrames to quantify pooling wins on suppress path
+
+## 2026-06-30 (perf sprint 2)
+
+**Agents run:** PERF (G.711 codec buffer pooling)
+**Build:** passing ✅
+
+### Changes
+- `pkg/rtp/session.go`: Added `g711PCMPool` and `g711BytePool` (`sync.Pool`, 160-element pre-allocated slices matching G.711 20ms frame). Added `getG711PCM/putG711PCM` and `getG711Bytes/putG711Bytes` helpers. Updated `decodeG711U`, `decodeG711A`, `encodeG711U`, `encodeG711A` to use pools instead of `make()`. Added `bytesToInt16SlicePooled` for the cleanBuf→cleanPCM path. `handlePacket` now returns each pooled slice to the pool as soon as the next stage no longer needs it — verified `buildRTPPacket` copies its payload before outPayload is pooled.
+- `pkg/rtp/session_test.go`: Added `BenchmarkHandlePacketSuppressor` (full suppress path with MockSuppressor, `b.ReportAllocs()`).
+
+### Benchmark (allocs/op, 3-run steady state)
+| Path | B/op | allocs/op | ns/op |
+|------|------|-----------|-------|
+| Bypass (passthrough, no stages) | 2390 | 15 | ~25µs |
+| Active suppress (MockSuppressor) | 3032 | 17 | ~25µs |
+
+Remaining allocations are jitter buffer, UDP packet construction, zap logger internals — not codec functions.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass.
+
+### Tomorrow
+1. Investigate remaining 15-17 allocs/op — profile jitter buffer and UDP write path for further pooling opportunities
+2. Add `BenchmarkProcessFrames` to pkg/audio to measure pipeline suppress-path allocations
