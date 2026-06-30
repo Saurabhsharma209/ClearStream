@@ -724,3 +724,41 @@ func BenchmarkHandlePacketPassthrough(b *testing.B) {
 		_ = sess.handlePacket(pkt)
 	}
 }
+
+// BenchmarkHandlePacketSuppressor measures per-packet allocations in handlePacket
+// using a real model.NewPassthrough() suppressor through the full suppress path (non-bypass).
+// Compare allocs/op before and after pool optimizations.
+// Run with: go test ./pkg/rtp/... -run='^$' -bench=BenchmarkHandlePacket -benchmem -count=3
+func BenchmarkHandlePacketSuppressor(b *testing.B) {
+	sinkConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		b.Fatalf("bind sink: %v", err)
+	}
+	defer sinkConn.Close()
+	logger, _ := zap.NewProduction()
+	// Use MockSuppressor to exercise the full suppress path (not bypass mode).
+	cfg := Config{
+		ListenAddr:  "127.0.0.1:0",
+		ForwardAddr: sinkConn.LocalAddr().String(),
+		PayloadType: 0, // PCMU
+		JitterDepth: 1,
+		Logger:      logger,
+		Suppressor:  model.NewMockSuppressor(),
+	}
+	sess, err := NewSession(cfg)
+	if err != nil {
+		b.Fatalf("NewSession: %v", err)
+	}
+	defer sess.conn.Close()
+	// Pre-build a valid PCMU RTP packet: 160 bytes of µ-law silence.
+	payload := make([]byte, 160)
+	for i := range payload {
+		payload[i] = 0xFF
+	}
+	pkt := buildRawRTPPacket(1, 0, 0xDEADBEEF, payload)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = sess.handlePacket(pkt)
+	}
+}

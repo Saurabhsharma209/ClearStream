@@ -43,6 +43,42 @@ var rtpScratchPool = sync.Pool{New: func() interface{} {
 	return &b
 }}
 
+// g711PCMPool pools []int16 decode scratch buffers (160 samples = 20ms G.711 @ 8kHz).
+// Callers MUST call putG711PCM(s) when done with the slice.
+var g711PCMPool = sync.Pool{
+	New: func() interface{} { s := make([]int16, 160); return &s },
+}
+
+// g711BytePool pools []byte encode scratch buffers (160 bytes = 20ms G.711 @ 8kHz).
+// Callers MUST call putG711Bytes(b) when done with the slice.
+var g711BytePool = sync.Pool{
+	New: func() interface{} { b := make([]byte, 160); return &b },
+}
+
+func getG711PCM(n int) []int16 {
+	sp := g711PCMPool.Get().(*[]int16)
+	s := *sp
+	if cap(s) < n {
+		s = make([]int16, n)
+	} else {
+		s = s[:n]
+	}
+	return s
+}
+func putG711PCM(s []int16) { sp := &s; g711PCMPool.Put(sp) }
+
+func getG711Bytes(n int) []byte {
+	bp := g711BytePool.Get().(*[]byte)
+	b := *bp
+	if cap(b) < n {
+		b = make([]byte, n)
+	} else {
+		b = b[:n]
+	}
+	return b
+}
+func putG711Bytes(b []byte) { bp := &b; g711BytePool.Put(bp) }
+
 // resolvePayloadType fills in Codec and SampleRate from PayloadType if not set.
 func resolvePayloadType(cfg *Config) {
 	if info, ok := rtpPayloadInfo[cfg.PayloadType]; ok {
@@ -362,6 +398,7 @@ func (s *Session) handlePacket(raw []byte) error {
 	}
 
 	var pcm []int16
+	var pcmPooled bool // true when pcm came from g711PCMPool and must be returned
 
 	if frame == nil {
 		// Packet loss — fade-to-silence PLC (0.9x decay per consecutive loss)
@@ -375,6 +412,8 @@ func (s *Session) handlePacket(raw []byte) error {
 		if err != nil {
 			return fmt.Errorf("decode payload: %w", err)
 		}
+		// decodeToPCM returns a pooled slice for G.711 codecs.
+		pcmPooled = isG711PayloadType(header.PayloadType, s.cfg.Codec)
 	}
 
 	// Run suppressor — use pooled buffers to eliminate per-packet heap allocations.
@@ -393,6 +432,11 @@ func (s *Session) handlePacket(raw []byte) error {
 		rawBytes[2*i] = byte(v)
 		rawBytes[2*i+1] = byte(v >> 8)
 	}
+	// pcm has been consumed into rawBytes -- return it to pool if it came from there.
+	if pcmPooled {
+		putG711PCM(pcm)
+		pcm = nil
+	}
 	if err := s.pipeline.ProcessFrames(rawBytes, cleanBuf); err != nil {
 		*rawBufPtr = rawBytes
 		rtpScratchPool.Put(rawBufPtr)
@@ -402,19 +446,26 @@ func (s *Session) handlePacket(raw []byte) error {
 	*rawBufPtr = rawBytes
 	rtpScratchPool.Put(rawBufPtr)
 
-	cleanPCM := bytesToInt16Slice(cleanBuf.Bytes())
+	// Use pooled slice for cleanPCM -- it is only needed until encodeFromPCM returns.
+	cleanPCM := bytesToInt16SlicePooled(cleanBuf.Bytes())
 	if len(cleanPCM) > 0 {
 		s.jitter.onGoodPacket(cleanPCM)
 	}
 
 	// Re-encode to original codec
 	outPayload, err := s.encodeFromPCM(cleanPCM, header.PayloadType)
+	// cleanPCM is no longer needed after encoding.
+	putG711PCM(cleanPCM)
 	if err != nil {
 		return fmt.Errorf("encode: %w", err)
 	}
 
-	// Rebuild and forward RTP packet to primary destination and all fork addresses.
+	// buildRTPPacket copies outPayload into a new buffer -- safe to pool outPayload after.
 	outRaw := buildRTPPacket(header, outPayload)
+	// Return outPayload to pool if it came from g711BytePool (G.711 codecs).
+	if isG711PayloadType(header.PayloadType, s.cfg.Codec) {
+		putG711Bytes(outPayload)
+	}
 	if _, err := s.conn.WriteToUDP(outRaw, s.fwdAddr); err != nil {
 		return fmt.Errorf("forward: %w", err)
 	}
@@ -701,9 +752,19 @@ func payloadTypeToCodec(pt uint8) audio.Codec {
 	}
 }
 
+// isG711PayloadType reports whether the payload type (or configured codec) is
+// a G.711 variant (mu-law or A-law) -- the only codecs that use the pool helpers.
+func isG711PayloadType(pt uint8, cfgCodec audio.Codec) bool {
+	c := cfgCodec
+	if c == audio.CodecUnknown || c == "" {
+		c = payloadTypeToCodec(pt)
+	}
+	return c == audio.CodecG711U || c == audio.CodecG711A
+}
+
 // G.711 µ-law (PCMU) decoder — RFC 3551
 func decodeG711U(payload []byte) []int16 {
-	out := make([]int16, len(payload))
+	out := getG711PCM(len(payload))
 	for i, b := range payload {
 		out[i] = ulawToLinear(b)
 	}
@@ -722,7 +783,7 @@ func ulawToLinear(ulaw byte) int16 {
 
 // G.711 A-law (PCMA) decoder — RFC 3551
 func decodeG711A(payload []byte) []int16 {
-	out := make([]int16, len(payload))
+	out := getG711PCM(len(payload))
 	for i, b := range payload {
 		out[i] = alawToLinear(b)
 	}
@@ -749,7 +810,7 @@ func alawToLinear(alaw byte) int16 {
 
 // G.711 µ-law encoder
 func encodeG711U(pcm []int16) []byte {
-	out := make([]byte, len(pcm))
+	out := getG711Bytes(len(pcm))
 	for i, s := range pcm {
 		out[i] = linearToUlaw(s)
 	}
@@ -792,7 +853,7 @@ func linearToUlaw(sample int16) byte {
 
 // G.711 A-law encoder
 func encodeG711A(pcm []int16) []byte {
-	out := make([]byte, len(pcm))
+	out := getG711Bytes(len(pcm))
 	for i, s := range pcm {
 		out[i] = linearToAlaw(s)
 	}
@@ -897,6 +958,17 @@ func encodeViaFFmpeg(ffmpegPath string, pcm []int16, codec audio.Codec, sampleRa
 func bytesToInt16Slice(b []byte) []int16 {
 	n := len(b) / 2
 	out := make([]int16, n)
+	for i := range out {
+		out[i] = int16(b[2*i]) | int16(b[2*i+1])<<8
+	}
+	return out
+}
+
+// bytesToInt16SlicePooled is like bytesToInt16Slice but returns a pooled slice.
+// The caller MUST call putG711PCM(out) when done with the slice.
+func bytesToInt16SlicePooled(b []byte) []int16 {
+	n := len(b) / 2
+	out := getG711PCM(n)
 	for i := range out {
 		out[i] = int16(b[2*i]) | int16(b[2*i+1])<<8
 	}
