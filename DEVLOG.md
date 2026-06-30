@@ -1809,3 +1809,21 @@ RNNoise achieved dramatically better background suppression (+33.51 dB vs +4.34 
 ### Tomorrow
 1. Audio Pipeline: Benchmark Process48k vs 8kHz path on real call samples to quantify SNR improvement
 2. RTP/SIP: Add session_test.go with loopback UDP test (end-to-end packet path validation)
+
+## 2026-06-30
+
+**Agents run:** RTP/SIP, API Layer
+**Build:** passing ✅
+
+### Changes
+- `pkg/rtp/session_test.go`: 3 new tests — `TestRTTMsNoData` (covers -1 return when no SR received), `TestRTTMsWithData` (covers dlsr==0 guard and happy path), `TestHandlePacketTooShort` (covers early-exit on packets <12 bytes). pkg/rtp coverage: 88.3% → 89.2%.
+- `clearstream.go`: Added `Config.Validate()` method — validates Model allowlist (rnnoise/deepfilter/deepfilter-server/passthrough), requires ModelPath when Model=="deepfilter", enforces SampleRate allowlist {8000,16000,32000,48000}, validates Channels (0,1,2 only), cross-checks codec/samplerate pairs. Wired into `New()`. Complete Go doc comments added to all exported symbols.
+- `clearstream_validate_test.go`: 28 tests covering all Validate() branches including deepfilter-server (no ModelPath required), 44100 sample rate rejection, cross-codec checks.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass.
+- pkg/rtp handlePacket still at ~80% — deeper paths require multi-packet sequence flow.
+
+### Tomorrow
+1. Audio Pipeline: Benchmark Process48k vs 8kHz on synthetic call samples — quantify SNR gain
+2. RTP/SIP: Add multi-packet handlePacket test covering suppress+encode round-trip path
