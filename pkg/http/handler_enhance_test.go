@@ -48,7 +48,7 @@ func makeFakeFFmpeg(t *testing.T) string {
 	}
 	dir := t.TempDir()
 	script := "#!/bin/sh\n" +
-		"LAST=\"${@: -1}\"\n" +
+		"for a in \"$@\"; do LAST=\"$a\"; done\n" +
 		"if [ \"$LAST\" = \"-\" ]; then\n" +
 		"    dd if=/dev/zero bs=320 count=1 2>/dev/null\n" +
 		"else\n" +

@@ -63,7 +63,7 @@ func makeFakeFFmpegForFile(t *testing.T) (ffmpegPath string) {
 		"    ;;\n" +
 		"esac\n" +
 		// Detect decode phase: last argument is "-" (pipe to stdout).
-		"LAST=\"${@: -1}\"\n" +
+		"for a in \"$@\"; do LAST=\"$a\"; done\n" +
 		"if [ \"$LAST\" = \"-\" ]; then\n" +
 		"    dd if=/dev/zero bs=320 count=1 2>/dev/null\n" +
 		"    exit 0\n" +
