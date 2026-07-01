@@ -1875,3 +1875,20 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 ### Tomorrow
 1. Investigate remaining 15-17 allocs/op — profile jitter buffer and UDP write path for further pooling opportunities
 2. Add `BenchmarkProcessFrames` to pkg/audio to measure pipeline suppress-path allocations
+
+## 2026-07-01
+
+**Agents run:** QA/Testing (pkg/file + pkg/http), Audio Pipeline (pkg/audio benchmarks)
+**Build:** passing ✅
+
+### Changes
+- `pkg/file/processor_withffmpeg_test.go`, `pkg/http/handler_enhance_test.go`: Fixed a real portability bug in the fake ffmpeg/ffprobe test harness — scripts declared `#!/bin/sh` but used the bash-only `${@: -1}` array-slice syntax. On dash-based `/bin/sh` (default on Ubuntu/Debian, including standard GitHub Actions runners) this throws `Bad substitution`, failing `TestProcessWithOptionsFakeFFmpeg*` and the pkg/http enhance-handler ffmpeg tests. Replaced with a POSIX `for a in "$@"; do LAST="$a"; done` loop. Confirmed the failure reproduces on Ubuntu 22.04/dash and the fix passes there and on macOS/bash.
+- `pkg/audio/pipeline_bench_test.go`: New file. 4 benchmarks (`BenchmarkProcessFramesBypass`, `BenchmarkProcessFramesSuppress`, `BenchmarkProcessFramesVADSilence`, `BenchmarkProcessFramesMultiFrame`) quantifying ProcessFrames allocations — carried over from 06-30's "Tomorrow" priority. Baseline (darwin/amd64): bypass 356 B/op 2 allocs/op, active suppress 678 B/op 3 allocs/op, VAD silence 356 B/op 2 allocs/op, 50-frame batch 49622 B/op 151 allocs/op.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass.
+- Remaining 15-17 allocs/op in RTP bypass/suppress benchmarks (jitter buffer payload copies, UDP write path) not yet pooled — jitter.Push() payload copy is long-lived (buffered across reorder/PLC window) so pooling needs explicit release-on-evict wiring, deferred pending a focused pass.
+
+### Tomorrow
+1. RTP/SIP: Pool jitter buffer payload copies (jitter.go Push()) with explicit release on evict/pop — targets the remaining 15-17 allocs/op noted in the 06-30 perf sprints.
+2. AI Model: Add BenchmarkRNNoise-style coverage for the onnx-tagged deepFilterSuppressor lifecycle (create/process/reset/close) to match the existing mock-session unit test.
