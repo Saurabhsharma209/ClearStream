@@ -1892,3 +1892,22 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 ### Tomorrow
 1. RTP/SIP: Pool jitter buffer payload copies (jitter.go Push()) with explicit release on evict/pop — targets the remaining 15-17 allocs/op noted in the 06-30 perf sprints.
 2. AI Model: Add BenchmarkRNNoise-style coverage for the onnx-tagged deepFilterSuppressor lifecycle (create/process/reset/close) to match the existing mock-session unit test.
+
+## 2026-07-02
+
+**Agents run:** RTP/SIP (jitter buffer pooling), AI Model (deepfilter ONNX benchmarks + build fix)
+**Build:** passing ✅ (both default and `-tags onnx`)
+
+### Changes
+- `pkg/rtp/jitter.go`, `pkg/rtp/session.go`: Added `jitterPayloadPool` (`sync.Pool`, matching the existing `g711PCMPool`/`g711BytePool` style) so `Push()` pulls payload-copy buffers from the pool instead of `make()`-ing fresh per packet. New exported `ReleasePayload()` lets callers return a `Pop()`'d payload to the pool; wired into both `handlePacket` consumers (bypass path and normal decode path) plus internal tail-drop/`Reset()` discard points. `pkg/rtp/jitter_pool_test.go` (new): 5 correctness/race tests + 2 benchmarks. Measured: 277 B/op → 141 B/op on the realistic Push→Pop→Release path once the pool warms up.
+- `pkg/model/deepfilter.go`, `pkg/model/rnnoise_onnx.go`: Fixed a pre-existing build break under `-tags onnx` — code called `session.Run([]ort.ArbitraryTensor{...})` expecting `(outputs, error)`, but the pinned `onnxruntime_go v1.10.0` API is `Run(inputs, outputs []ArbitraryTensor) error` requiring pre-allocated output tensors. Fixed both call sites with `ort.NewEmptyTensor[float32]`.
+- `pkg/model/deepfilter_onnx_bench_test.go` (new, `//go:build onnx`): `BenchmarkDeepFilterSuppressorProcess` (105ns/op, 1024B/op, 1 alloc/op) and `BenchmarkDeepFilterSuppressorLifecycle` (create→process×10→reset→process→close, 1163ns/op, 11264B/op, 11 allocs/op), using the existing `mockONNXSession` test double.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass.
+- Jitter payload pool benefit depends on callers calling `ReleasePayload()`; cold-pool/no-release callers still see 2 allocs/op.
+
+### Tomorrow
+1. RTP/SIP: Audit remaining RTP call sites (playback.go, rtcp.go) for any other `Pop()` consumers that should also call `ReleasePayload()`.
+2. QA/Testing: Add a `-tags onnx` job to CI so the onnxruntime_go API-compat break found today doesn't regress silently again.
+3. Audio Pipeline: A/B test Process48k vs 8kHz path on real call samples (still outstanding from 06-27).
