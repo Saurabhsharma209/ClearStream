@@ -99,22 +99,18 @@ func (r *rnnoiseONNXSuppressor) Process(frame []int16) ([]int16, error) {
 	}
 	defer inputTensor.Destroy()
 
-	outputs, err := r.session.Run([]ort.ArbitraryTensor{inputTensor})
+	outTensor, err := ort.NewEmptyTensor[float32](ort.NewShape(1, rnnoiseOutputSamples))
 	if err != nil {
+		r.logWarn("output tensor alloc failed", err)
+		return frame, nil
+	}
+	defer outTensor.Destroy()
+
+	if err := r.session.Run([]ort.ArbitraryTensor{inputTensor}, []ort.ArbitraryTensor{outTensor}); err != nil {
 		r.logWarn("inference failed, passing through", err)
 		return frame, nil
 	}
-	defer func() {
-		for _, o := range outputs {
-			o.Destroy()
-		}
-	}()
 
-	outTensor, ok := outputs[0].(*ort.Tensor[float32])
-	if !ok {
-		r.logWarn("unexpected output tensor type", nil)
-		return frame, nil
-	}
 	outData := outTensor.GetData()
 	if len(outData) < rnnoiseOutputSamples {
 		r.logWarn("short output tensor", nil)

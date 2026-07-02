@@ -65,24 +65,21 @@ func (d *deepFilterSuppressor) Process(frame []int16) ([]int16, error) {
 	}
 	defer inputTensor.Destroy()
 
-	// Run inference
-	outputs, err := d.session.Run([]ort.ArbitraryTensor{inputTensor})
+	// Pre-allocate output tensor (DeepFilterNet output shape mirrors input).
+	outTensor, err := ort.NewEmptyTensor[float32](ort.NewShape(1, int64(len(floats))))
 	if err != nil {
+		return frame, fmt.Errorf("deepfilter: output tensor: %w", err)
+	}
+	defer outTensor.Destroy()
+
+	// Run inference
+	if err := d.session.Run([]ort.ArbitraryTensor{inputTensor}, []ort.ArbitraryTensor{outTensor}); err != nil {
 		// Graceful degradation: return original frame on error
 		d.logger.Warn("deepfilter inference failed, passing through", zap.Error(err))
 		return frame, nil
 	}
-	defer func() {
-		for _, o := range outputs {
-			o.Destroy()
-		}
-	}()
 
 	// Convert output float32 -> int16
-	outTensor, ok := outputs[0].(*ort.Tensor[float32])
-	if !ok {
-		return frame, fmt.Errorf("deepfilter: unexpected output type")
-	}
 	outData := outTensor.GetData()
 
 	result := make([]int16, len(outData))
