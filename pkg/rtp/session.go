@@ -383,6 +383,9 @@ func (s *Session) handlePacket(raw []byte) error {
 	// Skips the PCM decode->suppress->encode cycle, cutting per-packet CPU to near zero.
 	if s.isBypassMode() && frame != nil {
 		out := buildRTPPacket(header, frame)
+		// buildRTPPacket copies frame into out -- safe to release frame's
+		// pooled backing array back to the jitter buffer's pool now.
+		s.jitter.ReleasePayload(frame)
 		if _, fwdErr := s.conn.WriteToUDP(out, s.fwdAddr); fwdErr != nil {
 			s.logger.Warn("bypass forward", zap.Error(fwdErr))
 		}
@@ -409,6 +412,11 @@ func (s *Session) handlePacket(raw []byte) error {
 	} else {
 		// Decode payload to 16kHz mono PCM
 		pcm, err = s.decodeToPCM(frame, header.PayloadType)
+		// frame has been fully consumed by decodeToPCM (decoders read it
+		// synchronously and don't retain the slice) -- safe to release its
+		// pooled backing array back to the jitter buffer's pool now,
+		// regardless of whether decode succeeded.
+		s.jitter.ReleasePayload(frame)
 		if err != nil {
 			return fmt.Errorf("decode payload: %w", err)
 		}

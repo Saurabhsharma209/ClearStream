@@ -15,6 +15,52 @@ const (
 	maxAdaptDepth         = 16  // adaptive upper bound (160ms)
 )
 
+// jitterPayloadPool pools []byte buffers backing buffered RTP payload copies
+// made in JitterBuffer.Push(). Payload copies are long-lived (held across the
+// reorder/PLC window and returned to the caller by Pop()), but their backing
+// arrays are cheap to recycle once the caller is done with them, so pooling
+// eliminates a make([]byte, ...) heap allocation on every incoming packet.
+//
+// Ownership/lifecycle contract:
+//   - getJitterPayload copies the incoming payload into a pooled (or freshly
+//     allocated, if the pool slice is too small) slice.
+//   - putJitterPayload returns a slice to the pool. JitterBuffer calls this
+//     internally whenever a buffered entry is discarded without ever being
+//     handed to a caller (tail-drop eviction, Reset()).
+//   - Once Pop() returns a payload to its caller, the JitterBuffer no longer
+//     holds any reference to that slice, so there is no risk of the pool
+//     handing out the same backing array twice while it's still "live" in two
+//     places. Callers that are done with a payload returned by Pop() SHOULD
+//     call JitterBuffer.ReleasePayload() on it to feed the slice back into the
+//     pool; skipping this is safe (the slice is simply garbage collected) but
+//     forfeits the allocation-reduction benefit. Callers MUST NOT call
+//     ReleasePayload more than once for the same slice, and MUST NOT touch the
+//     slice afterward -- doing so risks a future Push() aliasing live data
+//     (a double-free-style bug), same discipline as the g711PCMPool/
+//     g711BytePool pattern in session.go.
+var jitterPayloadPool = sync.Pool{
+	New: func() interface{} { b := make([]byte, 0, 172); return &b }, // 172B ~ typical G.711/Opus 20ms RTP payload
+}
+
+func getJitterPayload(n int) []byte {
+	bp := jitterPayloadPool.Get().(*[]byte)
+	b := *bp
+	if cap(b) < n {
+		b = make([]byte, n)
+	} else {
+		b = b[:n]
+	}
+	return b
+}
+
+func putJitterPayload(b []byte) {
+	if b == nil {
+		return
+	}
+	bp := &b
+	jitterPayloadPool.Put(bp)
+}
+
 // jitterEntry holds a buffered RTP packet.
 type jitterEntry struct {
 	seq       uint16
@@ -89,8 +135,9 @@ func (j *JitterBuffer) Push(seq uint16, ts uint32, payload []byte) bool {
 	}
 	j.lastArrival = now
 
-	// Copy payload to avoid aliasing with caller's buffer.
-	p := make([]byte, len(payload))
+	// Copy payload to avoid aliasing with caller's buffer. Pooled: see
+	// jitterPayloadPool above -- avoids a fresh heap allocation per packet.
+	p := getJitterPayload(len(payload))
 	copy(p, payload)
 	entry := jitterEntry{seq: seq, timestamp: ts, payload: p, received: now}
 
@@ -107,8 +154,13 @@ func (j *JitterBuffer) Push(seq uint16, ts uint32, payload []byte) bool {
 	copy(j.buf[pos+1:], j.buf[pos:])     // shift right
 	j.buf[pos] = entry
 
-	// Tail-drop if over hard cap.
+	// Tail-drop if over hard cap. Return the evicted entries' payloads to the
+	// pool -- they are discarded here and never handed to a caller.
 	if len(j.buf) > j.maxDepth {
+		for i := j.maxDepth; i < len(j.buf); i++ {
+			putJitterPayload(j.buf[i].payload)
+			j.buf[i].payload = nil
+		}
 		j.buf = j.buf[:j.maxDepth]
 	}
 
@@ -149,6 +201,13 @@ func (j *JitterBuffer) adaptDepth() {
 // Pop returns the next expected packet payload.
 // Returns (nil, true) on packet loss — caller must invoke GeneratePLC().
 // Returns (nil, false) when the buffer is not yet primed or is empty.
+//
+// Ownership: the returned payload slice may be backed by jitterPayloadPool
+// (see Push()). The JitterBuffer drops all internal references to it before
+// returning, so the caller exclusively owns it. Callers that are finished
+// with the payload should call ReleasePayload(payload) to recycle its
+// backing array; this is optional (ordinary GC handles it otherwise) but
+// required to realize the allocation-reduction benefit of the pool.
 func (j *JitterBuffer) Pop() ([]byte, bool) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -161,12 +220,29 @@ func (j *JitterBuffer) Pop() ([]byte, bool) {
 	if head.seq == j.nextSeq {
 		j.buf = j.buf[1:]
 		j.nextSeq++
+		// head.payload's ownership transfers to the caller here; the
+		// JitterBuffer keeps no reference to it (j.buf has been advanced
+		// past this entry), so it's safe for the caller to mutate it or
+		// release it via ReleasePayload() without racing internal state.
 		return head.payload, true
 	}
 
 	// Gap detected: packet lost or arrived too late (beyond current depth).
 	j.nextSeq++
 	return nil, true
+}
+
+// ReleasePayload returns a payload slice previously obtained from Pop() back
+// to the internal pool so its backing array can be reused by a future
+// Push(), reducing heap allocations. It is safe (but wasteful) to omit this
+// call -- the slice is simply garbage collected in that case. It is NOT safe
+// to call ReleasePayload more than once for the same slice, or to use the
+// slice after releasing it: either would let a subsequent Push() alias a
+// slice the caller still believes it owns.
+//
+// Passing nil is a no-op (e.g. PLC/loss frames from Pop() are nil already).
+func (j *JitterBuffer) ReleasePayload(payload []byte) {
+	putJitterPayload(payload)
 }
 
 // GeneratePLC produces a packet-loss-concealment frame.
@@ -250,6 +326,12 @@ func (j *JitterBuffer) JitterMs() float64 {
 func (j *JitterBuffer) Reset() {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	// Return all still-buffered payloads to the pool -- they are discarded
+	// here (SSRC change / session restart) and never reach a Pop() caller.
+	for i := range j.buf {
+		putJitterPayload(j.buf[i].payload)
+		j.buf[i].payload = nil
+	}
 	j.buf = j.buf[:0]
 	j.primed = false
 	j.nextSeq = 0
