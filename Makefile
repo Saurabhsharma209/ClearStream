@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt vet clean poc bench test-race test-nocgo install poc-build poc-up poc-clean poc-generate-audio coverage coverage-html qa-cs-regression qa-office-conv-rnnoise qa-office-conv-full build-slim build-docker-scratch
+.PHONY: build test lint fmt vet clean poc bench test-race test-nocgo install poc-build poc-up poc-clean poc-generate-audio coverage coverage-html qa-cs-regression qa-office-conv-rnnoise qa-office-conv-full build-slim build-docker-scratch build-onnx vet-onnx
 
 GOFLAGS ?= -trimpath
 BINARY  := clearstream
@@ -32,6 +32,18 @@ test-race:
 
 test-nocgo:
 	CGO_ENABLED=0 go test ./...
+
+# build-onnx / vet-onnx: compile-check the onnxruntime_go integration in
+# pkg/model (RNNoise-ONNX + DeepFilterNet suppressors). onnxruntime_go loads
+# its native shared library dynamically at runtime, so these targets catch
+# Go-level API-compat breaks (e.g. the v1.10.0 mismatch found 2026-07-02)
+# without needing the onnxruntime .so installed locally. Mirrors the
+# "Build (onnx tag)" CI job.
+build-onnx:
+	go build -tags onnx ./...
+
+vet-onnx:
+	go vet -tags onnx ./...
 
 poc: build
 	@echo "Starting ClearStream POC (HTTP on :8080, RTP on :5004)"
