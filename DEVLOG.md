@@ -1911,3 +1911,21 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. RTP/SIP: Audit remaining RTP call sites (playback.go, rtcp.go) for any other `Pop()` consumers that should also call `ReleasePayload()`.
 2. QA/Testing: Add a `-tags onnx` job to CI so the onnxruntime_go API-compat break found today doesn't regress silently again.
 3. Audio Pipeline: A/B test Process48k vs 8kHz path on real call samples (still outstanding from 06-27).
+
+## 2026-07-06
+
+**Agents run:** RTP/SIP (Pop()/ReleasePayload audit), QA/Testing (onnx CI job), Audio Pipeline (Process48k vs 8kHz A/B)
+**Build:** passing ✅ (default and `-tags onnx`)
+
+### Changes
+- `pkg/rtp/session_regress_test.go`: Audited all `Pop()` consumers in `pkg/rtp` for missing `ReleasePayload()` calls (the 07-02 "Tomorrow" item). Found none — `playback.go`'s `PlaybackQueue.Pop()` is an unrelated queue that never touches `jitterPayloadPool`, `rtcp.go` has no `Pop()` consumers, and `session.go`'s two `handlePacket` call sites already release correctly. Added 2 regression tests (`TestHandlePacket_BypassMode_JitterPayloadPoolNoCorruption`, `TestHandlePacket_DecodeMode_JitterPayloadPoolNoCorruption`) that drive 100/25 packets through the pooled paths and assert byte-exact, uncorrupted output, guarding against future pool-aliasing regressions.
+- `.github/workflows/ci.yml`, `Makefile`: Added a `build-onnx` CI job running `go build/vet/test -tags onnx ./...` alongside the existing default build job, plus matching local `build-onnx`/`vet-onnx` Makefile targets. Confirmed the onnx-tagged build type-checks fully without a native onnxruntime `.so` present (onnxruntime_go dlopens at runtime, not link time), so this catches Go-level API-compat breaks like the 07-02 v1.10.0 mismatch on every CI run. Release job now also gates on `build-onnx`.
+- `pkg/audio/ab_process48k_test.go`: New permanent `TestABProcess48kVsDirect` + `BenchmarkABProcess48kVsDirect`, closing out the A/B item outstanding since 06-27. Runs identical synthetic speech+noise audio (~10dB input SNR) through the real `AdaptiveNoiseReducer` via both `Pipeline.Process48k` and direct 8kHz `ProcessFrames`, using the existing `SNREstimator` for measurement. Result: direct 8kHz path achieves +7.63dB SNR improvement vs raw, Process48k achieves +6.17dB (direct path wins by ~1.46dB, as expected — Process48k's cheap resampler trades quality for ~6x throughput vs the direct path's Kaiser-FIR filters). This quantifies the tradeoff for the first time.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (carried over, unresolved infra issue)
+
+### Tomorrow
+1. AI Model: Consider whether Process48k's resampler should be upgraded to the same Kaiser-FIR quality as the direct path now that the ~1.46dB SNR gap is quantified, or whether the 6x speed tradeoff is intentional/acceptable — needs a product call.
+2. Post-processing: `pkg/file` backlog (OnProgress callback, ProcessDir batch processing, typed errors) hasn't been touched in several cycles — due for a rotation.
+3. API Layer: `pkg/http/handler.go` POST /enhance exists but hasn't had a doc-comment/Validate() pass in a while — verify it's current.
