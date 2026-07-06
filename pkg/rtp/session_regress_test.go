@@ -909,3 +909,196 @@ func TestListenRTCPBindError(t *testing.T) {
 	}
 	sess.Stop()
 }
+
+// ---- jitter payload pool wiring audit (RTP-SIP, 2026-07-06) -----------------
+//
+// 2026-07-02's DEVLOG left a follow-up: "Audit remaining RTP call sites
+// (playback.go, rtcp.go) for any other Pop() consumers that should also call
+// ReleasePayload()." That audit found no additional call sites to wire up:
+//
+//   - playback.go's PlaybackQueue.Pop() is a completely separate queue (its
+//     own [][]byte slice, populated via a fresh make()+copy() in Push()) that
+//     never touches jitterPayloadPool, so ReleasePayload() does not apply.
+//   - rtcp.go has no Pop() consumers at all -- it only parses RTCP RR/SR
+//     packets from raw byte slices it does not own.
+//   - The sole production consumer of JitterBuffer.Pop() is session.go's
+//     handlePacket, which already calls ReleasePayload() on both the
+//     fast-bypass path and the normal decode path.
+//
+// The tests below guard that existing wiring instead: they drive many
+// packets carrying distinct, order-verifiable content through both
+// handlePacket paths and confirm the forwarded output is neither corrupted
+// nor reordered. jitterPayloadPool is a single package-level pool shared by
+// every JitterBuffer instance, so a future regression that releases a
+// still-referenced buffer too early (or fails to release one, silently
+// breaking the allocation-reduction contract) would very likely surface here
+// as corrupted or misordered forwarded audio.
+
+// TestHandlePacket_BypassMode_JitterPayloadPoolNoCorruption exercises the
+// fast-bypass path (session.go ~line 388) across many packets with unique
+// per-packet marker bytes, verifying the forwarded payloads are byte-exact
+// and strictly in order despite every packet's backing array cycling through
+// the shared jitterPayloadPool.
+func TestHandlePacket_BypassMode_JitterPayloadPoolNoCorruption(t *testing.T) {
+	sink := regressSink(t)
+	sess := regressNewSession(t, Config{
+		ListenAddr:  "127.0.0.1:0",
+		ForwardAddr: sink.LocalAddr().String(),
+		PayloadType: 0,
+		JitterDepth: 1,
+		Logger:      silentLogger(t),
+		Suppressor:  model.NewPassthrough(),
+	})
+	if !sess.isBypassMode() {
+		t.Fatal("expected bypass mode with Passthrough suppressor")
+	}
+
+	const numPackets = 100
+	const payloadLen = 160
+	for i := 0; i < numPackets; i++ {
+		payload := make([]byte, payloadLen)
+		for j := range payload {
+			payload[j] = byte(i) // marker: every byte in packet i == byte(i)
+		}
+		pkt := buildRawRTPPacket(uint16(i), uint32(i*payloadLen), 0xABCD1234, payload)
+		if err := sess.handlePacket(pkt); err != nil {
+			t.Fatalf("handlePacket(%d): %v", i, err)
+		}
+	}
+
+	sink.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	recvBuf := make([]byte, 4096)
+	lastMarker := -1
+	got := 0
+	for {
+		n, _, err := sink.ReadFromUDP(recvBuf)
+		if err != nil {
+			break
+		}
+		_, payload, err := parseRTPHeader(recvBuf[:n])
+		if err != nil {
+			t.Fatalf("parseRTPHeader on forwarded packet: %v", err)
+		}
+		if len(payload) == 0 {
+			t.Fatal("forwarded payload unexpectedly empty")
+		}
+		marker := int(payload[0])
+		for k, b := range payload {
+			if int(b) != marker {
+				t.Fatalf("forwarded packet #%d corrupted at byte %d: want %d, got %d (jitterPayloadPool aliasing?)", got, k, marker, b)
+			}
+		}
+		if marker <= lastMarker {
+			t.Fatalf("forwarded packets out of order: marker %d arrived after %d", marker, lastMarker)
+		}
+		lastMarker = marker
+		got++
+	}
+	if got == 0 {
+		t.Fatal("expected at least one forwarded packet")
+	}
+	t.Logf("bypass mode: verified %d forwarded packets, all uncorrupted and in order", got)
+}
+
+// TestHandlePacket_DecodeMode_JitterPayloadPoolNoCorruption exercises the
+// normal decode->suppress->encode path (session.go ~line 419) across many
+// packets carrying distinct, well-separated G.711 amplitudes, verifying the
+// forwarded frames stay internally consistent (no partial corruption from a
+// pool buffer being reused while still referenced) and strictly increasing
+// in the injected order.
+func TestHandlePacket_DecodeMode_JitterPayloadPoolNoCorruption(t *testing.T) {
+	sink := regressSink(t)
+	sess := regressNewSession(t, Config{
+		ListenAddr:  "127.0.0.1:0",
+		ForwardAddr: sink.LocalAddr().String(),
+		PayloadType: 0, // PCMU
+		JitterDepth: 1,
+		Logger:      silentLogger(t),
+		Suppressor:  model.NewMockSuppressor(), // not *model.Passthrough -> full decode/suppress/encode path
+	})
+	if sess.isBypassMode() {
+		t.Fatal("expected non-bypass (decode) mode with MockSuppressor")
+	}
+
+	const numPackets = 25
+	const frameSize = 160
+	// Step (1200) exceeds the largest G.711 mu-law quantization bucket width
+	// in the amplitude range used (empirically ~1024 near the top of the
+	// range), so each packet's decoded amplitude is guaranteed distinct and
+	// strictly increasing -- unlike a smaller step, which would alias
+	// several consecutive inputs onto the same quantized output near the
+	// high end of the range and produce false positives below.
+	for i := 0; i < numPackets; i++ {
+		amp := int16(500 + i*1200)
+		pcm := make([]int16, frameSize)
+		for j := range pcm {
+			pcm[j] = amp
+		}
+		// encodeG711U may return a pooled slice (g711BytePool); snapshot it
+		// into an owned copy before handing it to buildRawRTPPacket, since
+		// handlePacket->Push() copies it again into jitterPayloadPool anyway.
+		encoded := encodeG711U(pcm)
+		payload := append([]byte(nil), encoded...)
+		pkt := buildRawRTPPacket(uint16(i), uint32(i*frameSize), 0xFEEDFACE, payload)
+		if err := sess.handlePacket(pkt); err != nil {
+			t.Fatalf("handlePacket(%d): %v", i, err)
+		}
+	}
+
+	// The pipeline resamples 8kHz<->16kHz in two internal 10ms sub-chunks per
+	// 20ms frame (FrameSizeSamples=160 @ 16kHz -> two 80-sample @ 8kHz output
+	// halves), and each sub-chunk boundary shows a brief settling ripple in
+	// the resample filters (confirmed by directly inspecting decoded frames
+	// for constant-amplitude input -- e.g. samples near index 0, 80, and 160
+	// deviate for a handful of samples, then settle). That is expected DSP
+	// behavior, not a pool bug. To avoid false failures from it while still
+	// catching real jitterPayloadPool aliasing/corruption (which corrupts a
+	// large contiguous span with a *different* packet's data, not a small
+	// symmetric ripple around a known boundary), the uniformity/ordering
+	// check below only looks at a fixed window solidly inside the first
+	// 10ms sub-chunk, well clear of both the frame-start and mid-frame
+	// (index 80) boundaries.
+	const windowStart = 20
+	const windowEnd = 70      // exclusive; both bounds clear of the ~6-sample ripples at indices 0 and ~74-81
+	const uniformTol = 64     // allowed deviation from the window's median
+	const ampSeparation = 500 // required separation between consecutive packets' medians (< 1200 step, > quantization noise)
+
+	sink.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	recvBuf := make([]byte, 4096)
+	lastAmp := -1 << 30 // sentinel far below any real amplitude; avoids int16 overflow on first comparison
+	got := 0
+	for {
+		n, _, err := sink.ReadFromUDP(recvBuf)
+		if err != nil {
+			break
+		}
+		_, payload, err := parseRTPHeader(recvBuf[:n])
+		if err != nil {
+			t.Fatalf("parseRTPHeader: %v", err)
+		}
+		decoded := decodeG711U(payload)
+		if len(decoded) < windowEnd {
+			t.Fatalf("decoded forwarded payload too short for window check: %d samples", len(decoded))
+		}
+		window := decoded[windowStart:windowEnd]
+		median := int(window[len(window)/2])
+		for k, s := range window {
+			d := int(s) - median
+			if d < 0 {
+				d = -d
+			}
+			if d > uniformTol {
+				t.Fatalf("forwarded frame #%d window not uniform: median=%d saw window[%d]=%d (jitterPayloadPool aliasing/corruption?) full=%v", got, median, k, s, decoded)
+			}
+		}
+		if median-lastAmp < ampSeparation {
+			t.Fatalf("forwarded packets out of order, duplicated, or overlapping: median %d too close to previous %d", median, lastAmp)
+		}
+		lastAmp = median
+		got++
+	}
+	if got == 0 {
+		t.Fatal("expected at least one forwarded packet")
+	}
+	t.Logf("decode mode: verified %d forwarded packets, all uncorrupted and in order", got)
+}
