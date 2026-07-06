@@ -1948,3 +1948,21 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. Audio Pipeline: Process48k resampler quality upgrade (3-sample avg → anti-alias filter) — quantified 1.46dB SNR gap on 07-06; needs product decision on speed vs quality tradeoff before implementation.
 2. pkg/eval: batch.go Run/evalFile/decodeToRawPCM at 0% (require FFmpeg) — add fake-ffmpeg harness similar to pkg/file to reach these paths.
 3. pkg/billing: currently at 84.4% — scan for uncovered billing edge cases.
+
+## 2026-07-06 (night build)
+
+**Agents run:** QA/Testing (pkg/eval fake-ffmpeg harness), QA/Testing (pkg/billing WAL edge cases)
+**Build:** passing ✅ (CGO_ENABLED=0)
+
+### Changes
+- `pkg/eval/batch_ffmpeg_test.go` (new, 194 lines): Fake-ffmpeg shell-script harness covering `BatchRunner.Run`, `evalFile`, and `decodeToRawPCM` — all previously at 0%. 7 tests: happy-path Run, OnProgress callback, pre-cancelled context, OutputDir auto-creation, direct decodeToRawPCM invocation, missing-binary error, empty-output error. pkg/eval coverage: 80.0% → 93.1%.
+- `pkg/billing/wal_edge_test.go` (new, 257 lines): 8 WAL edge-case tests covering rotation trigger, OnFlush error swallowing, recovery leaving file on disk when OnFlush fails, idempotent Close, file-not-found readWALFile, corrupted-line tolerance, and current-file skip during recovery. pkg/billing coverage: 84.4% → 88.1%.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing)
+- evalFile at 64.2% (up from 0%): remaining gaps are AGC convergence tracking and error paths that need real audio fixtures or a more sophisticated fake-ffmpeg producing non-silence PCM.
+
+### Tomorrow
+1. pkg/eval: Improve evalFile coverage further — AGC convergence path needs fake-ffmpeg that writes non-zero RMS PCM, and the pipeline error/cancellation paths need injection.
+2. pkg/billing: Push WAL coverage past 90% — rotate() error paths (openNew failure after rotate) and RecoverAndFlush corrupted-file skip are the remaining gaps.
+3. AI Model: Process48k resampler quality upgrade (3-sample avg → anti-alias filter) — pending product decision on 1.46dB SNR gap.
