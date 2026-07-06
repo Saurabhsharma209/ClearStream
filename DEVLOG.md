@@ -1929,3 +1929,22 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. AI Model: Consider whether Process48k's resampler should be upgraded to the same Kaiser-FIR quality as the direct path now that the ~1.46dB SNR gap is quantified, or whether the 6x speed tradeoff is intentional/acceptable — needs a product call.
 2. Post-processing: `pkg/file` backlog (OnProgress callback, ProcessDir batch processing, typed errors) hasn't been touched in several cycles — due for a rotation.
 3. API Layer: `pkg/http/handler.go` POST /enhance exists but hasn't had a doc-comment/Validate() pass in a while — verify it's current.
+
+## 2026-07-06 (evening build)
+
+**Agents run:** Audio Pipeline (dynamic setter + ABRunner tests), AI Model (Reset/Pool edge case tests)
+**Build:** passing ✅ (CGO_ENABLED=0)
+
+### Changes
+- `pkg/audio/pipeline_dynamic_test.go` (new, 16 tests): Covers previously 0% pipeline methods — SetAggressiveness (nil/NR/TieredNR paths), SetVADThreshold (*VAD and *AdaptiveVAD types), SetAGCTarget (with/without AGC), Reconfigure (TieredNR thresholds + AGC target), IsBypass (true for bare passthrough, false when any stage active), DiarizationSegments (nil diarizer and configured EnergyDiarizer). pkg/audio coverage: 86.8% → 94.0%.
+- `pkg/audio/ab_runner_test.go` (new, 11 tests): Covers DefaultABConfig defaults, NewABRunner construction, ProcessFrame with silence/speech/background/passthrough frames, Summarise totals and RMS ratio, classify+snrDelta indirectly via ProcessFrame.
+- `pkg/model/coverage_model_test.go` (new, 9 tests): Covers Passthrough.Reset (was 0%), DeepFilterServer.Close with live cmd (44.4%→100%), NewSuppressor rnnoise-onnx+ModelPath branch, NewSuppressorPool init-error path, SuppressorPool.Close error propagation, MockSuppressor.ProcessBatch multi-frame, NewRNNoiseONNX stub (0%→100%). pkg/model coverage: 82.5% → 88.3%.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing infra issue)
+- Passthrough.Reset and deepfilter_server.Reset show 0% in coverage tooling — both are empty-body functions with zero instrumentable statements; not a real gap.
+
+### Tomorrow
+1. Audio Pipeline: Process48k resampler quality upgrade (3-sample avg → anti-alias filter) — quantified 1.46dB SNR gap on 07-06; needs product decision on speed vs quality tradeoff before implementation.
+2. pkg/eval: batch.go Run/evalFile/decodeToRawPCM at 0% (require FFmpeg) — add fake-ffmpeg harness similar to pkg/file to reach these paths.
+3. pkg/billing: currently at 84.4% — scan for uncovered billing edge cases.
