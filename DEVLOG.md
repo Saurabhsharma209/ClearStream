@@ -1,3 +1,23 @@
+
+## 2026-07-07
+
+**Agents run:** API Layer (cmd/clearstream graceful shutdown), Post-processing (pkg/file MaxConcurrency), QA/Testing (pkg/billing WAL coverage)
+**Build:** passing OK
+
+### Changes
+- `cmd/clearstream/main.go`: `runServer` caught SIGINT/SIGTERM but never called `srv.Shutdown()`, abruptly killing in-flight `/enhance` requests. Added a `--shutdown-timeout` flag (default 30s); on signal the server now calls `srv.Shutdown(ctx)` with that timeout, falling back to `srv.Close()` if it doesn't finish in time. Added a doc comment on `runServer`. `clearstream.go` and `pkg/http/handler.go` were already fully doc-commented with a working `Config.Validate()`, so no changes were needed there.
+- `pkg/file/processor.go`, `pkg/file/processor_withffmpeg_test.go`: `ProcessDir`/`ProcessDirFull` already had a bounded worker pool (semaphore sized to `runtime.NumCPU()`), but the size was hardcoded. Added `Options.MaxConcurrency int` (falls back to `runtime.NumCPU()` when unset/zero) and wired it into both semaphores. New tests: `TestProcessDirMaxConcurrencyBounded` (proves at most N decodes run concurrently via a lock-file-instrumented fake ffmpeg) and `TestProcessDirMaxConcurrencyDefaultsWhenUnset`.
+- `pkg/billing/wal_gap_test.go` (new): Closed the two gaps flagged in yesterday log - `TestWALWriter_Rotate_OpenNewFailsAfterRotate` (openNew failing after rotate), `TestWALWriter_RecoverAndFlush_SkipsUnreadableFile` (corrupted/unreadable file skip in RecoverAndFlush), plus `TestWALWriter_Write_MarshalError` and `TestWALWriter_Write_UnderlyingWriteError`. pkg/billing coverage: 88.1% -> 91.9% (past the 90% target).
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing infra issue, unchanged)
+- One agent transiently hit a missing LC_UUID load command dyld error running go test ./pkg/file/... directly; a plain CGO_ENABLED=0 go test ./... from the coordinator afterwards passed cleanly across every package, so this looks like an intermittent/local artifact rather than a real regression - worth a closer look if it recurs.
+
+### Tomorrow
+1. AI Model: Process48k resampler quality upgrade (3-sample avg -> anti-alias filter) - still pending product decision on the ~1.46dB SNR tradeoff.
+2. Audio Pipeline: rotate back in - hasn't shipped a feature (only benchmarks/tests) in over a week.
+3. RTP/SIP: re-audit for any new Pop()/ReleasePayload gaps now that pkg/file's worker pool adds more concurrent I/O pressure.
+
 ## DAY 40 — 2026-06-05 (Sprint 40: AQ-001–005 — Robotic/Jitter/Hiss/Garble/Slim SDK)
 
 **Theme:** Five perceptual audio quality defects + SDK deployment footprint. Fully CGO-free after this sprint.
