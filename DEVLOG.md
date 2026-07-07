@@ -1,4 +1,30 @@
 
+## 2026-07-07 — Cross-project note (LangStream integration, not a workstream-agent run)
+
+This entry isn't from one of the six ClearStream workstream agents (Audio
+Pipeline / AI Model / RTP-SIP / Post-processing / API Layer / QA-Testing) -
+it's a coordination note from setting up **LangStream**
+(github.com/Saurabhsharma209/LangStream), Exotel's new real-time
+call-translation SDK, which sits downstream of this one in the call
+pipeline (ClearStream denoises -> LangStream translates).
+
+**What changed here:**
+- Tagged this repo's first release, `v0.1.0`, matching the version string
+  `./clearstream version` has reported all along. No code changes.
+- Added a "Related Projects" section to `README.md` pointing at LangStream
+  and its `VERSIONING.md` compatibility matrix.
+
+**What this means for ClearStream's own daily agents going forward:**
+LangStream's Week 2 roadmap item extends this repo's `pkg/rtp.Session`
+model for duplex (two-leg) use. That work happens entirely in the
+LangStream repo unless it turns out `pkg/rtp` genuinely needs a change
+here (e.g. exporting something currently internal) to support it - if
+that happens, it'll arrive as a normal, separately-reviewed PR against
+this repo with its own description, not a silent commit from LangStream's
+automation. Nothing about this repo's own six-agent daily loop changes;
+this is additive documentation only.
+
+
 ## 2026-07-07
 
 **Agents run:** API Layer (cmd/clearstream graceful shutdown), Post-processing (pkg/file MaxConcurrency), QA/Testing (pkg/billing WAL coverage)

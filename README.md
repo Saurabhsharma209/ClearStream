@@ -227,6 +227,12 @@ Point AgentStream's pre-STT step at `POST /enhance`. The handler accepts any aud
 
 ---
 
+## Related Projects
+
+**[LangStream](https://github.com/Saurabhsharma209/LangStream)** — Exotel's real-time call-translation SDK (currently in pilot development). It sits downstream of ClearStream in the call pipeline: ClearStream denoises the raw RTP audio, LangStream's ASR/MT/TTS stages consume that cleaned audio to translate a call live between two languages. Better input audio measurably improves ASR accuracy, so the two are designed to run together in production even though they're independently versioned, released, and maintained (separate repos, separate daily agent automations, separate SemVer lines — see [`VERSIONING.md`](https://github.com/Saurabhsharma209/LangStream/blob/main/VERSIONING.md) in the LangStream repo for the compatibility matrix between the two). LangStream's duplex RTP handling (Week 2 of its pilot roadmap) is planned to extend this SDK's `pkg/rtp.Session` model rather than reimplement RTP handling from scratch — any actual code changes needed here for that will show up as a normal, separately-reviewed PR against this repo, not a silent side effect of LangStream's own automation.
+
+---
+
 ## Platform Compatibility
 
 | Platform | Status | Integration Path |
