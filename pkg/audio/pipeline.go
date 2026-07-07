@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/exotel/clearstream/pkg/model"
+	"github.com/exotel/clearstream/pkg/telemetry"
 	"go.uber.org/zap"
 )
 
@@ -47,6 +48,12 @@ type PipelineConfig struct {
 	Channels   int
 	Suppressor model.Suppressor
 	Logger     *zap.Logger
+
+	// Telemetry receives frame-latency, VAD speech-ratio, and suppressor
+	// lifecycle metrics/events emitted by this pipeline. Defaults to
+	// telemetry.NoopSink{} (zero observable cost) when unset, following the
+	// same optional-dependency pattern as Logger above.
+	Telemetry telemetry.Sink
 	// VAD is an optional Voice Activity Detector. When set, silence frames
 	// bypass the suppressor entirely, saving ~30% CPU on typical calls.
 	// Accepts *VAD (static threshold) or *AdaptiveVAD (auto-calibrating).
@@ -148,6 +155,14 @@ type Pipeline struct {
 	framesSuppressed uint64
 	framesSilent     uint64
 	latencyEMA       float64
+
+	// suppressor is cfg.Suppressor wrapped for telemetry (inference latency,
+	// reset metric/event). nil when cfg.Suppressor is nil.
+	suppressor model.Suppressor
+	// telemetry is cfg.Telemetry, defaulted to telemetry.NoopSink{}.
+	telemetry telemetry.Sink
+	// telemetryTags are attached to pipeline-level metrics (e.g. backend name).
+	telemetryTags map[string]string
 }
 
 // NewPipeline creates a new Pipeline.
@@ -205,16 +220,30 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 		lim = NewPeakLimiter()
 	}
 
+	telem := cfg.Telemetry
+	if telem == nil {
+		telem = telemetry.NoopSink{}
+	}
+	var tags map[string]string
+	var sup model.Suppressor
+	if cfg.Suppressor != nil {
+		tags = map[string]string{"backend": cfg.Suppressor.Name()}
+		sup = model.NewInstrumentedSuppressor(cfg.Suppressor, telem, tags)
+	}
+
 	return &Pipeline{
-		cfg:          cfg,
-		buf:          make([]byte, 0, FrameSizeBytes*4),
-		vad:          vad,
-		agc:          agc,
-		aec:          aec,
-		noiseReducer: nr,
-		tieredNR:     tnr,
-		limiter:      lim,
-		logger:       cfg.Logger,
+		cfg:           cfg,
+		buf:           make([]byte, 0, FrameSizeBytes*4),
+		vad:           vad,
+		agc:           agc,
+		aec:           aec,
+		noiseReducer:  nr,
+		tieredNR:      tnr,
+		limiter:       lim,
+		logger:        cfg.Logger,
+		suppressor:    sup,
+		telemetry:     telem,
+		telemetryTags: tags,
 	}
 }
 
@@ -271,6 +300,7 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 		offset += inputFrameBytes
 
 		start := time.Now()
+		stopFrameTimer := telemetry.StartTimer(p.telemetry, telemetry.MetricFrameLatencyMS, p.telemetryTags)
 
 		// Convert bytes -> int16 samples
 		samples := bytesToInt16(frame)
@@ -316,7 +346,7 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 			cleaned = processSamples
 		} else {
 			var err error
-			cleaned, err = p.cfg.Suppressor.Process(processSamples)
+			cleaned, err = p.suppressor.Process(processSamples)
 			if err != nil {
 				return fmt.Errorf("pipeline: suppress frame: %w", err)
 			}
@@ -357,7 +387,22 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 			p.framesSilent++
 		}
 		p.latencyEMA = p.latencyEMA*0.95 + elapsed*0.05
+		framesProcessedSnap := p.framesProcessed
+		framesSuppressedSnap := p.framesSuppressed
 		p.statsMu.Unlock()
+
+		stopFrameTimer()
+
+		if p.vad != nil {
+			p.telemetry.RecordMetric(telemetry.Metric{
+				Name:      telemetry.MetricAudioVADSpeechRatio,
+				Value:     float64(framesSuppressedSnap) / float64(framesProcessedSnap),
+				Unit:      "ratio",
+				Kind:      telemetry.MetricGauge,
+				Tags:      p.telemetryTags,
+				Timestamp: time.Now(),
+			})
+		}
 
 		// Write cleaned frame using a pooled byte buffer; release immediately after Write copies the data.
 		outBytes := int16ToBytes(outSamples)
@@ -386,7 +431,7 @@ func (p *Pipeline) Flush(out io.Writer) error {
 	copy(frame, p.buf)
 	p.buf = p.buf[:0]
 	samples := bytesToInt16(frame)
-	cleaned, err := p.cfg.Suppressor.Process(samples)
+	cleaned, err := p.suppressor.Process(samples)
 	if err != nil {
 		return fmt.Errorf("pipeline: flush suppress: %w", err)
 	}
@@ -437,7 +482,9 @@ func (p *Pipeline) ResetStats() {
 // Reset clears internal state (call when starting a new stream/file).
 func (p *Pipeline) Reset() {
 	p.buf = p.buf[:0]
-	p.cfg.Suppressor.Reset()
+	if p.suppressor != nil {
+		p.suppressor.Reset()
+	}
 	if p.vad != nil {
 		p.vad.Reset()
 	}
@@ -604,11 +651,11 @@ func (p *Pipeline) Process48k(frame []int16) ([]int16, error) {
 		p.framesSilent++
 		p.statsMu.Unlock()
 		processed = down
-	} else if p.cfg.Suppressor == nil {
+	} else if p.suppressor == nil {
 		processed = down
 	} else {
 		var err error
-		processed, err = p.cfg.Suppressor.Process(down)
+		processed, err = p.suppressor.Process(down)
 		if err != nil {
 			return nil, err
 		}

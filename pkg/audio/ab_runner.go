@@ -2,8 +2,10 @@ package audio
 
 import (
 	"math"
+	"time"
 
 	"github.com/exotel/clearstream/pkg/model"
+	"github.com/exotel/clearstream/pkg/telemetry"
 )
 
 // FrameClass classifies a PCM frame by energy level.
@@ -26,6 +28,12 @@ type ABConfig struct {
 	// frames as a fraction of the raw frame RMS. If suppressor B degrades speech
 	// beyond this limit, the frame is flagged as a violation (0.05 = 5%).
 	SpeechDegradationLimit float64 // default 0.05
+
+	// Telemetry receives MetricAudioSNRImprovementDB histogram observations
+	// for each frame processed, tagged by suppressor name and variant
+	// ("a"/"b"). Defaults to telemetry.NoopSink{} (zero observable cost)
+	// when unset.
+	Telemetry telemetry.Sink
 }
 
 // DefaultABConfig returns telephony-tuned defaults for raw_audio.wav.
@@ -92,6 +100,9 @@ type ABRunner struct {
 
 // NewABRunner creates an ABRunner comparing suppressors A and B.
 func NewABRunner(a, b model.Suppressor, cfg ABConfig) *ABRunner {
+	if cfg.Telemetry == nil {
+		cfg.Telemetry = telemetry.NoopSink{}
+	}
 	return &ABRunner{A: a, B: b, cfg: cfg}
 }
 
@@ -109,6 +120,23 @@ func (r *ABRunner) ProcessFrame(idx int, raw []int16) ABFrameResult {
 
 	snrDeltaA := snrDelta(rawRMS, aRMS)
 	snrDeltaB := snrDelta(rawRMS, bRMS)
+
+	r.cfg.Telemetry.RecordMetric(telemetry.Metric{
+		Name:      telemetry.MetricAudioSNRImprovementDB,
+		Value:     snrDeltaA,
+		Unit:      "db",
+		Kind:      telemetry.MetricHistogram,
+		Tags:      map[string]string{"suppressor": r.A.Name(), "variant": "a"},
+		Timestamp: time.Now(),
+	})
+	r.cfg.Telemetry.RecordMetric(telemetry.Metric{
+		Name:      telemetry.MetricAudioSNRImprovementDB,
+		Value:     snrDeltaB,
+		Unit:      "db",
+		Kind:      telemetry.MetricHistogram,
+		Tags:      map[string]string{"suppressor": r.B.Name(), "variant": "b"},
+		Timestamp: time.Now(),
+	})
 
 	// Violation: B degrades speech frame RMS by more than limit
 	var violation bool
