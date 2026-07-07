@@ -16,9 +16,12 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/exotel/clearstream/pkg/audio"
 	"github.com/exotel/clearstream/pkg/model"
+	"github.com/exotel/clearstream/pkg/telemetry"
 	"go.uber.org/zap"
 )
 
@@ -66,6 +69,20 @@ type Options struct {
 	// ProcessDir and ProcessDirFull. If zero or negative, runtime.NumCPU()
 	// is used as the default.
 	MaxConcurrency int
+
+	// Telemetry receives worker-pool gauges, batch progress, and per-file
+	// failure events recorded by ProcessDir/ProcessDirFull. Optional --
+	// defaults to a no-op sink when unset.
+	Telemetry telemetry.Sink
+}
+
+// telemetry returns o.Telemetry if set, otherwise a no-op sink, so callers
+// never need to nil-check before recording.
+func (o Options) telemetry() telemetry.Sink {
+	if o.Telemetry != nil {
+		return o.Telemetry
+	}
+	return telemetry.NoopSink{}
 }
 
 // ProcessorConfig holds configuration for a Processor.
@@ -224,13 +241,45 @@ func (p *Processor) ProcessDir(srcDir, dstDir string, opts Options) []error {
 	sem := make(chan struct{}, concurrencyLimit(opts))
 	var wg sync.WaitGroup
 
+	sink := opts.telemetry()
+	poolTags := map[string]string{"pool": "file.ProcessDir"}
+	var active, queued, completed int64
+	total := len(jobs)
+	report := func() {
+		now := time.Now()
+		sink.RecordMetric(telemetry.Metric{Name: telemetry.MetricWorkerPoolActive, Value: float64(atomic.LoadInt64(&active)), Unit: "count", Kind: telemetry.MetricGauge, Tags: poolTags, Timestamp: now})
+		sink.RecordMetric(telemetry.Metric{Name: telemetry.MetricWorkerPoolQueueDepth, Value: float64(atomic.LoadInt64(&queued)), Unit: "count", Kind: telemetry.MetricGauge, Tags: poolTags, Timestamp: now})
+	}
+
 	for i, j := range jobs {
 		wg.Add(1)
+		atomic.AddInt64(&queued, 1)
 		go func(idx int, jb job) {
 			defer wg.Done()
+			report()
 			sem <- struct{}{}
-			defer func() { <-sem }()
-			errs[idx] = p.ProcessWithOptions(jb.src, jb.dst, opts)
+			atomic.AddInt64(&queued, -1)
+			atomic.AddInt64(&active, 1)
+			report()
+			defer func() {
+				atomic.AddInt64(&active, -1)
+				<-sem
+				report()
+			}()
+			err := p.ProcessWithOptions(jb.src, jb.dst, opts)
+			errs[idx] = err
+			if err != nil {
+				sink.RecordEvent(telemetry.Event{
+					Name:      telemetry.EventBatchFileFailed,
+					Severity:  telemetry.SeverityError,
+					Message:   err.Error(),
+					Fields:    map[string]interface{}{"path": jb.src, "error": err.Error()},
+					Timestamp: time.Now(),
+				})
+			}
+			done := atomic.AddInt64(&completed, 1)
+			pct := float64(done) / float64(total) * 100.0
+			sink.RecordMetric(telemetry.Metric{Name: telemetry.MetricBatchProgressPercent, Value: pct, Unit: "percent", Kind: telemetry.MetricGauge, Tags: poolTags, Timestamp: time.Now()})
 		}(i, j)
 	}
 	wg.Wait()
@@ -536,16 +585,54 @@ func (p *Processor) ProcessDirFull(srcDir, dstDir string, opts Options) []DirRes
 	// Process non-skipped files concurrently.
 	sem := make(chan struct{}, concurrencyLimit(opts))
 	var wg sync.WaitGroup
+	sink := opts.telemetry()
+	poolTags := map[string]string{"pool": "file.ProcessDirFull"}
+	var active, queued, completed int64
+	var total int64
+	for i := range results {
+		if !results[i].Skipped {
+			total++
+		}
+	}
+	report := func() {
+		now := time.Now()
+		sink.RecordMetric(telemetry.Metric{Name: telemetry.MetricWorkerPoolActive, Value: float64(atomic.LoadInt64(&active)), Unit: "count", Kind: telemetry.MetricGauge, Tags: poolTags, Timestamp: now})
+		sink.RecordMetric(telemetry.Metric{Name: telemetry.MetricWorkerPoolQueueDepth, Value: float64(atomic.LoadInt64(&queued)), Unit: "count", Kind: telemetry.MetricGauge, Tags: poolTags, Timestamp: now})
+	}
 	for i := range results {
 		if results[i].Skipped {
 			continue
 		}
 		wg.Add(1)
+		atomic.AddInt64(&queued, 1)
 		go func(idx int) {
 			defer wg.Done()
+			report()
 			sem <- struct{}{}
-			defer func() { <-sem }()
-			results[idx].Err = p.ProcessWithOptions(results[idx].Src, results[idx].Dst, opts)
+			atomic.AddInt64(&queued, -1)
+			atomic.AddInt64(&active, 1)
+			report()
+			defer func() {
+				atomic.AddInt64(&active, -1)
+				<-sem
+				report()
+			}()
+			err := p.ProcessWithOptions(results[idx].Src, results[idx].Dst, opts)
+			results[idx].Err = err
+			if err != nil {
+				sink.RecordEvent(telemetry.Event{
+					Name:      telemetry.EventBatchFileFailed,
+					Severity:  telemetry.SeverityError,
+					Message:   err.Error(),
+					Fields:    map[string]interface{}{"path": results[idx].Src, "error": err.Error()},
+					Timestamp: time.Now(),
+				})
+			}
+			done := atomic.AddInt64(&completed, 1)
+			if total > 0 {
+				pct := float64(done) / float64(total) * 100.0
+				sink.RecordMetric(telemetry.Metric{Name: telemetry.MetricBatchProgressPercent, Value: pct, Unit: "percent", Kind: telemetry.MetricGauge, Tags: poolTags, Timestamp: time.Now()})
+			}
 		}(i)
 	}
 	wg.Wait()

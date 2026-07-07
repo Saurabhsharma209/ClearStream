@@ -15,6 +15,7 @@ import (
 	"github.com/exotel/clearstream/pkg/audio"
 	"github.com/exotel/clearstream/pkg/file"
 	"github.com/exotel/clearstream/pkg/model"
+	"github.com/exotel/clearstream/pkg/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -36,6 +37,7 @@ type Handler struct {
 	logger      *zap.Logger
 	metrics     *Metrics
 	promHandler http.Handler
+	telemetry   telemetry.Sink
 
 	// Prometheus metrics
 	reqTotal     prometheus.Counter
@@ -62,6 +64,10 @@ type HandlerConfig struct {
 	SampleRate int
 	Logger     *zap.Logger
 	PoolSize   int // max concurrent RTP sessions (pool capacity)
+
+	// Telemetry receives HTTP request latency metrics and error events.
+	// Optional -- defaults to a no-op sink when unset.
+	Telemetry telemetry.Sink
 }
 
 // NewHandler creates a new HTTP API handler.
@@ -74,12 +80,17 @@ func NewHandler(cfg HandlerConfig) *Handler {
 	}
 
 	reg := prometheus.NewRegistry()
+	sink := cfg.Telemetry
+	if sink == nil {
+		sink = telemetry.NoopSink{}
+	}
 	h := &Handler{
 		suppressor: cfg.Suppressor,
 		ffmpegPath: cfg.FFmpegPath,
 		sampleRate: cfg.SampleRate,
 		poolSize:   cfg.PoolSize,
 		logger:     cfg.Logger,
+		telemetry:  sink,
 		metrics: &Metrics{
 			startTime: time.Now(),
 		},
@@ -140,6 +151,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// recordError records a telemetry error-counter increment tagged by the
+// originating HTTP endpoint.
+func (h *Handler) recordError(endpoint string) {
+	h.telemetry.RecordMetric(telemetry.Metric{
+		Name:      telemetry.MetricErrorsTotal,
+		Value:     1,
+		Unit:      "count",
+		Kind:      telemetry.MetricCounter,
+		Tags:      map[string]string{"component": "http", "endpoint": endpoint},
+		Timestamp: time.Now(),
+	})
+}
+
 // handleEnhance processes POST /enhance.
 // Accepts: multipart/form-data with field "audio" (any format).
 // Returns: enhanced audio file (same format as input).
@@ -148,11 +172,14 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	h.metrics.RequestsTotal++
 	h.reqTotal.Inc()
+	stopTimer := telemetry.StartTimer(h.telemetry, telemetry.MetricFrameLatencyMS, map[string]string{"component": "http", "endpoint": "/enhance"})
+	defer stopTimer()
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		h.metrics.RequestsFailed++
 		h.reqFailed.Inc()
+		h.recordError("/enhance")
 		writeError(w, http.StatusBadRequest, "failed to parse form: "+err.Error())
 		return
 	}
@@ -161,6 +188,7 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.metrics.RequestsFailed++
 		h.reqFailed.Inc()
+		h.recordError("/enhance")
 		writeError(w, http.StatusBadRequest, "missing audio field")
 		return
 	}
@@ -177,6 +205,7 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.metrics.RequestsFailed++
 		h.reqFailed.Inc()
+		h.recordError("/enhance")
 		writeError(w, http.StatusInternalServerError, "temp file error")
 		return
 	}
@@ -186,6 +215,7 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	if _, err := io.Copy(tmpIn, f); err != nil {
 		h.metrics.RequestsFailed++
 		h.reqFailed.Inc()
+		h.recordError("/enhance")
 		writeError(w, http.StatusInternalServerError, "upload read error")
 		return
 	}
@@ -196,6 +226,7 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.metrics.RequestsFailed++
 		h.reqFailed.Inc()
+		h.recordError("/enhance")
 		writeError(w, http.StatusInternalServerError, "temp file error")
 		return
 	}
@@ -249,6 +280,7 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	if err := proc.ProcessWithOptions(tmpIn.Name(), tmpOut.Name(), opts); err != nil {
 		h.metrics.RequestsFailed++
 		h.reqFailed.Inc()
+		h.recordError("/enhance")
 		h.logger.Error("enhance failed", zap.Error(err))
 		writeError(w, http.StatusInternalServerError, "enhancement failed: "+err.Error())
 		return
@@ -259,6 +291,7 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.metrics.RequestsFailed++
 		h.reqFailed.Inc()
+		h.recordError("/enhance")
 		writeError(w, http.StatusInternalServerError, "output read error")
 		return
 	}
@@ -333,6 +366,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request) {
 	if err := file.StreamProcess(r.Context(), r.Body, w, opts); err != nil {
 		// Can't write error header after streaming has started.
 		h.logger.Error("stream enhance failed", zap.Error(err))
+		h.recordError("/enhance/stream")
 		return
 	}
 	if canFlush {

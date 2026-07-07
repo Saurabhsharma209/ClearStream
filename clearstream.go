@@ -27,6 +27,7 @@ import (
 	cshttp "github.com/exotel/clearstream/pkg/http"
 	"github.com/exotel/clearstream/pkg/model"
 	"github.com/exotel/clearstream/pkg/rtp"
+	"github.com/exotel/clearstream/pkg/telemetry"
 	"go.uber.org/zap"
 )
 
@@ -99,6 +100,22 @@ type Config struct {
 	// If nil and EnableAGC is true, audio.DefaultAGCConfig() is used.
 	// Override per-session by passing audio.AGCConfig to NewRTPSession / file.Options.
 	AGC *audio.AGCConfig
+
+	// Telemetry receives metrics and events emitted by the SDK (worker pool
+	// gauges, batch progress, HTTP request latency, RTP/audio QoS signals,
+	// etc). Optional -- if nil, a no-op sink is used and telemetry has no
+	// observable cost.
+	Telemetry telemetry.Sink
+}
+
+// telemetry returns c.Telemetry if set, otherwise a no-op sink. Downstream
+// code should use this accessor instead of reading c.Telemetry directly, so
+// nil checks are not needed at every call site.
+func (c Config) telemetry() telemetry.Sink {
+	if c.Telemetry != nil {
+		return c.Telemetry
+	}
+	return telemetry.NoopSink{}
 }
 
 // DefaultConfig returns a sensible out-of-the-box configuration.
@@ -233,7 +250,7 @@ func (cs *ClearStream) ProcessFile(src, dst string) error {
 		Suppressor: cs.model,
 		Logger:     cs.logger,
 	})
-	return fp.Process(src, dst)
+	return fp.ProcessWithOptions(src, dst, file.Options{Telemetry: cs.cfg.telemetry()})
 }
 
 // ProcessFileWithOptions is like ProcessFile but accepts per-call options.
@@ -245,6 +262,9 @@ func (cs *ClearStream) ProcessFileWithOptions(src, dst string, opts file.Options
 		Suppressor: cs.model,
 		Logger:     cs.logger,
 	})
+	if opts.Telemetry == nil {
+		opts.Telemetry = cs.cfg.telemetry()
+	}
 	return fp.ProcessWithOptions(src, dst, opts)
 }
 
@@ -413,6 +433,7 @@ func (cs *ClearStream) NewHTTPHandler() http.Handler {
 		SampleRate: cs.cfg.SampleRate,
 		Logger:     cs.logger,
 		PoolSize:   cs.PoolSize(),
+		Telemetry:  cs.cfg.telemetry(),
 	})
 }
 
