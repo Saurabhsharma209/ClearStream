@@ -13,6 +13,7 @@ import (
 
 	"github.com/exotel/clearstream/pkg/audio"
 	"github.com/exotel/clearstream/pkg/model"
+	"github.com/exotel/clearstream/pkg/telemetry"
 	"go.uber.org/zap"
 )
 
@@ -153,6 +154,11 @@ type Config struct {
 	// Use audio.DefaultAGCConfig() as a starting point.
 	// Set to nil to disable (default).
 	AGC *audio.AGCConfig
+
+	// Telemetry receives metrics/events for this session (jitter, packet
+	// loss, PLC, SSRC changes, decode errors, per-packet latency). Optional
+	// -- defaults to telemetry.NoopSink{} (zero-cost) when nil.
+	Telemetry telemetry.Sink
 }
 
 // Stats holds per-second session statistics.
@@ -175,6 +181,7 @@ type Session struct {
 	pipeline  *audio.Pipeline
 	dtmf      *DTMFDetector
 	playback  *PlaybackQueue
+	telemetry telemetry.Sink
 
 	currentSSRC uint32
 	ssrcSet     bool
@@ -216,6 +223,10 @@ func NewSession(cfg Config) (*Session, error) {
 	}
 
 	resolvePayloadType(&cfg)
+	tel := cfg.Telemetry
+	if tel == nil {
+		tel = telemetry.NoopSink{}
+	}
 	if cfg.DTMFPayloadType == 0 {
 		cfg.DTMFPayloadType = DTMFPayloadType
 	}
@@ -252,6 +263,7 @@ func NewSession(cfg Config) (*Session, error) {
 		done:      make(chan struct{}),
 		rtcpReady: make(chan struct{}),
 		logger:    cfg.Logger,
+		telemetry: tel,
 	}, nil
 }
 
@@ -262,9 +274,7 @@ func (s *Session) Start() {
 
 	go s.receiveLoop(ctx)
 	go s.listenRTCP()
-	if s.cfg.OnStats != nil {
-		go s.statsLoop(ctx)
-	}
+	go s.statsLoop(ctx)
 
 	s.logger.Info("RTP session started",
 		zap.String("listen", s.cfg.ListenAddr),
@@ -337,6 +347,9 @@ func (s *Session) receiveLoop(ctx context.Context) {
 
 // handlePacket parses an RTP packet, suppresses noise, and forwards it.
 func (s *Session) handlePacket(raw []byte) error {
+	stop := telemetry.StartTimer(s.telemetry, telemetry.MetricFrameLatencyMS, nil)
+	defer stop()
+
 	if len(raw) < 12 {
 		return fmt.Errorf("packet too short: %d bytes", len(raw))
 	}
@@ -361,6 +374,21 @@ func (s *Session) handlePacket(raw []byte) error {
 	// Detect SSRC change (new call leg)
 	if s.ssrcSet && header.SSRC != s.currentSSRC {
 		s.logger.Info(fmt.Sprintf("SSRC changed: %d → %d, pipeline reset", s.currentSSRC, header.SSRC))
+		s.telemetry.RecordMetric(telemetry.Metric{
+			Name:      telemetry.MetricRTPSSRCChangeTotal,
+			Value:     1,
+			Kind:      telemetry.MetricCounter,
+			Timestamp: time.Now(),
+		})
+		s.telemetry.RecordEvent(telemetry.Event{
+			Name:     telemetry.EventRTPSSRCChanged,
+			Severity: telemetry.SeverityInfo,
+			Fields: map[string]interface{}{
+				"old_ssrc": s.currentSSRC,
+				"new_ssrc": header.SSRC,
+			},
+			Timestamp: time.Now(),
+		})
 		s.jitter.Reset()
 		s.pipeline.Reset()
 	}
@@ -409,6 +437,25 @@ func (s *Session) handlePacket(raw []byte) error {
 		s.mu.Lock()
 		s.stats.PacketsLost++
 		s.mu.Unlock()
+		s.telemetry.RecordMetric(telemetry.Metric{
+			Name:      telemetry.MetricRTPPLCTriggeredTotal,
+			Value:     1,
+			Kind:      telemetry.MetricCounter,
+			Timestamp: time.Now(),
+		})
+		s.telemetry.RecordMetric(telemetry.Metric{
+			Name:      telemetry.MetricInterruptionsTotal,
+			Value:     1,
+			Kind:      telemetry.MetricCounter,
+			Tags:      map[string]string{"cause": "plc"},
+			Timestamp: time.Now(),
+		})
+		s.telemetry.RecordEvent(telemetry.Event{
+			Name:      telemetry.EventAudioInterruption,
+			Severity:  telemetry.SeverityWarn,
+			Fields:    map[string]interface{}{"cause": "plc"},
+			Timestamp: time.Now(),
+		})
 	} else {
 		// Decode payload to 16kHz mono PCM
 		pcm, err = s.decodeToPCM(frame, header.PayloadType)
@@ -418,6 +465,22 @@ func (s *Session) handlePacket(raw []byte) error {
 		// regardless of whether decode succeeded.
 		s.jitter.ReleasePayload(frame)
 		if err != nil {
+			s.telemetry.RecordMetric(telemetry.Metric{
+				Name:      telemetry.MetricErrorsTotal,
+				Value:     1,
+				Kind:      telemetry.MetricCounter,
+				Tags:      map[string]string{"component": "rtp", "error_type": "decode"},
+				Timestamp: time.Now(),
+			})
+			s.telemetry.RecordEvent(telemetry.Event{
+				Name:     telemetry.EventRTPDecodeError,
+				Severity: telemetry.SeverityError,
+				Fields: map[string]interface{}{
+					"codec": string(s.cfg.Codec),
+					"error": err.Error(),
+				},
+				Timestamp: time.Now(),
+			})
 			return fmt.Errorf("decode payload: %w", err)
 		}
 		// decodeToPCM returns a pooled slice for G.711 codecs.
@@ -673,7 +736,27 @@ func (s *Session) statsLoop(ctx context.Context) {
 			s.mu.Lock()
 			snap := s.stats
 			s.mu.Unlock()
-			s.cfg.OnStats(snap)
+			lossRatio := 0.0
+			if snap.PacketsReceived > 0 {
+				lossRatio = float64(snap.PacketsLost) / float64(snap.PacketsReceived)
+			}
+			s.telemetry.RecordMetric(telemetry.Metric{
+				Name:      telemetry.MetricRTPJitterMS,
+				Value:     s.jitter.JitterMs(),
+				Unit:      "ms",
+				Kind:      telemetry.MetricGauge,
+				Timestamp: time.Now(),
+			})
+			s.telemetry.RecordMetric(telemetry.Metric{
+				Name:      telemetry.MetricRTPPacketLossRatio,
+				Value:     lossRatio,
+				Unit:      "ratio",
+				Kind:      telemetry.MetricGauge,
+				Timestamp: time.Now(),
+			})
+			if s.cfg.OnStats != nil {
+				s.cfg.OnStats(snap)
+			}
 		}
 	}
 }
