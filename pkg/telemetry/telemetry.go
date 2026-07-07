@@ -1,7 +1,7 @@
 // Package telemetry provides a vendor-neutral observability interface for
 // ClearStream. It lets applications embedding the SDK receive metrics and
 // structured events covering reliability, media quality of service (QoS),
-// audio interruption rate (IRR), and CPU/resource usage — without coupling
+// audio interruption rate (IRQ), and CPU/resource usage — without coupling
 // the SDK itself to any specific metrics backend (Prometheus, StatsD,
 // CloudWatch, etc.). Applications implement the Sink interface and forward
 // data to whatever backend they use; if no Sink is configured, ClearStream
@@ -175,22 +175,23 @@ const (
 	// speech (vs. silence) in the current window, 0.0-1.0 (gauge).
 	MetricAudioVADSpeechRatio = "clearstream.audio.vad_speech_ratio"
 
-	// -- IRR: Interruption Rate Ratio -------------------------------------
-	// "IRR" is not a standardized industry acronym — it does not appear in
+	// -- IRQ: Interruption Rate Ratio -------------------------------------
+	// Note: "IRQ" commonly means "Interrupt Request" in hardware/OS contexts — that is NOT what this SDK means by it.
+	// "IRQ" is not a standardized industry acronym — it does not appear in
 	// any telephony/audio-quality standard, nor in Exotel's internal
 	// knowledge base. This SDK defines it explicitly as: the ratio of audio
 	// frames that were interrupted (concealed, dropped, or replaced with
 	// silence) to total frames delivered for a call. It is a user-perceived
 	// continuity metric, distinct from raw network packet loss (which
 	// measures loss *before* concealment papers over it). If your
-	// organization uses "IRR" to mean something else, treat MetricIRR/
+	// organization uses "IRQ" to mean something else, treat MetricIRQ/
 	// EventAudioInterruption as a starting point and rename/redefine as
 	// needed — the underlying instrumentation (interruption counting) is
 	// still the correct signal for "did the caller hear a glitch".
 
-	// MetricIRR is interrupted_frames / total_frames for the current call or
+	// MetricIRQ is interrupted_frames / total_frames for the current call or
 	// measurement window, 0.0-1.0 (gauge). 0 = perfectly continuous audio.
-	MetricIRR = "clearstream.audio.irr"
+	MetricIRQ = "clearstream.audio.irq"
 	// MetricInterruptionsTotal counts individual interruption occurrences,
 	// tagged by cause: "plc" | "jitter_overflow" | "decode_error" |
 	// "buffer_underrun" (counter).
@@ -256,7 +257,7 @@ const (
 	// leg) and resets. Fields: call_id, old_ssrc, new_ssrc.
 	EventRTPSSRCChanged = "clearstream.rtp.ssrc_changed"
 	// EventAudioInterruption fires once per interruption occurrence (see
-	// MetricIRR doc above for definition). Fields: call_id, duration_ms,
+	// MetricIRQ doc above for definition). Fields: call_id, duration_ms,
 	// cause.
 	EventAudioInterruption = "clearstream.audio.interruption"
 	// EventWALFlushFailed fires when a billing WAL flush fails. Fields:

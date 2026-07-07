@@ -33,7 +33,7 @@ func TestLoggingSinkRecordMetric(t *testing.T) {
 	var buf bytes.Buffer
 	sink := NewLoggingSink(&buf)
 	sink.RecordMetric(Metric{
-		Name: MetricIRR, Value: 0.02, Unit: "ratio", Kind: MetricGauge,
+		Name: MetricIRQ, Value: 0.02, Unit: "ratio", Kind: MetricGauge,
 		Tags: map[string]string{"call_id": "abc123"},
 	})
 
@@ -41,7 +41,7 @@ func TestLoggingSinkRecordMetric(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if decoded.Type != "metric" || decoded.Name != MetricIRR {
+	if decoded.Type != "metric" || decoded.Name != MetricIRQ {
 		t.Fatalf("unexpected decoded line: %+v", decoded)
 	}
 	if decoded.Value != 0.02 || decoded.Kind != "gauge" {
