@@ -17,6 +17,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net/http"
@@ -37,6 +38,7 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
+
 	switch os.Args[1] {
 	case "file":
 		runFile(os.Args[2:])
@@ -99,8 +101,10 @@ func runDir(args []string) {
 	})
 
 	opts := file.Options{}
+
 	fmt.Printf("Processing directory: %s -> %s (workers: %d, model: %s)\n", *input, *output, *workers, *modelBackend)
 	start := time.Now()
+
 	results := fp.ProcessDirFull(*input, *output, opts)
 
 	ok, skipped, failed := 0, 0, 0
@@ -116,15 +120,23 @@ func runDir(args []string) {
 			ok++
 		}
 	}
+
 	fmt.Printf("\nDone in %.1fs — %d processed, %d skipped, %d failed\n",
 		time.Since(start).Seconds(), ok, skipped, failed)
 }
 
+// runServer starts the ClearStream HTTP API server and blocks until it
+// receives SIGINT/SIGTERM, at which point it performs a graceful shutdown:
+// it stops accepting new connections and waits (up to --shutdown-timeout)
+// for in-flight requests to complete before exiting. This avoids abruptly
+// killing enhancement requests that are mid-processing when the process
+// receives a termination signal (e.g. during a container/Kubernetes stop).
 func runServer(args []string) {
 	fs := flag.NewFlagSet("server", flag.ExitOnError)
 	httpAddr := fs.String("http", ":8080", "HTTP listen address")
 	modelBackend := fs.String("model", "passthrough", "Model backend: rnnoise | deepfilter | passthrough")
 	modelPath := fs.String("model-path", "", "Path to ONNX model file (deepfilter only)")
+	shutdownTimeout := fs.Duration("shutdown-timeout", 30*time.Second, "Max time to wait for in-flight requests to finish on shutdown")
 	fs.Parse(args)
 
 	// Allow env overrides for Docker deployments
@@ -141,7 +153,6 @@ func runServer(args []string) {
 	defer cs.Close()
 
 	handler := cs.NewHTTPHandler()
-
 	srv := &http.Server{
 		Addr:         *httpAddr,
 		Handler:      handler,
@@ -152,16 +163,33 @@ func runServer(args []string) {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
+	serveErr := make(chan error, 1)
 	go func() {
 		fmt.Printf("ClearStream HTTP server listening on %s (model: %s)\n", *httpAddr, *modelBackend)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serveErr <- err
+			return
+		}
+		serveErr <- nil
+	}()
+
+	select {
+	case err := <-serveErr:
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 			os.Exit(1)
 		}
-	}()
-
-	<-sig
-	fmt.Println("\nShutting down...")
+	case <-sig:
+		fmt.Printf("\nShutting down (waiting up to %s for in-flight requests)...\n", shutdownTimeout.String())
+		ctx, cancel := context.WithTimeout(context.Background(), *shutdownTimeout)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "graceful shutdown timed out, forcing close: %v\n", err)
+			srv.Close() //nolint:errcheck
+		}
+		<-serveErr
+		fmt.Println("Server stopped cleanly.")
+	}
 }
 
 func runFile(args []string) {
@@ -191,8 +219,10 @@ func runFile(args []string) {
 
 	fmt.Printf("Processing %s -> %s (model: %s)\n", *input, *output, *modelBackend)
 	start := time.Now()
+
 	err = cs.ProcessFileWithOptions(*input, *output, file.Options{AudioOnly: *audioOnly})
 	must("process file", err)
+
 	fmt.Printf("Done in %.1fs -> %s\n", time.Since(start).Seconds(), *output)
 }
 
@@ -227,7 +257,7 @@ func runRTP(args []string) {
 		JitterDepth: *jitterDepth,
 		PayloadType: uint8(*pt),
 		OnStats: func(s rtppkg.Stats) {
-			fmt.Printf("[stats] rx=%d tx=%d lost=%d latency=%.1fms   ",
+			fmt.Printf("[stats] rx=%d tx=%d lost=%d latency=%.1fms   ",
 				s.PacketsReceived, s.PacketsSent, s.PacketsLost, s.LatencyAvgMs)
 		},
 	}
@@ -237,16 +267,18 @@ func runRTP(args []string) {
 
 	session, err := cs.NewRTPSession(rtpCfg)
 	must("create RTP session", err)
-	session.Start()
 
+	session.Start()
 	fmt.Printf("ClearStream RTP running: %s -> [suppress] -> %s\n", *listen, *forward)
 	fmt.Println("Press Ctrl+C to stop.")
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
+
 	fmt.Println("\nShutting down...")
 	session.Stop()
+
 	stats := session.Stats()
 	fmt.Printf("\nFinal stats: rx=%d tx=%d lost=%d avg_latency=%.1fms\n",
 		stats.PacketsReceived, stats.PacketsSent, stats.PacketsLost, stats.LatencyAvgMs)
@@ -257,8 +289,10 @@ func runProbe(args []string) {
 		fmt.Fprintln(os.Stderr, "error: provide a file path")
 		os.Exit(1)
 	}
+
 	info, err := audio.Probe("ffmpeg", args[0])
 	must("probe", err)
+
 	fmt.Printf("File:        %s\n", args[0])
 	fmt.Printf("Container:   %s\n", info.ContainerFormat)
 	fmt.Printf("Has video:   %v\n", info.HasVideo)
