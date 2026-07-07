@@ -61,6 +61,11 @@ type Options struct {
 	// OnProgress is called with values 0.0–1.0 as processing advances.
 	// It is called from the processing goroutine; keep it non-blocking.
 	OnProgress func(pct float64)
+
+	// MaxConcurrency caps the number of files processed in parallel by
+	// ProcessDir and ProcessDirFull. If zero or negative, runtime.NumCPU()
+	// is used as the default.
+	MaxConcurrency int
 }
 
 // ProcessorConfig holds configuration for a Processor.
@@ -162,9 +167,20 @@ func (p *Processor) ProcessWithOptions(src, dst string, opts Options) error {
 	return nil
 }
 
+// concurrencyLimit returns the number of worker goroutines ProcessDir and
+// ProcessDirFull should use, honouring opts.MaxConcurrency when set to a
+// positive value and falling back to runtime.NumCPU() otherwise.
+func concurrencyLimit(opts Options) int {
+	if opts.MaxConcurrency > 0 {
+		return opts.MaxConcurrency
+	}
+	return runtime.NumCPU()
+}
+
 // ProcessDir enhances all audio/video files in srcDir and writes results to dstDir.
 // Supported extensions: .mp3 .wav .flac .ogg .aac .mp4 .mkv .mov .avi .webm .m4a
-// Files are processed concurrently up to runtime.NumCPU() goroutines.
+// Files are processed concurrently, bounded by opts.MaxConcurrency
+// (default runtime.NumCPU() when unset/zero/negative).
 // Returns a slice of errors (one per failed file; nil entries = success).
 func (p *Processor) ProcessDir(srcDir, dstDir string, opts Options) []error {
 	supported := map[string]bool{
@@ -205,7 +221,7 @@ func (p *Processor) ProcessDir(srcDir, dstDir string, opts Options) []error {
 	}
 
 	errs := make([]error, len(jobs))
-	sem := make(chan struct{}, runtime.NumCPU())
+	sem := make(chan struct{}, concurrencyLimit(opts))
 	var wg sync.WaitGroup
 
 	for i, j := range jobs {
@@ -404,7 +420,6 @@ func inferOutputCodec(dst string) string {
 	}
 }
 
-
 // parseFFmpegTime parses an FFmpeg time string "HH:MM:SS.ms" into seconds.
 // Returns 0 on parse failure.
 func parseFFmpegTime(s string) float64 {
@@ -519,7 +534,7 @@ func (p *Processor) ProcessDirFull(srcDir, dstDir string, opts Options) []DirRes
 	}
 
 	// Process non-skipped files concurrently.
-	sem := make(chan struct{}, runtime.NumCPU())
+	sem := make(chan struct{}, concurrencyLimit(opts))
 	var wg sync.WaitGroup
 	for i := range results {
 		if results[i].Skipped {

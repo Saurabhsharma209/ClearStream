@@ -10,9 +10,12 @@ package file
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/exotel/clearstream/pkg/model"
@@ -328,3 +331,148 @@ func TestProcessWithOptionsFakeFFmpegEmptyOutputCodec(t *testing.T) {
 	p := newProcWithPath(ffmpeg)
 	_ = p.ProcessWithOptions(src, dst, Options{OutputCodec: ""})
 }
+
+// ---------------------------------------------------------------------------
+// ProcessDir — Options.MaxConcurrency bounds parallel workers
+// ---------------------------------------------------------------------------
+
+// makeConcurrencyTrackingFakeFFmpeg builds a fake ffmpeg+ffprobe pair whose
+// decode phase (last arg == "-") records, via a lock-protected counter file
+// under trackDir, the maximum number of concurrent decode invocations ever
+// observed. Each decode invocation holds its "in-flight" slot for a short
+// sleep so that overlapping invocations have a real chance to be observed.
+func makeConcurrencyTrackingFakeFFmpeg(t *testing.T, trackDir string) (ffmpegPath string) {
+	t.Helper()
+	skipOnWindows(t)
+	dir := t.TempDir()
+
+	probeJSON := `{"streams":[{"codec_type":"audio","codec_name":"pcm_s16le","sample_rate":"16000","channels":1,"duration":"0.020000","bit_rate":"256000"}],"format":{"format_name":"wav","duration":"0.020000","bit_rate":"256000"}}`
+
+	pyWAV := `import sys,struct;` +
+		`dst=sys.argv[-1];` +
+		`d=b'\x00'*320;` +
+		`h=b'RIFF'+struct.pack('<I',36+len(d))+b'WAVEfmt ';` +
+		`h+=struct.pack('<IHHIIHH',16,1,1,16000,32000,2,16);` +
+		`h+=b'data'+struct.pack('<I',len(d));` +
+		`open(dst,'wb').write(h+d)`
+
+	script := "#!/bin/sh\n" +
+		"TRACKDIR=\"" + trackDir + "\"\n" +
+		"LOCKDIR=\"$TRACKDIR/lock\"\n" +
+		"COUNTFILE=\"$TRACKDIR/count\"\n" +
+		"MAXFILE=\"$TRACKDIR/max\"\n" +
+		"case \"$0\" in\n" +
+		"  *ffprobe*)\n" +
+		"    echo '" + probeJSON + "'\n" +
+		"    exit 0\n" +
+		"    ;;\n" +
+		"esac\n" +
+		"for a in \"$@\"; do LAST=\"$a\"; done\n" +
+		"if [ \"$LAST\" = \"-\" ]; then\n" +
+		"    while ! mkdir \"$LOCKDIR\" 2>/dev/null; do sleep 0.01; done\n" +
+		"    cur=$(cat \"$COUNTFILE\" 2>/dev/null || echo 0)\n" +
+		"    cur=$((cur+1))\n" +
+		"    echo $cur > \"$COUNTFILE\"\n" +
+		"    max=$(cat \"$MAXFILE\" 2>/dev/null || echo 0)\n" +
+		"    if [ $cur -gt $max ]; then echo $cur > \"$MAXFILE\"; fi\n" +
+		"    rmdir \"$LOCKDIR\"\n" +
+		"    sleep 0.15\n" +
+		"    while ! mkdir \"$LOCKDIR\" 2>/dev/null; do sleep 0.01; done\n" +
+		"    cur=$(cat \"$COUNTFILE\")\n" +
+		"    cur=$((cur-1))\n" +
+		"    echo $cur > \"$COUNTFILE\"\n" +
+		"    rmdir \"$LOCKDIR\"\n" +
+		"    dd if=/dev/zero bs=320 count=1 2>/dev/null\n" +
+		"    exit 0\n" +
+		"fi\n" +
+		"python3 -c \"" + pyWAV + "\" \"$LAST\" 2>/dev/null\n" +
+		"if [ $? -ne 0 ]; then\n" +
+		"    dd if=/dev/zero of=\"$LAST\" bs=364 count=1 2>/dev/null\n" +
+		"fi\n" +
+		"exit 0\n"
+
+	ffmpegPath = filepath.Join(dir, "ffmpeg")
+	ffprobePath := filepath.Join(dir, "ffprobe")
+	if err := os.WriteFile(ffmpegPath, []byte(script), 0755); err != nil {
+		t.Fatalf("makeConcurrencyTrackingFakeFFmpeg: write ffmpeg: %v", err)
+	}
+	if err := os.WriteFile(ffprobePath, []byte(script), 0755); err != nil {
+		t.Fatalf("makeConcurrencyTrackingFakeFFmpeg: write ffprobe: %v", err)
+	}
+	return ffmpegPath
+}
+
+// TestProcessDirMaxConcurrencyBounded verifies that Options.MaxConcurrency
+// caps the number of files ProcessDir processes in parallel: with 6 source
+// files and MaxConcurrency=2, no more than 2 fake-ffmpeg decode invocations
+// should ever be observed running at the same time.
+func TestProcessDirMaxConcurrencyBounded(t *testing.T) {
+	skipOnWindows(t)
+	trackDir := t.TempDir()
+	ffmpeg := makeConcurrencyTrackingFakeFFmpeg(t, trackDir)
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	for i := 0; i < 6; i++ {
+		name := filepath.Join(srcDir, fmt.Sprintf("track%d.wav", i))
+		if err := os.WriteFile(name, []byte("dummy"), 0644); err != nil {
+			t.Fatalf("write src file: %v", err)
+		}
+	}
+
+	p := newProcWithPath(ffmpeg)
+	errs := p.ProcessDir(srcDir, dstDir, Options{
+		OutputCodec:    "pcm_s16le",
+		MaxConcurrency: 2,
+	})
+	for _, e := range errs {
+		if e != nil {
+			t.Errorf("ProcessDir error: %v", e)
+		}
+	}
+
+	maxBytes, err := os.ReadFile(filepath.Join(trackDir, "max"))
+	if err != nil {
+		t.Fatalf("read max tracking file: %v", err)
+	}
+	maxStr := strings.TrimSpace(string(maxBytes))
+	if maxStr == "" {
+		t.Fatal("expected max concurrency tracking file to be populated")
+	}
+	maxN, err := strconv.Atoi(maxStr)
+	if err != nil {
+		t.Fatalf("parse max concurrency value %q: %v", maxStr, err)
+	}
+	if maxN > 2 {
+		t.Errorf("observed max concurrent decode invocations = %d, want <= 2 (MaxConcurrency)", maxN)
+	}
+	if maxN < 1 {
+		t.Errorf("observed max concurrent decode invocations = %d, want >= 1", maxN)
+	}
+}
+
+// TestProcessDirMaxConcurrencyDefaultsWhenUnset verifies that when
+// MaxConcurrency is left at its zero value, ProcessDir still completes
+// successfully (falling back to runtime.NumCPU() internally) rather than
+// deadlocking or failing.
+func TestProcessDirMaxConcurrencyDefaultsWhenUnset(t *testing.T) {
+	skipOnWindows(t)
+	ffmpeg := makeFakeFFmpegForFile(t)
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	for i := 0; i < 3; i++ {
+		name := filepath.Join(srcDir, fmt.Sprintf("track%d.wav", i))
+		if err := os.WriteFile(name, []byte("dummy"), 0644); err != nil {
+			t.Fatalf("write src file: %v", err)
+		}
+	}
+	p := newProcWithPath(ffmpeg)
+	errs := p.ProcessDir(srcDir, dstDir, Options{OutputCodec: "pcm_s16le"})
+	for _, e := range errs {
+		if e != nil {
+			t.Errorf("ProcessDir error: %v", e)
+		}
+	}
+}
+
+var _ = runtime.NumCPU // keep runtime import used regardless of branch changes above
