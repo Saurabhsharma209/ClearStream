@@ -2012,3 +2012,22 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. pkg/eval: Improve evalFile coverage further — AGC convergence path needs fake-ffmpeg that writes non-zero RMS PCM, and the pipeline error/cancellation paths need injection.
 2. pkg/billing: Push WAL coverage past 90% — rotate() error paths (openNew failure after rotate) and RecoverAndFlush corrupted-file skip are the remaining gaps.
 3. AI Model: Process48k resampler quality upgrade (3-sample avg → anti-alias filter) — pending product decision on 1.46dB SNR gap.
+
+## 2026-07-08
+
+**Agents run:** Post-processing (pkg/file), API Layer (pkg/http, clearstream.go), QA/Testing (pkg/websocket)
+**Build:** passing ✅ (CGO_ENABLED=0 full suite; default build also green)
+
+### Changes
+- `pkg/file/processor.go`: Added `Options.MaxConcurrency` to bound the worker pools used by `ProcessDir`/`ProcessDirFull` — previously batch processing had no cap, risking unbounded goroutine/file-handle fan-out on large directories.
+- `pkg/http/handler.go`, `clearstream.go`: Added `HandlerConfig.Validate()`, fixed a nil-`Suppressor`/nil-`Logger` panic risk in `NewHandler`, and filled in missing Go doc comments on exported symbols.
+- `pkg/websocket/client_test.go`: Added `TestReconnectClientBackoffGrowsAndCaps` — closed a real 0%-coverage gap on the reconnect exponential-backoff `min()` helper; verified backoff grows then caps at `MaxBackoff` using a real TCP listener across 8 dial attempts. pkg/websocket coverage: 87.9% → 92.9%.
+
+### Blocked
+- `pkg/eval` test binary fails under default `CGO_ENABLED=1` with `dyld: missing LC_UUID load command` — reproduced and confirmed environment/toolchain-only (passes cleanly under `CGO_ENABLED=0`, 93.1% coverage). Same class as the long-standing macOS Go/CGO dyld issue already tracked; not a code bug, no fix attempted.
+- AI Model: Process48k resampler quality upgrade still pending a product decision on the ~1.46dB SNR vs. 6x-throughput tradeoff (outstanding since 07-06).
+
+### Tomorrow
+1. AI Model / Audio Pipeline: rotate back — get the product call on Process48k resampler quality vs. speed, then implement.
+2. RTP/SIP: no changes this cycle — due for a rotation next.
+3. Investigate whether the macOS dyld/CGO toolchain issue can be worked around (e.g. pinned Go version or linker flag) so default-mode tests don't need `CGO_ENABLED=0`.
