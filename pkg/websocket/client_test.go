@@ -1,9 +1,11 @@
 package websocket_test
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -202,5 +204,112 @@ func TestReconnectClientStop(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Stop() did not return within 2 seconds")
+	}
+}
+
+// TestReconnectClientBackoffGrowsAndCaps verifies the exponential-backoff
+// reconnect logic in connectLoop: the delay between successive failed dial
+// attempts grows after each failure and never exceeds MaxBackoff.
+//
+// This path — including the unexported min() helper that caps the backoff —
+// previously had 0% test coverage. Every other scenario in this file either
+// connects successfully on the first try or calls Stop() before the first
+// backoff timer elapses, so the doubling/capping arithmetic in connectLoop
+// (client.go: `backoff = min(backoff*2, c.cfg.MaxBackoff)`) was never
+// actually exercised. A regression here (e.g. losing the min() cap, or the
+// backoff never growing at all) would mean a client behind a real outage
+// either hammers the endpoint at a fixed short interval forever, or backs
+// off unboundedly and stops retrying in any useful timeframe — both are
+// real production failure modes for a "reconnecting" client.
+func TestReconnectClientBackoffGrowsAndCaps(t *testing.T) {
+	var mu sync.Mutex
+	var attempts []time.Time
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer ln.Close()
+
+	const wantAttempts = 8
+	done := make(chan struct{})
+	var closeOnce sync.Once
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			attempts = append(attempts, time.Now())
+			n := len(attempts)
+			mu.Unlock()
+			conn.Close() // fail the handshake immediately -> dial error for the client
+			if n >= wantAttempts {
+				closeOnce.Do(func() { close(done) })
+			}
+		}
+	}()
+
+	const initial = 15 * time.Millisecond
+	const max = 60 * time.Millisecond
+
+	client := csws.NewReconnectClient(csws.ReconnectConfig{
+		URL:            "ws://" + ln.Addr().String(),
+		QueueSize:      4,
+		InitialBackoff: initial,
+		MaxBackoff:     max,
+	})
+	defer client.Stop()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("did not observe %d dial attempts within 3s — reconnect loop appears stuck", wantAttempts)
+	}
+
+	mu.Lock()
+	got := append([]time.Time(nil), attempts...)
+	mu.Unlock()
+
+	if len(got) < wantAttempts {
+		t.Fatalf("expected at least %d dial attempts, got %d", wantAttempts, len(got))
+	}
+
+	gaps := make([]time.Duration, 0, len(got)-1)
+	for i := 1; i < len(got); i++ {
+		gaps = append(gaps, got[i].Sub(got[i-1]))
+	}
+
+	// The first retry gap should reflect InitialBackoff — it must be
+	// meaningfully larger than "instant" (i.e. the client isn't retrying
+	// with no delay at all).
+	if gaps[0] < initial/2 {
+		t.Errorf("first retry gap %v shorter than expected (InitialBackoff=%v)", gaps[0], initial)
+	}
+
+	// Backoff should grow across the first couple of retries, proving the
+	// delay actually doubles rather than staying flat at InitialBackoff.
+	grew := false
+	for i := 1; i < len(gaps) && i < 3; i++ {
+		if gaps[i] > gaps[0]+5*time.Millisecond {
+			grew = true
+			break
+		}
+	}
+	if !grew {
+		t.Errorf("backoff does not appear to grow across retries: gaps=%v", gaps)
+	}
+
+	// Backoff must be capped at MaxBackoff. By the later attempts, growth
+	// should have already hit the ceiling. Uncapped exponential growth from
+	// InitialBackoff=15ms would reach roughly 15ms*2^6=960ms by the 7th gap —
+	// far beyond this bound — so this reliably catches a broken/missing
+	// min() cap while tolerating scheduler jitter on a correctly-capped
+	// implementation (~60ms gaps expected).
+	for i, g := range gaps[len(gaps)-3:] {
+		if g > 3*max {
+			t.Errorf("late retry gap[%d] = %v exceeds 3x MaxBackoff (%v) — backoff cap appears broken", i, g, max)
+		}
 	}
 }
