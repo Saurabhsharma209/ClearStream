@@ -59,19 +59,81 @@ type Metrics struct {
 
 // HandlerConfig configures the HTTP handler.
 type HandlerConfig struct {
+	// Suppressor performs the actual noise-suppression work. Required --
+	// NewHandler falls back to a no-op passthrough suppressor (and logs a
+	// warning) if this is left nil, since every request handler calls
+	// Suppressor.Name() unconditionally.
 	Suppressor model.Suppressor
+	// FFmpegPath overrides the ffmpeg binary location. Default: "ffmpeg" (PATH).
 	FFmpegPath string
+	// SampleRate is the internal processing sample rate for POST /enhance.
+	// Must be one of 8000, 16000, 32000, 48000 Hz if set. Default: 16000.
 	SampleRate int
-	Logger     *zap.Logger
-	PoolSize   int // max concurrent RTP sessions (pool capacity)
+	// Logger is an optional zap logger. If nil, a no-op logger is used so
+	// the handler never panics on a nil logger call.
+	Logger *zap.Logger
+	// PoolSize reports the max concurrent RTP sessions (pool capacity) via
+	// GET /info. Purely informational -- does not allocate a pool itself.
+	PoolSize int
 
 	// Telemetry receives HTTP request latency metrics and error events.
 	// Optional -- defaults to a no-op sink when unset.
 	Telemetry telemetry.Sink
 }
 
+// Validate checks HandlerConfig fields and returns an error describing the
+// first invalid value found, mirroring Config.Validate(). NewHandler calls
+// this internally and repairs invalid/missing fields with safe defaults
+// (logging a warning) rather than panicking, so construction never fails --
+// call Validate explicitly beforehand if you want validation errors surfaced
+// to your own caller instead of silently corrected.
+//
+// Rules enforced:
+//   - Suppressor must be non-nil (a nil Suppressor would panic on the first
+//     request, since every handler path calls Suppressor.Name()).
+//   - SampleRate, if non-zero, must be exactly 8000, 16000, 32000, or 48000 Hz.
+//   - PoolSize, if non-zero, must be positive (it is caller-reported metadata).
+func (c HandlerConfig) Validate() error {
+	if c.Suppressor == nil {
+		return fmt.Errorf("clearstream/http: HandlerConfig.Suppressor is required")
+	}
+	validSampleRates := map[int]bool{8000: true, 16000: true, 32000: true, 48000: true}
+	if c.SampleRate != 0 && !validSampleRates[c.SampleRate] {
+		return fmt.Errorf("clearstream/http: SampleRate %d is not supported; use one of 8000, 16000, 32000, 48000", c.SampleRate)
+	}
+	if c.PoolSize < 0 {
+		return fmt.Errorf("clearstream/http: PoolSize %d must not be negative", c.PoolSize)
+	}
+	return nil
+}
+
 // NewHandler creates a new HTTP API handler.
+//
+// cfg is validated via HandlerConfig.Validate(); any invalid or missing
+// fields (nil Suppressor, out-of-range SampleRate, negative PoolSize) are
+// repaired with safe defaults and logged as a warning instead of causing a
+// panic on the first request.
 func NewHandler(cfg HandlerConfig) *Handler {
+	if err := cfg.Validate(); err != nil {
+		if cfg.Logger != nil {
+			cfg.Logger.Warn("invalid HandlerConfig; applying safe defaults", zap.Error(err))
+		}
+		if cfg.Suppressor == nil {
+			cfg.Suppressor = model.NewPassthrough()
+		}
+		if cfg.SampleRate != 0 {
+			validSampleRates := map[int]bool{8000: true, 16000: true, 32000: true, 48000: true}
+			if !validSampleRates[cfg.SampleRate] {
+				cfg.SampleRate = 0
+			}
+		}
+		if cfg.PoolSize < 0 {
+			cfg.PoolSize = 0
+		}
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = zap.NewNop()
+	}
 	if cfg.FFmpegPath == "" {
 		cfg.FFmpegPath = "ffmpeg"
 	}
@@ -318,6 +380,8 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
+// handleHealth processes GET /health, returning a JSON status payload
+// including the active suppressor model name and process uptime.
 func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
 		"status":     "ok",
@@ -327,6 +391,8 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleInfo processes GET /info, returning static SDK metadata (version,
+// model, sample rate, supported codecs, and the list of available endpoints).
 func (h *Handler) handleInfo(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
 		"version":                 "0.1.0",
@@ -344,6 +410,8 @@ func (h *Handler) handleInfo(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleMetrics processes GET /metrics, returning the JSON Metrics snapshot
+// (request counters, average processing time, and uptime).
 func (h *Handler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	h.metrics.Uptime = time.Since(h.metrics.startTime).Round(time.Second).String()
 	json.NewEncoder(w).Encode(h.metrics) //nolint:errcheck
@@ -379,16 +447,23 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request) {
 
 // ---- helpers ----------------------------------------------------------------
 
+// writeJSONError writes a JSON error body of the form {"error":..,"code":..}
+// with the given HTTP status code.
 func writeJSONError(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	fmt.Fprintf(w, `{"error":%q,"code":%d}`, msg, code) //nolint:errcheck
 }
 
+// writeError is an alias for writeJSONError, used by handlers that write
+// the error before setting a Content-Type explicitly.
 func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSONError(w, code, msg)
 }
 
+// extToMIME maps a file extension (including the leading dot) to its MIME
+// type for the Content-Type response header. Falls back to
+// "application/octet-stream" for unrecognised extensions.
 func extToMIME(ext string) string {
 	switch ext {
 	case ".mp3":
