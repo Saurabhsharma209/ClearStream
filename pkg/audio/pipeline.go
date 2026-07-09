@@ -163,6 +163,14 @@ type Pipeline struct {
 	telemetry telemetry.Sink
 	// telemetryTags are attached to pipeline-level metrics (e.g. backend name).
 	telemetryTags map[string]string
+
+	// resample48kDownHist/resample48kUpHist carry cross-call history for
+	// Process48k's stateful Kaiser-FIR 3x resampling (see
+	// kaiserFIRDownsample3xStateful/kaiserFIRUpsample3xStateful in
+	// resample.go). Lazily initialised to zero-filled (silence) history on
+	// first use; reset to zero-filled again by Reset().
+	resample48kDownHist []int16
+	resample48kUpHist   []int16
 }
 
 // NewPipeline creates a new Pipeline.
@@ -503,6 +511,18 @@ func (p *Pipeline) Reset() {
 	if p.limiter != nil {
 		p.limiter.Reset()
 	}
+	// Zero-fill (rather than nil) so Process48k does not need to distinguish
+	// "never used" from "reset"; a nil check there just means "not yet sized".
+	if p.resample48kDownHist != nil {
+		for i := range p.resample48kDownHist {
+			p.resample48kDownHist[i] = 0
+		}
+	}
+	if p.resample48kUpHist != nil {
+		for i := range p.resample48kUpHist {
+			p.resample48kUpHist[i] = 0
+		}
+	}
 	p.statsMu.Lock()
 	p.framesProcessed = 0
 	p.framesSuppressed = 0
@@ -617,23 +637,42 @@ func (p *Pipeline) Reconfigure(cfg PipelineConfig) {
 const Frame48kSamples = 480
 
 // Process48k processes a single 480-sample frame of 48kHz mono PCM.
-// It downsamples 3:1 to 160 samples at 16kHz via 3-sample averaging,
-// runs noise suppression, then upsamples 3:1 back to 480 samples via
-// linear interpolation. This path avoids the quality-degrading
-// 8kHz->16kHz->8kHz round-trip used for narrowband PSTN input.
+// It downsamples 3:1 to 160 samples at 16kHz using a 63-tap Kaiser-windowed
+// sinc FIR anti-alias filter (kaiserFIRDownsample3xStateful, the same design
+// family as the 8kHz<->16kHz path's kaiserFIRUpsample2x/kaiserFIRDownsample2x),
+// runs noise suppression, then upsamples 3:1 back to 480 samples via the
+// matching kaiserFIRUpsample3xStateful FIR. This path avoids the extra 8kHz
+// round-trip used for narrowband PSTN input while now matching that path's
+// resampling quality instead of trading it away for throughput.
+//
+// Both FIR stages are *stateful* across calls (history carried in
+// p.resample48kDownHist/p.resample48kUpHist, reset by Pipeline.Reset): since
+// Process48k is called once per 10ms frame in a continuous stream, using real
+// preceding audio instead of a synthetic per-call boundary assumption avoids
+// introducing a resampling artefact at every frame boundary. An earlier,
+// stateless (per-call boundary-reflected) version of this FIR upgrade was
+// A/B tested and found to make quality *worse* than the original 3-sample-
+// average/linear-interpolation implementation precisely because of that
+// boundary artefact; see DEVLOG 2026-07-09 and TestABProcess48kVsDirect in
+// ab_process48k_test.go for the measured before/after numbers.
+//
 // Returns a 480-sample enhanced frame and any suppressor error.
 func (p *Pipeline) Process48k(frame []int16) ([]int16, error) {
 	if len(frame) != Frame48kSamples {
 		return nil, fmt.Errorf("audio: Process48k requires %d samples, got %d", Frame48kSamples, len(frame))
 	}
 
-	// Step 1: Downsample 480 -> 160 via 3-sample averaging (better anti-alias).
-	down := make([]int16, FrameSizeSamples)
-	for i := 0; i < FrameSizeSamples; i++ {
-		j := i * 3
-		avg := (int32(frame[j]) + int32(frame[j+1]) + int32(frame[j+2])) / 3
-		down[i] = int16(avg)
+	if p.resample48kDownHist == nil {
+		p.resample48kDownHist = make([]int16, kaiser3xDownHistLen)
 	}
+	if p.resample48kUpHist == nil {
+		p.resample48kUpHist = make([]int16, kaiser3xUpHistLen)
+	}
+
+	// Step 1: Downsample 480 -> 160 via a stateful Kaiser-windowed sinc FIR
+	// anti-alias filter (real cross-frame history, no boundary assumption).
+	var down []int16
+	down, p.resample48kDownHist = kaiserFIRDownsample3xStateful(frame, p.resample48kDownHist)
 
 	p.statsMu.Lock()
 	p.framesProcessed++
@@ -664,20 +703,9 @@ func (p *Pipeline) Process48k(frame []int16) ([]int16, error) {
 		p.statsMu.Unlock()
 	}
 
-	// Step 3: Upsample 160 -> 480 via linear interpolation.
-	out := make([]int16, Frame48kSamples)
-	for i := 0; i < FrameSizeSamples-1; i++ {
-		a := int32(processed[i])
-		b := int32(processed[i+1])
-		out[i*3] = int16(a)
-		out[i*3+1] = int16((a*2 + b) / 3)
-		out[i*3+2] = int16((a + b*2) / 3)
-	}
-	// Last triplet: hold last sample.
-	last := int32(processed[FrameSizeSamples-1])
-	out[477] = int16(last)
-	out[478] = int16(last)
-	out[479] = int16(last)
+	// Step 3: Upsample 160 -> 480 via the matching stateful Kaiser-windowed sinc FIR.
+	var out []int16
+	out, p.resample48kUpHist = kaiserFIRUpsample3xStateful(processed, p.resample48kUpHist)
 
 	return out, nil
 }

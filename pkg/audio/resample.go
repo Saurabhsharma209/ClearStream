@@ -45,27 +45,9 @@ func kaiserFIRUpsample2x(samples []int16) []int16 {
 		fc   = 0.25  // normalised cutoff (0.5 * srcNyquist in terms of dstRate)
 	)
 
-	// Build Kaiser-windowed sinc coefficients.
-	h := make([]float64, L)
+	// Build Kaiser-windowed sinc coefficients (shared helper — see kaiserSincCoeffs).
+	h := kaiserSincCoeffs(L, beta, fc)
 	M := L - 1
-	i0beta := besselI0(beta)
-	for n := 0; n < L; n++ {
-		t := float64(n) - float64(M)/2.0
-		// Sinc kernel
-		var sinc float64
-		if t == 0 {
-			sinc = 2.0 * fc
-		} else {
-			sinc = math.Sin(2*math.Pi*fc*t) / (math.Pi * t)
-		}
-		// Kaiser window
-		arg := 1.0 - (2.0*float64(n)/float64(M)-1.0)*(2.0*float64(n)/float64(M)-1.0)
-		if arg < 0 {
-			arg = 0
-		}
-		window := besselI0(beta*math.Sqrt(arg)) / i0beta
-		h[n] = sinc * window
-	}
 
 	// Upsample by 2: insert zeros between samples, then convolve with FIR.
 	// upLen = 2 * len(samples)
@@ -130,25 +112,10 @@ func kaiserFIRDownsample2x(samples []int16) []int16 {
 		fc   = 0.25  // normalised cutoff: 4kHz / 16kHz input rate
 	)
 
-	// Build Kaiser-windowed sinc coefficients (identical design to upsample path).
-	h := make([]float64, L)
+	// Build Kaiser-windowed sinc coefficients (identical design to upsample path,
+	// via the shared kaiserSincCoeffs helper).
+	h := kaiserSincCoeffs(L, beta, fc)
 	M := L - 1
-	i0beta := besselI0(beta)
-	for n := 0; n < L; n++ {
-		t := float64(n) - float64(M)/2.0
-		var sinc float64
-		if t == 0 {
-			sinc = 2.0 * fc
-		} else {
-			sinc = math.Sin(2*math.Pi*fc*t) / (math.Pi * t)
-		}
-		arg := 1.0 - (2.0*float64(n)/float64(M)-1.0)*(2.0*float64(n)/float64(M)-1.0)
-		if arg < 0 {
-			arg = 0
-		}
-		window := besselI0(beta*math.Sqrt(arg)) / i0beta
-		h[n] = sinc * window
-	}
 
 	N := len(samples)
 	half := M / 2 // filter group delay in input samples
@@ -187,6 +154,215 @@ func kaiserFIRDownsample2x(samples []int16) []int16 {
 	return out
 }
 
+// kaiserSincCoeffs builds L Kaiser-windowed sinc FIR coefficients with window
+// shape parameter beta and normalised cutoff fc. Extracted from
+// kaiserFIRUpsample2x/kaiserFIRDownsample2x (and reused by
+// kaiserFIRUpsample3x/kaiserFIRDownsample3x) so the coefficient-generation
+// math — sinc kernel * Kaiser window, via besselI0 — is defined exactly once
+// instead of duplicated per filter length/ratio. The normalisation convention
+// for fc (fraction of whichever sample rate the caller's convolution loop
+// operates in) matches each caller's own doc comment.
+func kaiserSincCoeffs(L int, beta, fc float64) []float64 {
+	h := make([]float64, L)
+	M := L - 1
+	i0beta := besselI0(beta)
+	for n := 0; n < L; n++ {
+		t := float64(n) - float64(M)/2.0
+		// Sinc kernel
+		var sinc float64
+		if t == 0 {
+			sinc = 2.0 * fc
+		} else {
+			sinc = math.Sin(2*math.Pi*fc*t) / (math.Pi * t)
+		}
+		// Kaiser window
+		arg := 1.0 - (2.0*float64(n)/float64(M)-1.0)*(2.0*float64(n)/float64(M)-1.0)
+		if arg < 0 {
+			arg = 0
+		}
+		window := besselI0(beta*math.Sqrt(arg)) / i0beta
+		h[n] = sinc * window
+	}
+	return h
+}
+
+// kaiser3xL/kaiser3xBeta/kaiser3xFc are the shared Kaiser-FIR design
+// parameters for the 3x resampling pair used by Pipeline.Process48k
+// (kaiserFIRDownsample3xStateful / kaiserFIRUpsample3xStateful below).
+//
+// Kaiser beta=5.653 targets the same 60 dB stopband attenuation as the 2x
+// filters (kaiserFIRUpsample2x/kaiserFIRDownsample2x). A longer 63-tap
+// filter (vs 31 for the 2x case) is used because fc is a narrower fraction
+// of the sample rate than the 2x filters' fc=0.25, and proportionally more
+// taps are needed to keep the same transition-band sharpness (in Hz).
+//
+// fc is deliberately set to 1/8 (6kHz), *below* the theoretically "exact"
+// anti-alias cutoff of 1/6 (8kHz = the Nyquist of the 16kHz processing
+// rate). This was an empirical tuning decision, not just a theoretical one:
+// an fc=1/6 filter — textbook-correct for pure anti-aliasing, with a flat
+// passband all the way to 8kHz — was A/B tested (TestABProcess48kVsDirect)
+// and found to produce *worse* post-suppression SNR than the original
+// cheap 3-sample-average/linear-interpolation implementation it replaced.
+// The reason: that crude filter's soft, early-rolling-off frequency
+// response was incidentally acting as a mild broadband noise attenuator
+// before the noise reducer/suppressor ever ran, and a textbook flat-
+// passband anti-alias filter — by design — does not reproduce that
+// side-effect, so it exposed the suppressor to more raw noise energy in
+// the 6-8kHz band than it can fully remove on its own. Tightening fc to
+// 1/8 recovers (and slightly exceeds) that lost benefit while still
+// preserving materially more bandwidth than 8kHz-Nyquist narrowband
+// (telephone-quality, ~4kHz) processing — see DEVLOG 2026-07-09 for the
+// measured before/after numbers.
+//
+// Coefficients are computed once at package init (not per call/frame) since
+// Process48k runs this on every 10ms frame — see kaiser3xCoeffs.
+const (
+	kaiser3xL    = 63        // filter length (odd)
+	kaiser3xBeta = 5.653     // Kaiser window shape parameter (60 dB stopband)
+	kaiser3xFc   = 1.0 / 8.0 // normalised cutoff: 6kHz (see doc comment above)
+)
+
+// kaiser3xCoeffs holds the precomputed Kaiser-windowed sinc taps shared by
+// kaiserFIRDownsample3xStateful and kaiserFIRUpsample3xStateful.
+var kaiser3xCoeffs = kaiserSincCoeffs(kaiser3xL, kaiser3xBeta, kaiser3xFc)
+
+// kaiser3xDownHistLen is the number of trailing 48kHz input samples that
+// must be carried across calls to kaiserFIRDownsample3xStateful so each new
+// frame's causal FIR window has real preceding audio to convolve against
+// (instead of a synthetic per-call boundary assumption).
+const kaiser3xDownHistLen = kaiser3xL - 1
+
+// kaiser3xUpHistLen is the number of trailing 16kHz (post-suppression)
+// samples that must be carried across calls to kaiserFIRUpsample3xStateful,
+// sized so the causal window in the zero-inserted (48kHz) domain never needs
+// to look further back than real history provides: ceil((L-1)/3).
+const kaiser3xUpHistLen = (kaiser3xL - 1 + 2) / 3
+
+// Process48kGroupDelaySamples is the constant, deterministic group delay (in
+// 48kHz samples) that Pipeline.Process48k's stateful Kaiser-FIR resampling
+// introduces end-to-end: kaiserFIRDownsample3xStateful and
+// kaiserFIRUpsample3xStateful are each causal (they use only real past
+// samples, never a same-call boundary assumption — see their doc comments),
+// which means each has its own group delay of half the filter length; the
+// two stages compose to a fixed total of (kaiser3xL-1) samples ≈ 1.3ms at
+// 48kHz. This is standard for any streaming FIR resampler/anti-alias filter
+// and is negligible for real-time voice (well under typical jitter-buffer
+// budgets); it replaced the previous 3-sample-average/linear-interpolation
+// implementation, which had zero delay but far worse frequency response.
+// Exported for callers/tests that need to time-align Process48k's output
+// against its input (e.g. objective quality metrics computed sample-by-
+// sample against a reference).
+const Process48kGroupDelaySamples = kaiser3xL - 1
+
+// kaiserFIRDownsample3xStateful downsamples exactly 3x (e.g. 48kHz->16kHz)
+// using the shared kaiser3xCoeffs anti-alias FIR, applied *causally*: each
+// output sample's convolution window uses only `hist` (real samples carried
+// over from the previous call) and `frame` itself — never a same-call
+// boundary assumption. This is what makes it safe to call once per 10ms
+// frame from Pipeline.Process48k without introducing a resampling artefact
+// at every frame boundary (the failure mode of a naive per-call
+// zero-padded/reflected-boundary FIR, which this replaced after A/B testing
+// showed it made frame-chunked resampling *worse* than the cheap
+// 3-sample-average it was meant to improve on — see DEVLOG 2026-07-09).
+//
+// hist must hold exactly kaiser3xDownHistLen samples immediately preceding
+// frame (zero-filled for the first call of a session/after Reset).
+// len(frame) must be a multiple of 3.
+//
+// Returns the downsampled output (len(frame)/3 samples) and the updated
+// history slice to pass into the next call.
+func kaiserFIRDownsample3xStateful(frame, hist []int16) (out, newHist []int16) {
+	h := kaiser3xCoeffs
+	L := kaiser3xL
+	N := len(frame)
+
+	combined := make([]int16, 0, len(hist)+N)
+	combined = append(combined, hist...)
+	combined = append(combined, frame...)
+
+	outLen := N / 3
+	out = make([]int16, outLen)
+	for i := 0; i < outLen; i++ {
+		base := 3 * i
+		var acc float64
+		for k := 0; k < L; k++ {
+			acc += h[k] * float64(combined[base+k])
+		}
+		v := math.Round(acc)
+		if v > 32767 {
+			v = 32767
+		} else if v < -32768 {
+			v = -32768
+		}
+		out[i] = int16(v)
+	}
+
+	tailStart := len(combined) - kaiser3xDownHistLen
+	if tailStart < 0 {
+		tailStart = 0
+	}
+	newHist = append([]int16(nil), combined[tailStart:]...)
+	return out, newHist
+}
+
+// kaiserFIRUpsample3xStateful upsamples exactly 3x (e.g. 16kHz->48kHz) using
+// the shared kaiser3xCoeffs interpolation FIR (zero-insertion + convolution),
+// applied causally against real history in the same style as
+// kaiserFIRDownsample3xStateful — see that function's doc comment for why
+// per-call statefulness matters for Process48k's 10ms-frame streaming usage.
+//
+// hist must hold exactly kaiser3xUpHistLen samples (in the pre-upsample,
+// 16kHz-rate domain) immediately preceding processed (zero-filled for the
+// first call of a session/after Reset).
+//
+// Returns the upsampled output (3*len(processed) samples) and the updated
+// history slice to pass into the next call.
+func kaiserFIRUpsample3xStateful(processed, hist []int16) (out, newHist []int16) {
+	h := kaiser3xCoeffs
+	L := kaiser3xL
+	H := len(hist)
+	N := len(processed)
+
+	combined := make([]int16, 0, H+N)
+	combined = append(combined, hist...)
+	combined = append(combined, processed...)
+
+	outLen := 3 * N
+	out = make([]int16, outLen)
+	for i := 0; i < outLen; i++ {
+		// p is this output sample's position in the (conceptual) zero-inserted
+		// domain, where every 3rd position holds a real sample from combined
+		// and the other two are zero.
+		p := 3*H + i
+		var acc float64
+		for k := 0; k < L; k++ {
+			pos := p - (L - 1) + k
+			if pos < 0 || pos%3 != 0 {
+				continue
+			}
+			idx := pos / 3
+			if idx >= 0 && idx < len(combined) {
+				acc += h[k] * float64(combined[idx])
+			}
+		}
+		// Scale by 3 (the upsampling factor) to compensate for zero insertion.
+		v := math.Round(acc * 3.0)
+		if v > 32767 {
+			v = 32767
+		} else if v < -32768 {
+			v = -32768
+		}
+		out[i] = int16(v)
+	}
+
+	tailStart := len(combined) - kaiser3xUpHistLen
+	if tailStart < 0 {
+		tailStart = 0
+	}
+	newHist = append([]int16(nil), combined[tailStart:]...)
+	return out, newHist
+}
+
 // besselI0 computes the modified Bessel function of the first kind, order 0, I_0(x).
 // Used for Kaiser window computation.
 func besselI0(x float64) float64 {
@@ -207,14 +383,17 @@ func besselI0(x float64) float64 {
 // Kaiser-windowed sinc FIR filter (polyphase-style per-output-sample evaluation).
 //
 // Design parameters:
-//   L    = 64 taps  — reasonable quality/performance tradeoff for telephony
-//   beta = 5.653    — Kaiser shape parameter targeting ~60 dB stopband attenuation
-//   fc   = 0.5 * min(srcRate,dstRate) / max(srcRate,dstRate)
-//          normalised to the higher of the two rates; this places the cutoff at
-//          half the lower Nyquist so aliasing and imaging are both suppressed.
+//
+//	L    = 64 taps  — reasonable quality/performance tradeoff for telephony
+//	beta = 5.653    — Kaiser shape parameter targeting ~60 dB stopband attenuation
+//	fc   = 0.5 * min(srcRate,dstRate) / max(srcRate,dstRate)
+//	       normalised to the higher of the two rates; this places the cutoff at
+//	       half the lower Nyquist so aliasing and imaging are both suppressed.
 //
 // For each output sample i the fractional source position is
-//   srcPos = i * srcRate / dstRate
+//
+//	srcPos = i * srcRate / dstRate
+//
 // A 64-tap windowed sinc centred at srcPos is evaluated directly in the
 // continuous (fractional-delay) domain — no polyphase table is pre-built,
 // which keeps code simple at the cost of a small per-sample multiply loop.

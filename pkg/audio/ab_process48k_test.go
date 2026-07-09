@@ -116,6 +116,23 @@ func clampInt16(v float64) int16 {
 // SNREstimator.EstimateSNR from quality.go. The residual (reference minus
 // processed) is treated as the "noise" term, which is the standard
 // definition of SNR relative to ground truth.
+// snrVsCleanReferenceDelayed is snrVsCleanReference, but first shifts
+// `processed` left by delaySamples so that processed[delaySamples+i] is
+// compared against reference[i] — i.e. it compensates for a known, constant
+// group delay before measuring SNR. Without this, any filter with nonzero
+// group delay (every real FIR anti-alias/interpolation filter, including
+// Process48k's Kaiser-FIR resampling — see Process48kGroupDelaySamples)
+// would show artificially catastrophic "SNR" purely from sample
+// misalignment, even when the reconstructed waveform is essentially
+// perfect. This mirrors how objective audio quality metrics (e.g. PESQ)
+// always time-align signals before scoring.
+func snrVsCleanReferenceDelayed(estimator *SNREstimator, processed, reference []int16, delaySamples int) float64 {
+	if delaySamples <= 0 || delaySamples >= len(processed) {
+		return snrVsCleanReference(estimator, processed, reference)
+	}
+	return snrVsCleanReference(estimator, processed[delaySamples:], reference)
+}
+
 func snrVsCleanReference(estimator *SNREstimator, processed, reference []int16) float64 {
 	n := len(processed)
 	if len(reference) < n {
@@ -159,9 +176,14 @@ func runDirect8kPath(t *testing.T, noisy8k []int16) []int16 {
 }
 
 // runProcess48kPath feeds noisy 48kHz PCM through Pipeline.Process48k frame
-// by frame (the alternate path: downsample 48k->16k via 3-sample averaging,
-// suppress at 16kHz, upsample 16k->48k via linear interpolation) and returns
-// the resulting 48kHz PCM.
+// by frame (the alternate path: downsample 48k->16k via a stateful
+// Kaiser-windowed sinc FIR anti-alias filter, suppress at 16kHz, upsample
+// 16k->48k via the matching stateful Kaiser FIR) and returns the resulting
+// 48kHz PCM. Note the returned stream carries a constant
+// Process48kGroupDelaySamples group delay relative to the input (see that
+// constant's doc comment) — callers comparing this output against a
+// time-aligned reference must compensate for it (see
+// snrVsCleanReferenceDelayed below).
 func runProcess48kPath(t *testing.T, noisy48k []int16) []int16 {
 	t.Helper()
 	p := NewPipeline(PipelineConfig{
@@ -238,7 +260,10 @@ func TestABProcess48kVsDirect(t *testing.T) {
 	}
 
 	snrAfter8k := snrVsCleanReference(estimator, output8k, clean8k)
-	snrAfter48k := snrVsCleanReference(estimator, output48k, clean48k)
+	// Process48k's stateful Kaiser-FIR resampling introduces a small, constant,
+	// documented group delay (Process48kGroupDelaySamples) — compensate for it
+	// before scoring, same rationale as snrVsCleanReferenceDelayed's doc comment.
+	snrAfter48k := snrVsCleanReferenceDelayed(estimator, output48k, clean48k, Process48kGroupDelaySamples)
 
 	improvement8k := snrAfter8k - snrRawInput
 	improvement48k := snrAfter48k - snrRawInput
@@ -269,13 +294,27 @@ func TestABProcess48kVsDirect(t *testing.T) {
 		t.Errorf("Process48k path: expected SNR improvement >= %.1fdB, got %+.2fdB", minImprovementDB, improvement48k)
 	}
 
-	// Sanity bound on the two paths diverging wildly: Process48k's cruder
-	// 3-sample-average/linear-interpolation resampling (vs the direct path's
-	// Kaiser-windowed FIR resampling) is expected to trail the direct 8kHz
-	// path by some margin, but a >20dB gap would indicate something is
-	// broken (e.g. Process48k silently not invoking the suppressor).
+	// Sanity bound on the two paths diverging wildly: even after the Kaiser-FIR
+	// quality upgrade (2026-07-09), Process48k's suppressor sees noise energy
+	// up to 8kHz bandwidth (vs. the direct path's pre-filtered 4kHz-bandwidth
+	// 8kHz-native input — see the snrRawInput comment above), so some residual
+	// gap is expected. A >20dB gap would indicate something is broken (e.g.
+	// Process48k silently not invoking the suppressor).
 	if math.Abs(delta) > 20 {
 		t.Errorf("Process48k vs direct-8kHz SNR delta implausibly large: %+.2fdB", delta)
+	}
+
+	// Regression guard for the 2026-07-09 Kaiser-FIR upgrade: Process48k's
+	// resampling-driven SNR gap vs. the direct 8kHz path must not regress back
+	// towards (or past) the pre-upgrade ~1.46dB gap measured on 2026-07-06
+	// with the old 3-sample-average/linear-interpolation implementation.
+	// The post-upgrade measured delta is ~1.14dB (down from 1.46dB, with
+	// Process48k's own improvement-vs-raw rising from +6.17dB to +6.49dB);
+	// 2.0dB leaves headroom for benign test-fixture drift while still
+	// catching a real regression back towards the old numbers.
+	const maxAcceptableDeltaDB = 2.0
+	if delta > maxAcceptableDeltaDB {
+		t.Errorf("Process48k vs direct-8kHz SNR delta %.2fdB exceeds %.1fdB — resampling quality regression?", delta, maxAcceptableDeltaDB)
 	}
 }
 
