@@ -275,6 +275,7 @@ func (s *Session) Start() {
 	go s.receiveLoop(ctx)
 	go s.listenRTCP()
 	go s.statsLoop(ctx)
+	go s.startPlaybackLoop(ctx)
 
 	s.logger.Info("RTP session started",
 		zap.String("listen", s.cfg.ListenAddr),

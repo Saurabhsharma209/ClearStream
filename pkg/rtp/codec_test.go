@@ -940,3 +940,45 @@ func findFreePort(t *testing.T) int {
 	l.Close()
 	return port
 }
+
+// ---- isG711PayloadType -------------------------------------------------
+
+// TestIsG711PayloadType covers every branch of isG711PayloadType: deriving
+// the codec from the RTP payload type when cfgCodec is unset/unknown, and
+// trusting an explicitly configured codec (G.711 or otherwise) over the
+// payload type when one is present.
+func TestIsG711PayloadType(t *testing.T) {
+	tests := []struct {
+		name     string
+		pt       uint8
+		cfgCodec audio.Codec
+		want     bool
+	}{
+		// cfgCodec unset -> derive from payload type.
+		{"pt0_PCMU_no_cfg", 0, "", true},
+		{"pt8_PCMA_no_cfg", 8, "", true},
+		{"pt9_G722_no_cfg", 9, "", false},
+		{"pt18_G729_no_cfg", 18, "", false},
+		{"pt111_Opus_no_cfg", 111, "", false},
+		{"pt_unknown_falls_back_to_G711U", 99, "", true},
+
+		// cfgCodec explicitly CodecUnknown -> same fallback-to-pt behavior.
+		{"pt8_PCMA_cfg_unknown", 8, audio.CodecUnknown, true},
+		{"pt9_G722_cfg_unknown", 9, audio.CodecUnknown, false},
+
+		// cfgCodec explicitly set -> takes precedence over payload type.
+		{"cfg_G711U_overrides_nonG711_pt", 9, audio.CodecG711U, true},
+		{"cfg_G711A_overrides_nonG711_pt", 111, audio.CodecG711A, true},
+		{"cfg_Opus_overrides_G711_pt", 0, audio.CodecOpus, false},
+		{"cfg_G722_overrides_G711_pt", 8, audio.CodecG722, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isG711PayloadType(tc.pt, tc.cfgCodec)
+			if got != tc.want {
+				t.Errorf("isG711PayloadType(%d, %q) = %v, want %v", tc.pt, tc.cfgCodec, got, tc.want)
+			}
+		})
+	}
+}
