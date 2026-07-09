@@ -2031,3 +2031,20 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. AI Model / Audio Pipeline: rotate back — get the product call on Process48k resampler quality vs. speed, then implement.
 2. RTP/SIP: no changes this cycle — due for a rotation next.
 3. Investigate whether the macOS dyld/CGO toolchain issue can be worked around (e.g. pinned Go version or linker flag) so default-mode tests don't need `CGO_ENABLED=0`.
+
+## 2026-07-09
+
+**Agents run:** Audio Pipeline (Process48k Kaiser-FIR upgrade), RTP/SIP (startPlaybackLoop coverage + dead-code fix)
+**Build:** passing ✅ (CGO_ENABLED=0; full `go test ./...` green)
+
+### Changes
+- `pkg/audio/pipeline.go`, `pkg/audio/resample.go`: Resolved the "product call" that had been carried in DEVLOG's Tomorrow list since 07-06 (Process48k resampler quality vs. speed) by making the call autonomously and implementing it. Replaced `Process48k`'s 3-sample-average downsample / linear-interp upsample with stateful 63-tap Kaiser-windowed sinc FIR resamplers (`kaiserFIRDownsample3xStateful`/`kaiserFIRUpsample3xStateful`), extracting shared coefficient generation into `kaiserSincCoeffs()`. Two findings worth flagging: (1) a stateless version (reflection boundary per-call) actually made SNR *worse* (+6.17→+4.86dB) since 10ms frames are part of a continuous stream — fixed by carrying real filter history across calls in new `Pipeline` fields, cleared on `Reset()`, at the cost of a documented ~1.3ms group delay (`Process48kGroupDelaySamples`); (2) the theoretically "correct" 8kHz anti-alias cutoff underperformed the old filter's incidental soft-rolloff noise attenuation, so cutoff was empirically tuned to 6kHz. Net result: SNR improvement +6.17dB → +6.49dB, gap vs. direct 8kHz path narrowed 1.46dB → 1.14dB. Throughput cost: ~6x faster than direct-path → ~3.5x slower (~24.5µs/10ms frame), still well within real-time budget. Signature/contract of `Process48k` unchanged.
+- `pkg/rtp/session.go`, `pkg/rtp/playback_loop_test.go` (new), `pkg/rtp/codec_test.go`: Found and fixed a real dead-code bug while chasing the `startPlaybackLoop` 0%-coverage gap — `Session.Start()` never launched `startPlaybackLoop`, so `InjectBotAudio()` frames were queued but never actually sent over the RTP socket (bot/TTS audio would have silently never reached the wire in production). Added `go s.startPlaybackLoop(ctx)` alongside the existing `receiveLoop`/`listenRTCP`/`statsLoop` goroutines in `Start()`. Added 4 new tests (real UDP end-to-end delivery, idle-tick timestamp advancement, context-cancel exit, closed-conn exit) plus a 12-case table test closing the secondary `isG711PayloadType` gap. pkg/rtp coverage: 91.0% → 93.6%; `startPlaybackLoop` 0%→100%, `isG711PayloadType` 75%→100%.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution (incl. `-race`); CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue — carried over again; still no fix attempted this cycle)
+
+### Tomorrow
+1. Post-processing: `pkg/file` backlog hasn't rotated in a few cycles — due for a pass.
+2. AI Model: with Process48k's SNR gap narrowed to 1.14dB, revisit whether closing the remaining gap further (e.g. longer FIR, different cutoff) is worth the added ~3.5x latency, or whether current tradeoff is the right stopping point.
+3. QA/Testing: pkg/rtp's remaining sub-100% functions are now just `putJitterPayload` (75%), `detectPitch` (78.6%), `InjectBotAudio` (80%) — small, easy follow-ups.
