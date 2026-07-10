@@ -74,6 +74,15 @@ type Options struct {
 	// failure events recorded by ProcessDir/ProcessDirFull. Optional --
 	// defaults to a no-op sink when unset.
 	Telemetry telemetry.Sink
+
+	// SkipExisting, if true, causes ProcessDir and ProcessDirFull to skip
+	// files whose destination already exists and is newer than or equal
+	// in modification time to the source (i.e. the file appears to have
+	// already been processed by a prior run). This makes it safe to
+	// re-run ProcessDir/ProcessDirFull over a large directory after a
+	// partial failure without reprocessing files that already succeeded.
+	// Default: false (always reprocess every matching file).
+	SkipExisting bool
 }
 
 // telemetry returns o.Telemetry if set, otherwise a no-op sink, so callers
@@ -194,6 +203,24 @@ func concurrencyLimit(opts Options) int {
 	return runtime.NumCPU()
 }
 
+// isAlreadyProcessed reports whether dst exists and its modification time
+// is greater than or equal to src's modification time, which indicates
+// src has already been processed into dst by a prior run. It is used to
+// implement Options.SkipExisting. Any stat error (missing src, missing
+// dst, permission issues, etc.) is treated as "not already processed" so
+// the file is (re)processed as normal.
+func isAlreadyProcessed(src, dst string) bool {
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return false
+	}
+	dstInfo, err := os.Stat(dst)
+	if err != nil {
+		return false
+	}
+	return !dstInfo.ModTime().Before(srcInfo.ModTime())
+}
+
 // ProcessDir enhances all audio/video files in srcDir and writes results to dstDir.
 // Supported extensions: .mp3 .wav .flac .ogg .aac .mp4 .mkv .mov .avi .webm .m4a
 // Files are processed concurrently, bounded by opts.MaxConcurrency
@@ -227,10 +254,12 @@ func (p *Processor) ProcessDir(srcDir, dstDir string, opts Options) []error {
 		if !supported[ext] {
 			continue
 		}
-		jobs = append(jobs, job{
-			src: filepath.Join(srcDir, e.Name()),
-			dst: filepath.Join(dstDir, e.Name()),
-		})
+		src := filepath.Join(srcDir, e.Name())
+		dst := filepath.Join(dstDir, e.Name())
+		if opts.SkipExisting && isAlreadyProcessed(src, dst) {
+			continue
+		}
+		jobs = append(jobs, job{src: src, dst: dst})
 	}
 
 	if len(jobs) == 0 {
@@ -541,12 +570,31 @@ func StreamProcess(ctx context.Context, r io.Reader, w io.Writer, opts Options) 
 	return nil
 }
 
+// Skip reason values reported in DirResult.SkipReason. Existing callers
+// that only check DirResult.Skipped (without looking at SkipReason)
+// continue to work unmodified: Skipped is true for both reasons below,
+// exactly as it was true-for-unsupported-extensions before SkipReason
+// existed.
+const (
+	// SkipReasonUnsupportedExt marks files whose extension is not in the
+	// set of extensions ProcessDir/ProcessDirFull know how to process.
+	SkipReasonUnsupportedExt = "unsupported_ext"
+	// SkipReasonAlreadyProcessed marks files skipped because
+	// Options.SkipExisting was true and the destination already existed
+	// with a modification time >= the source's (i.e. already processed
+	// by a prior run).
+	SkipReasonAlreadyProcessed = "already_processed"
+)
+
 // DirResult holds the outcome of processing a single file inside ProcessDirFull.
 type DirResult struct {
 	Src     string
 	Dst     string
-	Skipped bool // true when the file extension is not supported
-	Err     error
+	Skipped bool // true when the file was not processed; see SkipReason for why
+	// SkipReason explains why Skipped is true. One of SkipReasonUnsupportedExt
+	// or SkipReasonAlreadyProcessed. Empty when Skipped is false.
+	SkipReason string
+	Err        error
 }
 
 // ProcessDirFull is like ProcessDir but returns a DirResult for every file
@@ -576,7 +624,11 @@ func (p *Processor) ProcessDirFull(srcDir, dstDir string, opts Options) []DirRes
 		src := filepath.Join(srcDir, e.Name())
 		dst := filepath.Join(dstDir, e.Name())
 		if !supported[ext] {
-			results = append(results, DirResult{Src: src, Dst: dst, Skipped: true})
+			results = append(results, DirResult{Src: src, Dst: dst, Skipped: true, SkipReason: SkipReasonUnsupportedExt})
+			continue
+		}
+		if opts.SkipExisting && isAlreadyProcessed(src, dst) {
+			results = append(results, DirResult{Src: src, Dst: dst, Skipped: true, SkipReason: SkipReasonAlreadyProcessed})
 			continue
 		}
 		results = append(results, DirResult{Src: src, Dst: dst, Skipped: false})
