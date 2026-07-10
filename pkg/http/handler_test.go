@@ -532,18 +532,18 @@ func TestEnhanceAGCInvalidValues(t *testing.T) {
 // TestEnhanceStreamMultiChunk is the Day-20 chunked-response integration test.
 // It simulates a real streaming client: sends a synthetic multi-chunk WAV
 // (header + 3 separate PCM blocks) to /enhance/stream and verifies that:
-//   1. The response is 200 OK.
-//   2. The body length equals the total PCM bytes sent (lossless round-trip).
-//   3. Each 320-byte (one 10ms frame) block is individually valid int16 data.
+//  1. The response is 200 OK.
+//  2. The body length equals the total PCM bytes sent (lossless round-trip).
+//  3. Each 320-byte (one 10ms frame) block is individually valid int16 data.
 //
 // This exercises the chunked read loop in handler.go rather than the
 // single-shot silence test that existed before.
 func TestEnhanceStreamMultiChunk(t *testing.T) {
 	const (
-		sampleRate  = 16000
+		sampleRate   = 16000
 		frameSamples = 160 // 10ms @ 16kHz
-		frameBytes  = frameSamples * 2
-		numFrames   = 30  // 300ms of audio across 3 chunks of 10 frames each
+		frameBytes   = frameSamples * 2
+		numFrames    = 30 // 300ms of audio across 3 chunks of 10 frames each
 	)
 
 	// Build a synthetic 440 Hz sine at ~3000 RMS (well above silence threshold)

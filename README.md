@@ -91,6 +91,8 @@ bash demo/poc_demo.sh
 | `agc_max_gain` | float | AGC max gain multiplier |
 | `agc_attack_ms` | float | AGC attack time in ms |
 | `agc_release_ms` | float | AGC release time in ms |
+| `output_codec` | string | Override output audio codec, e.g. `aac`, `opus`, `mp3`, `flac` (default: preserve input codec) |
+| `output_sample_rate` | int | Override output sample rate in Hz, e.g. `16000` (default: preserve input sample rate) |
 
 Response headers include `X-Processing-Ms` and `X-ClearStream-Model`.
 

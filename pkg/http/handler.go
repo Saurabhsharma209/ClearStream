@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/exotel/clearstream/pkg/audio"
@@ -228,8 +229,23 @@ func (h *Handler) recordError(endpoint string) {
 
 // handleEnhance processes POST /enhance.
 // Accepts: multipart/form-data with field "audio" (any format).
-// Returns: enhanced audio file (same format as input).
+// Returns: enhanced audio file (same format as input, unless overridden --
+// see output_codec/output_sample_rate below).
 // AgentStream calls this to clean recorded call segments before STT.
+//
+// Recognised form fields (all optional):
+//   - audio_only:         "true" to strip video and output audio-only.
+//   - normalize_peak:     "true" to peak-normalize the output (-1 dBFS).
+//   - agc:                "true" to enable Automatic Gain Control.
+//   - agc_target_rms, agc_max_gain, agc_attack_ms, agc_release_ms:
+//     float overrides for the AGC config, applied only when agc=true.
+//   - output_codec:       overrides the output audio codec, e.g. "aac",
+//     "opus", "mp3", "flac". If empty, the input codec is preserved.
+//     When set, the response filename extension and Content-Type also
+//     reflect the requested codec instead of the input file's extension.
+//   - output_sample_rate: overrides the output sample rate in Hz, e.g.
+//     "16000". Must parse as an int; invalid/empty values are ignored
+//     and the input sample rate is preserved.
 func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	h.metrics.RequestsTotal++
@@ -262,6 +278,18 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 		ext = ".wav"
 	}
 
+	// If the caller requested an output codec override, the response
+	// (and the output temp file ffmpeg writes to) should use the
+	// extension/container matching that codec, not the input file's
+	// extension.
+	requestedCodec := r.FormValue("output_codec")
+	outExt := ext
+	if requestedCodec != "" {
+		if mapped := codecToExt(requestedCodec); mapped != "" {
+			outExt = mapped
+		}
+	}
+
 	// Write upload to temp file.
 	tmpIn, err := os.CreateTemp("", "cs-in-*"+ext)
 	if err != nil {
@@ -284,7 +312,7 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	tmpIn.Close()
 
 	// Create output temp file.
-	tmpOut, err := os.CreateTemp("", "cs-out-*"+ext)
+	tmpOut, err := os.CreateTemp("", "cs-out-*"+outExt)
 	if err != nil {
 		h.metrics.RequestsFailed++
 		h.reqFailed.Inc()
@@ -310,6 +338,19 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.FormValue("normalize_peak") == "true" {
 		opts.NormalizePeak = true
+	}
+
+	// Output overrides: output_codec (e.g. "aac", "opus", "mp3") and
+	// output_sample_rate (Hz). Both are optional; empty/unparseable
+	// values leave the corresponding opts field at its zero value, which
+	// tells file.ProcessWithOptions to preserve the input codec/rate.
+	if requestedCodec != "" {
+		opts.OutputCodec = requestedCodec
+	}
+	if v := r.FormValue("output_sample_rate"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			opts.OutputSampleRate = n
+		}
 	}
 
 	// AGC: enabled via ?agc=true, tuned via ?agc_target_rms=3000&agc_max_gain=4.0
@@ -360,9 +401,9 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	defer outFile.Close()
 
 	elapsed := time.Since(start).Seconds() * 1000
-	contentType := extToMIME(ext)
+	contentType := extToMIME(outExt)
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="enhanced%s"`, ext))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="enhanced%s"`, outExt))
 	w.Header().Set("X-Processing-Ms", fmt.Sprintf("%.0f", elapsed))
 	w.Header().Set("X-ClearStream-Model", h.suppressor.Name())
 	w.Header().Set("X-ClearStream-Duration-Ms", fmt.Sprintf("%.0f", elapsed))
@@ -459,6 +500,32 @@ func writeJSONError(w http.ResponseWriter, code int, msg string) {
 // the error before setting a Content-Type explicitly.
 func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSONError(w, code, msg)
+}
+
+// codecToExt maps a requested output codec name (as accepted by
+// file.Options.OutputCodec / the output_codec form field) to the file
+// extension used for the response filename and for the extToMIME lookup.
+// This is the inverse of file.inferOutputCodec, which lives in the
+// unexported pkg/file package and goes the other direction (extension ->
+// codec); pkg/http needs this direction instead, since here we only have
+// a caller-supplied codec string and must derive a response extension
+// from it. Returns "" for unrecognised codecs, in which case callers
+// should fall back to the input file's extension.
+func codecToExt(codec string) string {
+	switch strings.ToLower(codec) {
+	case "mp3", "libmp3lame":
+		return ".mp3"
+	case "opus", "libopus", "ogg":
+		return ".opus"
+	case "flac":
+		return ".flac"
+	case "pcm_s16le", "pcm_mulaw", "pcm_alaw", "wav":
+		return ".wav"
+	case "aac", "m4a":
+		return ".aac"
+	default:
+		return ""
+	}
 }
 
 // extToMIME maps a file extension (including the leading dot) to its MIME
