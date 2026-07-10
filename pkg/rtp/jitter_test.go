@@ -347,16 +347,16 @@ func TestJitterOnGoodPacketResetsLoss(t *testing.T) {
 //
 // It verifies two critical properties of the PLC fade-to-silence path:
 //
-// 1. Monotonic: every successive PLC frame has amplitude ≤ the previous frame.
-//    This must hold across the waveform-substitution → fade TRANSITION (loss 2→3),
-//    which was the original bug: the first fade frame used lastGoodFrame as its
-//    source, so it could be louder than the last waveform-sub frame if the sub
-//    happened to copy from a low-energy region of the frame.
+//  1. Monotonic: every successive PLC frame has amplitude ≤ the previous frame.
+//     This must hold across the waveform-substitution → fade TRANSITION (loss 2→3),
+//     which was the original bug: the first fade frame used lastGoodFrame as its
+//     source, so it could be louder than the last waveform-sub frame if the sub
+//     happened to copy from a low-energy region of the frame.
 //
-// 2. Convergence: after 40 consecutive losses, all samples must be zero or
-//    near-zero (abs < 5). With 0.85^n per frame, after 38 fade steps starting
-//    from amplitude ≤ 32767: 32767 × 0.85^38 ≈ 11, truncated to int16 → ~11.
-//    After 50 steps: 32767 × 0.85^50 ≈ 2 → rounds toward 0.
+//  2. Convergence: after 40 consecutive losses, all samples must be zero or
+//     near-zero (abs < 5). With 0.85^n per frame, after 38 fade steps starting
+//     from amplitude ≤ 32767: 32767 × 0.85^38 ≈ 11, truncated to int16 → ~11.
+//     After 50 steps: 32767 × 0.85^50 ≈ 2 → rounds toward 0.
 //
 // The test uses a frame where the FIRST pitch period (samples 0..period-1) is
 // quiet (values ≈ 0) and later samples are loud, so that the old code's bug
