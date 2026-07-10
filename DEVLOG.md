@@ -2048,3 +2048,21 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. Post-processing: `pkg/file` backlog hasn't rotated in a few cycles — due for a pass.
 2. AI Model: with Process48k's SNR gap narrowed to 1.14dB, revisit whether closing the remaining gap further (e.g. longer FIR, different cutoff) is worth the added ~3.5x latency, or whether current tradeoff is the right stopping point.
 3. QA/Testing: pkg/rtp's remaining sub-100% functions are now just `putJitterPayload` (75%), `detectPitch` (78.6%), `InjectBotAudio` (80%) — small, easy follow-ups.
+
+## 2026-07-10
+
+**Agents run:** Post-processing (pkg/file), QA/Testing (pkg/rtp), API Layer (pkg/http)
+**Build:** passing ✅ (CGO_ENABLED=0; full `go test ./...` green)
+
+### Changes
+- `pkg/file/processor.go`, `pkg/file/processor_skipexisting_test.go` (new): Added `Options.SkipExisting` — `ProcessDir`/`ProcessDirFull` now skip files whose destination already exists with mtime >= source mtime, enabling resumable batch processing after a partial run/failure. Added `DirResult.SkipReason` (`unsupported_ext` / `already_processed`) alongside the existing `Skipped` bool, kept fully backward-compatible with the two existing `.Skipped` call sites (`cmd/clearstream/main.go`, `pkg/file/processor_test.go`). 8 new tests.
+- `pkg/rtp/coverage_gaps_test.go` (new): Closed the three remaining sub-100% coverage gaps flagged in 07-09's DEVLOG — `putJitterPayload` (75%→100%), `detectPitch` (78.6%→100%), `InjectBotAudio` (80%→100%). pkg/rtp package coverage: 93.7% → 95.3%.
+- `pkg/http/handler.go`, `pkg/http/handler_output_override_test.go` (new), `README.md`: `POST /enhance` previously exposed `audio_only`/`normalize_peak`/`agc_*` form fields but had no way to request an output codec or sample-rate override even though `file.Options.OutputCodec`/`OutputSampleRate` already supported it. Wired `output_codec`/`output_sample_rate` form fields through, added a `codecToExt` helper so the response `Content-Type`/`Content-Disposition` reflect the requested output codec (not just the input extension), documented the new fields in the handler doc comment and README.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue — carried over again)
+
+### Tomorrow
+1. AI Model: `pkg/model` — Process48k's SNR gap is now well-quantified (07-09); revisit whether AI Model workstream has independent priorities (e.g. DeepFilterNet ONNX real-model wiring vs mock) since it hasn't rotated in several cycles.
+2. Post-processing: consider exposing `SkipExisting` through the CLI (`cmd/clearstream/main.go` flag) and the HTTP layer's batch endpoints if/when those exist.
+3. QA/Testing: pkg/rtp is now at 95.3% — scan remaining packages (pkg/sip, pkg/agentstream, pkg/loadtest) for any similarly-sized coverage gaps.
