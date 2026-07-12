@@ -39,6 +39,14 @@ type deepFilterServerSuppressor struct {
 	client    *http.Client
 	logger    *zap.Logger
 	cmd       *exec.Cmd // non-nil if we auto-started the server
+
+	// startupTimeout and startupPollInterval control how long startServer waits
+	// for the auto-started subprocess to become ready, and how often it polls
+	// /health while waiting. Zero values (the default in production) mean
+	// "use the built-in defaults" of 30s / 500ms — see startServer. Tests may
+	// override these fields to avoid real 30-second waits.
+	startupTimeout      time.Duration
+	startupPollInterval time.Duration
 }
 
 // newDeepFilterServerSuppressor creates a suppressor that calls the Python server.
@@ -98,16 +106,29 @@ func (s *deepFilterServerSuppressor) startServer(scriptPath string) error {
 	}
 	s.cmd = cmd
 
-	// Wait up to 30s for the server to become ready (model loading takes ~5s)
-	deadline := time.Now().Add(30 * time.Second)
+	// Defaults preserve the documented production behavior (30s deadline,
+	// 500ms poll interval). Tests may set startupTimeout/startupPollInterval
+	// on the struct to shrink these for fast, deterministic exercising of the
+	// ready and timeout paths without a real 30-second wait.
+	timeout := s.startupTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	pollInterval := s.startupPollInterval
+	if pollInterval <= 0 {
+		pollInterval = 500 * time.Millisecond
+	}
+
+	// Wait up to `timeout` for the server to become ready (model loading takes ~5s in prod).
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(pollInterval)
 		if err := s.ping(); err == nil {
 			return nil
 		}
 	}
 	_ = cmd.Process.Kill()
-	return fmt.Errorf("server did not become ready within 30s")
+	return fmt.Errorf("server did not become ready within %s", timeout)
 }
 
 func (s *deepFilterServerSuppressor) ping() error {
