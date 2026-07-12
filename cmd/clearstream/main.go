@@ -77,6 +77,7 @@ func runDir(args []string) {
 	workers := fs.Int("workers", 4, "Concurrent processing workers")
 	modelBackend := fs.String("model", "passthrough", "Model backend: rnnoise | deepfilter | passthrough")
 	modelPath := fs.String("model-path", "", "Path to ONNX model file (deepfilter only)")
+	skipExisting := fs.Bool("skip-existing", false, "Skip files whose destination already exists and is newer than the source, to safely resume a partially completed batch")
 	fs.Parse(args)
 
 	if *input == "" || *output == "" {
@@ -100,9 +101,12 @@ func runDir(args []string) {
 		Channels:   cfg.Channels,
 	})
 
-	opts := file.Options{}
+	opts := file.Options{
+		MaxConcurrency: *workers,
+		SkipExisting:   *skipExisting,
+	}
 
-	fmt.Printf("Processing directory: %s -> %s (workers: %d, model: %s)\n", *input, *output, *workers, *modelBackend)
+	fmt.Printf("Processing directory: %s -> %s (workers: %d, model: %s, skip-existing: %v)\n", *input, *output, *workers, *modelBackend, *skipExisting)
 	start := time.Now()
 
 	results := fp.ProcessDirFull(*input, *output, opts)
