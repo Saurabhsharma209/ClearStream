@@ -2066,3 +2066,23 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. AI Model: `pkg/model` — Process48k's SNR gap is now well-quantified (07-09); revisit whether AI Model workstream has independent priorities (e.g. DeepFilterNet ONNX real-model wiring vs mock) since it hasn't rotated in several cycles.
 2. Post-processing: consider exposing `SkipExisting` through the CLI (`cmd/clearstream/main.go` flag) and the HTTP layer's batch endpoints if/when those exist.
 3. QA/Testing: pkg/rtp is now at 95.3% — scan remaining packages (pkg/sip, pkg/agentstream, pkg/loadtest) for any similarly-sized coverage gaps.
+
+## 2026-07-12
+
+**Agents run:** API Layer (cmd/clearstream), AI Model (pkg/model), QA/Testing (Makefile + CI)
+**Build:** passing ✅ (default `go build ./...` and `CGO_ENABLED=0 go test ./...`)
+
+### Changes
+- `cmd/clearstream/main.go`: Fixed a real bug where the `dir` subcommand's `-workers` flag was parsed and printed but never wired into `file.Options.MaxConcurrency`, so batch directory processing was always unbounded regardless of what the user passed. Also added a new `-skip-existing` flag wired to `file.Options.SkipExisting`, exposing the resumable-batch capability (added 07-10) that was previously unreachable from the CLI.
+- `pkg/model/deepfilter_server.go`, `pkg/model/deepfilter_server_startserver_test.go` (new): `startServer` (the DeepFilterNet Python-server auto-start path) was at only 16.7% coverage. Made the 30s deadline / 500ms poll interval overridable via two new struct fields (defaulting to the exact same production values), then added tests using the existing fake-executable-via-PATH pattern (from `pkg/file`'s fake-ffmpeg tests) covering the success path, script-not-found path, relative-path resolution, and the deadline/kill timeout path (compressed to sub-second in tests instead of a real 30s wait). pkg/model coverage: 88.2% → 94.8%; `startServer` 16.7% → 87.5%.
+- `Makefile`, `.github/workflows/ci.yml`: Added a real `staticcheck` target/CI step (`go run honnef.co/go/tools/cmd/staticcheck@2023.1.7 ./...`) — the existing `lint` target only ran `fmt`+`vet`, no actual static analysis existed anywhere in the repo. Wired non-fatal for now (`|| true` locally, `continue-on-error: true` in CI) since the repo-wide finding volume hasn't been triaged yet; flip to a hard gate once that debt is addressed.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue — carried over again)
+- `-tags onnx` build fails locally with `expected ']', found TensorData` in the pinned `onnxruntime_go` dependency — this local dev Mac's go1.17 toolchain is too old for that dependency's generics usage. Same class of issue as the CGO/dyld toolchain gap; CI's go 1.21/1.22 matrix is unaffected. Not attempted as a fix this cycle (out of scope for today's workstreams).
+- staticcheck findings across the repo have not yet been triaged/counted — could not run staticcheck locally to get a baseline count (min Go version 1.19, this Mac has go1.17). CI will produce the first real findings report next run.
+
+### Tomorrow
+1. QA/Testing: once CI produces its first staticcheck report, triage the findings and decide which to fix vs. suppress, then flip the gate from informational to blocking.
+2. RTP/SIP: no changes in several cycles — due for a rotation.
+3. Post-processing: consider whether `-skip-existing`/`-workers` should also be exposed through the `pkg/http` batch-style endpoints if/when those exist (currently HTTP only does single-file `/enhance`).
