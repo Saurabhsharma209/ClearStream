@@ -2086,3 +2086,20 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. QA/Testing: once CI produces its first staticcheck report, triage the findings and decide which to fix vs. suppress, then flip the gate from informational to blocking.
 2. RTP/SIP: no changes in several cycles — due for a rotation.
 3. Post-processing: consider whether `-skip-existing`/`-workers` should also be exposed through the `pkg/http` batch-style endpoints if/when those exist (currently HTTP only does single-file `/enhance`).
+
+## 2026-07-12 (decision + build)
+
+**Agents run:** RTP/SIP (interactive, decision-driven -- not a rotation pick)
+**Build:** passing ✅ (go build ./..., CGO_ENABLED=0 go test ./pkg/rtp/... at 95.2% coverage)
+
+### Changes
+- `pkg/rtp/session.go`, `pkg/rtp/cleanaudio_test.go` (new), `ROADMAP.md`: Resolved the open OnCleanAudio-style-callback decision that was blocking 3 LangStream Week 3 items (MT adapter, language-pair config threading, TTS adapter). Added `Session.CleanAudio() <-chan CleanAudioFrame`, opt-in via `Config.CleanAudioBufferSize` (0 = disabled/default, zero cost -- no channel allocated, no extra copy in handlePacket). Each `CleanAudioFrame` is an owned PCM copy (not aliased to the pooled cleanPCM buffer handlePacket reuses every 10ms); delivery is non-blocking with drop-oldest-on-full so a slow ASR consumer sees fresh audio rather than added latency. Channel closes on `Session.Stop()`, guarded by `sync.Once` so Stop() stays safe to call more than once. 4 new tests (disabled-by-default, owned-copy verification via backing-array pointer check, drop-oldest-under-backpressure, close-on-stop). Rejected alternatives documented in `ROADMAP.md`'s new "Resolved Decisions" section: a synchronous OnDTMF-style callback (wrong fit for an inherently-async ASR consumer against a pooled buffer) and a LangStream-side forked RTP loop (would duplicate hardened jitter/PLC/SSRC logic).
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue)
+- `Pipeline.TurnEnd()` is referenced in ROADMAP.md as if it exists but is NOT yet built -- flagged explicitly in ROADMAP's Resolved Decisions section as a related, separate decision LangStream Week 1 also depends on.
+
+### Tomorrow
+1. Confirm with LangStream side that `CleanAudioFrame{PCM, Timestamp}` is a sufficient contract for the Week 2 duplex-RTP ASR feed, or whether utterance-boundary metadata (i.e. TurnEnd) needs to ride along on the same channel.
+2. Build `Pipeline.TurnEnd()` (Phase 1 POC backlog item, still outstanding) -- now the next likely blocker for LangStream Week 1/2 integration testing.
+3. RTP/SIP due for its regular backlog rotation next (unrelated to this decision work).
