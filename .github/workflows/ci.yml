@@ -40,6 +40,12 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+      - name: Static analysis (staticcheck)
+        # Informational for now: repo-wide staticcheck debt has not been
+        # triaged yet, so this does not fail the build. Flip
+        # continue-on-error to false once findings are addressed.
+        continue-on-error: true
+        run: go run honnef.co/go/tools/cmd/staticcheck@2023.1.7 ./...
 
       - name: Test
         run: go test -race -count=1 -timeout=120s ./...

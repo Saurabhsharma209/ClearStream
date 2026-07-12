@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt vet clean poc bench test-race test-nocgo install poc-build poc-up poc-clean poc-generate-audio coverage coverage-html qa-cs-regression qa-office-conv-rnnoise qa-office-conv-full build-slim build-docker-scratch build-onnx vet-onnx
+.PHONY: build test lint fmt vet clean poc bench test-race test-nocgo install poc-build poc-up poc-clean poc-generate-audio coverage coverage-html qa-cs-regression qa-office-conv-rnnoise qa-office-conv-full build-slim build-docker-scratch build-onnx vet-onnx staticcheck
 
 GOFLAGS ?= -trimpath
 BINARY  := clearstream
@@ -18,7 +18,20 @@ fmt:
 vet:
 	go vet ./...
 
-lint: fmt vet
+# staticcheck: runs honnef.co/go/tools staticcheck via `go run` (no separate
+# install step needed, works the same locally and in CI). Pinned to a version
+# compatible with Go 1.19+. NOTE: this repo's local dev Mac toolchain is an
+# old go1.17 (see the long-standing CGO/dyld note elsewhere in DEVLOG.md) which
+# is too old to even build staticcheck (min Go 1.19) -- this target will fail
+# locally with a "module requires Go 1.19" error until that toolchain is
+# upgraded. CI's go 1.21/1.22 matrix runs this for real. Kept non-fatal
+# (|| true) for now since pre-existing finding volume across the whole repo
+# has not yet been triaged/fixed; flip to a hard failure once that debt is
+# addressed.
+staticcheck:
+	go run honnef.co/go/tools/cmd/staticcheck@2023.1.7 ./... || true
+
+lint: fmt vet staticcheck
 
 clean:
 	go clean ./...
