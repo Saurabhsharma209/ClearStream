@@ -149,6 +149,24 @@ type Config struct {
 	// OnDTMF is an optional callback invoked when a DTMF digit is detected.
 	OnDTMF func(DTMFDigit)
 
+	// CleanAudioBufferSize enables an opt-in, real-time feed of clean
+	// (post-suppression) PCM audio for external consumers -- e.g. an ASR
+	// stage in a duplex-translation pipeline built on top of this Session.
+	// It sets the buffer size, in frames, of the channel returned by
+	// CleanAudio(). 0 (default) disables the feed entirely: no channel is
+	// allocated and handlePacket takes no extra copy, so existing
+	// telephony-only callers pay zero cost.
+	//
+	// Each frame delivered on the channel is an owned copy (safe to retain
+	// past the call) -- unlike OnDTMF, this is intentionally NOT a
+	// synchronous callback, because the pooled cleanPCM buffer is reused
+	// on the very next packet and a slow/async consumer (e.g. a streaming
+	// ASR client) must not observe it being mutated out from under it.
+	// Delivery is non-blocking: if the channel is full, the oldest
+	// buffered frame is dropped to make room for the newest one, since for
+	// live translation/ASR fresh audio is more useful than stale audio.
+	CleanAudioBufferSize int
+
 	// AGC enables Automatic Gain Control on this RTP session.
 	// When set, output level is adaptively adjusted toward AGC.TargetRMS.
 	// Use audio.DefaultAGCConfig() as a starting point.
@@ -169,6 +187,18 @@ type Stats struct {
 	LatencyAvgMs    float64
 }
 
+// CleanAudioFrame is one frame of clean (post-suppression) PCM audio
+// delivered via Session.CleanAudio(). PCM is an owned copy -- the caller
+// may retain it indefinitely; it is never reused or mutated by the Session.
+type CleanAudioFrame struct {
+	// PCM is 16kHz mono int16 PCM, the same clean audio ClearStream
+	// re-encodes and forwards on the wire for this frame.
+	PCM []int16
+	// Timestamp is the RTP timestamp of the source packet, for
+	// utterance/leg alignment by the consumer.
+	Timestamp uint32
+}
+
 // Session is a live RTP interception session.
 // It reads RTP from ListenAddr, suppresses noise, and forwards to all configured
 // ForwardAddr / ForwardAddrs destinations simultaneously (fan-out / RTP fork).
@@ -182,6 +212,11 @@ type Session struct {
 	dtmf      *DTMFDetector
 	playback  *PlaybackQueue
 	telemetry telemetry.Sink
+
+	// cleanAudioCh is non-nil only when cfg.CleanAudioBufferSize > 0; see
+	// CleanAudio() and the delivery logic in handlePacket.
+	cleanAudioCh        chan CleanAudioFrame
+	cleanAudioCloseOnce sync.Once // guards closing cleanAudioCh if Stop() is called more than once
 
 	currentSSRC uint32
 	ssrcSet     bool
@@ -251,19 +286,26 @@ func NewSession(cfg Config) (*Session, error) {
 		AGC:             cfg.AGC,
 	})
 
+	// Opt-in clean-audio feed -- nil (disabled) unless explicitly sized.
+	var cleanAudioCh chan CleanAudioFrame
+	if cfg.CleanAudioBufferSize > 0 {
+		cleanAudioCh = make(chan CleanAudioFrame, cfg.CleanAudioBufferSize)
+	}
+
 	return &Session{
-		cfg:       cfg,
-		conn:      conn,
-		fwdAddr:   fwdAddr,
-		forkAddrs: forkAddrs,
-		jitter:    NewJitterBuffer(cfg.JitterDepth),
-		pipeline:  pipe,
-		dtmf:      NewDTMFDetector(cfg.SampleRate),
-		playback:  NewPlaybackQueue(50),
-		done:      make(chan struct{}),
-		rtcpReady: make(chan struct{}),
-		logger:    cfg.Logger,
-		telemetry: tel,
+		cfg:          cfg,
+		conn:         conn,
+		fwdAddr:      fwdAddr,
+		forkAddrs:    forkAddrs,
+		jitter:       NewJitterBuffer(cfg.JitterDepth),
+		pipeline:     pipe,
+		dtmf:         NewDTMFDetector(cfg.SampleRate),
+		playback:     NewPlaybackQueue(50),
+		done:         make(chan struct{}),
+		rtcpReady:    make(chan struct{}),
+		logger:       cfg.Logger,
+		telemetry:    tel,
+		cleanAudioCh: cleanAudioCh,
 	}, nil
 }
 
@@ -300,6 +342,12 @@ func (s *Session) Stop() {
 		rc.Close()
 	}
 	<-s.done
+	if s.cleanAudioCh != nil {
+		// Safe to close here: receiveLoop (the only sender) has fully
+		// exited by the time <-s.done unblocks. Guarded by sync.Once since
+		// Stop() itself is safe to call more than once.
+		s.cleanAudioCloseOnce.Do(func() { close(s.cleanAudioCh) })
+	}
 	s.logger.Info("RTP session stopped")
 }
 
@@ -308,6 +356,20 @@ func (s *Session) Stats() Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.stats
+}
+
+// CleanAudio returns a channel of clean (post-suppression) PCM audio frames,
+// one per processed RTP packet, for real-time consumers such as an ASR
+// stage built on top of this Session (see Config.CleanAudioBufferSize).
+//
+// It returns nil if CleanAudioBufferSize was 0 (the default) -- callers
+// must check for nil before ranging over the result. Delivery is
+// non-blocking and drops the oldest buffered frame to make room for the
+// newest one if the consumer falls behind, so a slow consumer sees gaps
+// rather than added latency. The channel is closed when the session
+// Stop()s, so ranging over it terminates cleanly.
+func (s *Session) CleanAudio() <-chan CleanAudioFrame {
+	return s.cleanAudioCh
 }
 
 // receiveLoop is the main packet processing loop.
@@ -522,6 +584,33 @@ func (s *Session) handlePacket(raw []byte) error {
 	cleanPCM := bytesToInt16SlicePooled(cleanBuf.Bytes())
 	if len(cleanPCM) > 0 {
 		s.jitter.onGoodPacket(cleanPCM)
+	}
+
+	// Deliver an owned copy of the clean audio to any external consumer
+	// (opt-in, see Config.CleanAudioBufferSize). cleanPCM itself is a
+	// pooled slice that gets reused/reset on the next packet, so anything
+	// crossing outside this function must be copied first.
+	if s.cleanAudioCh != nil && len(cleanPCM) > 0 {
+		owned := make([]int16, len(cleanPCM))
+		copy(owned, cleanPCM)
+		frame := CleanAudioFrame{PCM: owned, Timestamp: header.Timestamp}
+		select {
+		case s.cleanAudioCh <- frame:
+		default:
+			// Full: drop the oldest frame to make room, then retry once.
+			// Fresh audio matters more than old audio for live ASR/translation.
+			select {
+			case <-s.cleanAudioCh:
+			default:
+			}
+			select {
+			case s.cleanAudioCh <- frame:
+			default:
+				// Consumer drained and refilled between our two selects
+				// (rare race) -- drop this frame rather than block the
+				// hot path.
+			}
+		}
 	}
 
 	// Re-encode to original codec

@@ -155,11 +155,22 @@ None of them have Exotel's distribution (carrier + contact center + voicebot in 
 ```
 ClearStream v0.1.0 (tagged)
     └── pkg/rtp.Session  ← LangStream Week 2 extends this for duplex
-    └── pkg/audio.Pipeline → TurnEnd() event ← LangStream Week 1 consumes this
+    └── pkg/rtp.Session.CleanAudio() ← LangStream Week 2/3 ASR feed (added 2026-07-12, see Resolved Decisions below)
+    └── pkg/audio.Pipeline → TurnEnd() event ← LangStream Week 1 consumes this (NOT YET BUILT -- see Resolved Decisions)
     └── pkg/audio.AGCConfig → ASRConfig() ← LangStream uses this preset
 ```
 
 **Rule:** LangStream never silently modifies ClearStream. Any `pkg/rtp` or `pkg/audio` changes needed for LangStream arrive as a separate, reviewed PR against ClearStream with its own commit message.
+
+---
+
+## Resolved Decisions
+
+| Date | Decision | Why |
+|---|---|---|
+| 2026-07-12 | **Clean-audio hand-off to LangStream:** added `Session.CleanAudio() <-chan CleanAudioFrame`, opt-in via `Config.CleanAudioBufferSize` (0 = disabled, default, zero cost). Each frame is an owned PCM copy; delivery is non-blocking with drop-oldest-on-full. Rejected: (a) a synchronous `OnCleanAudio` callback mirroring `OnDTMF` -- wrong fit, since the source PCM is a pooled buffer reused every 10ms and ASR consumers are inherently async; (b) LangStream forking its own RTP receive loop -- would duplicate the hardened jitter/PLC/SSRC logic in `pkg/rtp.Session` and contradicts the Week 2 plan of extending it. This was the single blocker on Week 3s MT adapter, language-pair config threading, and TTS adapter -- all three need a defined, stable audio-in contract before they can be built/tested against. | Unblocks LangStream Week 2 (duplex RTP) and Week 3 (MT + TTS); channel-of-owned-copies avoids the pooled-buffer race a synchronous callback would risk under async ASR calls. |
+
+**Still open:** `Pipeline.TurnEnd()` (referenced above) does not exist in the code yet -- it is a Phase 1 backlog item, not shipped. LangStream Week 1s ASR trigger depends on it; treat as a related but separate decision to close before Week 1/2 integration testing.
 
 ---
 
