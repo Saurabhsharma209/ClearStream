@@ -2103,3 +2103,23 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. Confirm with LangStream side that `CleanAudioFrame{PCM, Timestamp}` is a sufficient contract for the Week 2 duplex-RTP ASR feed, or whether utterance-boundary metadata (i.e. TurnEnd) needs to ride along on the same channel.
 2. Build `Pipeline.TurnEnd()` (Phase 1 POC backlog item, still outstanding) -- now the next likely blocker for LangStream Week 1/2 integration testing.
 3. RTP/SIP due for its regular backlog rotation next (unrelated to this decision work).
+
+## 2026-07-13
+
+**Agents run:** Audio Pipeline (Pipeline.TurnEnd()), Post-processing (pkg/file progress-parsing panic fix), QA/Testing (pkg/sip + pkg/loadtest coverage)
+**Build:** passing ✅ (go build ./... and CGO_ENABLED=0 go test ./... — full suite green)
+
+### Changes
+- `pkg/audio/turnend.go` (new), `pkg/audio/pipeline.go`, `pkg/audio/pipeline_turnend_test.go` (new): Implemented `Pipeline.TurnEnd()`, the ROADMAP.md Phase 1 feature flagged since 2026-07-12 as the top blocker for LangStream Week 1 ASR-trigger integration. Added a `turnEndTracker` that reuses the pipeline's existing VAD/AdaptiveVAD energy-detection logic (via a dedicated hangover-free clone) to fire a `TurnEndEvent{Timestamp, SilenceMs}` after 200ms (20 frames) of sustained silence following speech. Opt-in via new `PipelineConfig.TurnEndBufferSize` (0 = disabled, zero-cost), delivered over a non-blocking drop-oldest channel — mirroring `rtp.Session.CleanAudio()`'s established pattern for consistency. Added `Pipeline.Close()` (idempotent, `sync.Once`) to close the channel; `Reset()` clears per-utterance state without closing it. 7 new tests (disabled-by-default, single-fire on speech+silence, no false trigger on brief pauses, no trigger on leading silence, refire-after-Reset, idempotent Close, drop-oldest backpressure).
+- `pkg/file/processor.go`, `pkg/file/processor_progress_test.go` (new): Found and fixed a real panic risk in the FFmpeg stderr progress-parsing goroutine backing `Options.OnProgress` — a truncated/partial final `time=` line (e.g. flushed right as ffmpeg is killed or context cancelled) indexed into an empty slice and would crash the whole process, not just the current file. Extracted parsing into a pure, fully-tested `parseFFmpegProgressLine(line string, totalDurationSec float64) (pct float64, ok bool)` with proper bounds/zero-duration guards; behavior unchanged for valid input. pkg/file coverage: 91.3% → 93.4%.
+- `pkg/sip/proxy_error_test.go` (new), `pkg/loadtest/loadtest_cancel_test.go` (new): Closed the last real coverage gaps in the two packages flagged for rotation since 2026-07-10 (`pkg/sip`, `pkg/agentstream`, `pkg/loadtest` had not had a dedicated QA pass). `pkg/agentstream` was already at 100%. pkg/sip: 97.2% → 100% (`handleStart`'s `NewSession` error path, via a malformed inbound address). pkg/loadtest: 91.7% → 95.8% (`Run`'s context-cancellation early-exit branch, pre-cancelled and mid-run). Remaining `pkg/loadtest` gap (an unreachable error-increment branch under `Run`'s current hardcoded-suppressor design) is a production-code scope change, left as-is and documented in the commit.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue — carried over again)
+- `pkg/loadtest.Run`'s error-increment branch is untestable without changing `Run` to accept an injectable suppressor — a design decision outside today's QA-only scope.
+- LangStream confirmation still outstanding: whether `CleanAudioFrame{PCM, Timestamp}` is sufficient for the Week 2 duplex-RTP ASR feed, or whether TurnEnd-style utterance-boundary metadata needs to ride the same channel now that `TurnEnd()` exists (2026-07-12 open question, now more actionable since TurnEnd() is built).
+
+### Tomorrow
+1. Confirm with LangStream side whether `Pipeline.TurnEnd()`'s new event stream should be wired directly into their ASR trigger, and whether it needs to be correlated with `Session.CleanAudio()` by timestamp.
+2. RTP/SIP: due for its regular backlog rotation (last real backlog work was 2026-07-09; 07-12 was decision-driven, not a rotation pick).
+3. AI Model: hasn't rotated since 2026-07-12 (startServer coverage); DeepFilterNet ONNX real-model wiring vs. mock still an open independent priority.
