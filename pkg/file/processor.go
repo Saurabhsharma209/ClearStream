@@ -367,18 +367,9 @@ func (p *Processor) decodeAndSuppress(src, pcmPath string, info *audio.MediaInfo
 		for sc.Scan() {
 			line := sc.Text()
 			stderrBuf.WriteString(line + "\n")
-			// Parse ffmpeg progress lines: "size=   256kB time=00:00:01.23 bitrate=..."
-			if onProgress != nil && info.DurationSec > 0 {
-				if idx := strings.Index(line, "time="); idx >= 0 {
-					timeStr := strings.Fields(line[idx+5:])[0] // "HH:MM:SS.ms"
-					if secs := parseFFmpegTime(timeStr); secs > 0 {
-						// Map decode phase to progress range 10%–70%.
-						pct := 0.1 + (secs/info.DurationSec)*0.6
-						if pct > 0.69 {
-							pct = 0.69
-						}
-						onProgress(pct)
-					}
+			if onProgress != nil {
+				if pct, ok := parseFFmpegProgressLine(line, info.DurationSec); ok {
+					onProgress(pct)
 				}
 			}
 		}
@@ -507,6 +498,39 @@ func parseFFmpegTime(s string) float64 {
 		return float64(h*3600+m*60) + sec
 	}
 	return 0
+}
+
+// parseFFmpegProgressLine extracts a normalized progress fraction from an
+// FFmpeg stderr stats line such as "size=   256kB time=00:00:01.23 bitrate=...",
+// scaled against totalDurationSec into the decode phase's 10%-69% progress
+// range. It returns ok=false whenever the line carries no usable "time="
+// value -- including a truncated/malformed line where "time=" is not
+// followed by any token (e.g. a partial final line flushed just before the
+// ffmpeg process exits, which happens on cancellation/kill). Previously this
+// logic indexed strings.Fields(...)[0] directly without checking length,
+// which panics on an empty slice -- an unrecovered panic in this goroutine
+// would crash the whole process, not just fail the current file.
+func parseFFmpegProgressLine(line string, totalDurationSec float64) (pct float64, ok bool) {
+	if totalDurationSec <= 0 {
+		return 0, false
+	}
+	idx := strings.Index(line, "time=")
+	if idx < 0 {
+		return 0, false
+	}
+	fields := strings.Fields(line[idx+5:])
+	if len(fields) == 0 {
+		return 0, false
+	}
+	secs := parseFFmpegTime(fields[0])
+	if secs <= 0 {
+		return 0, false
+	}
+	pct = 0.1 + (secs/totalDurationSec)*0.6
+	if pct > 0.69 {
+		pct = 0.69
+	}
+	return pct, true
 }
 
 // parseFFmpegError maps common FFmpeg stderr patterns to typed errors.
