@@ -114,6 +114,17 @@ type PipelineConfig struct {
 	// EnergyThreshold and HangoverFrames. Provides a named, discoverable way
 	// for audio-package users to configure VAD without building *VAD manually.
 	VADConfig *VADConfig
+
+	// TurnEndBufferSize enables an opt-in, real-time feed of end-of-utterance
+	// events -- energy drop sustained for ~200ms of silence following speech
+	// -- for consumers such as an ASR trigger in a duplex translation
+	// pipeline (see ROADMAP.md Phase 1, "VAD -- energy-based turn marker").
+	// It sets the buffer size, in events, of the channel returned by
+	// TurnEnd(). 0 (default) disables the feature entirely: no channel is
+	// allocated and ProcessFrames/Process48k take no extra bookkeeping cost
+	// beyond a nil check, so existing callers pay zero cost. Mirrors
+	// pkg/rtp.Session's CleanAudioBufferSize pattern.
+	TurnEndBufferSize int
 }
 
 // PipelineStats holds real-time pipeline quality metrics.
@@ -134,6 +145,10 @@ type Pipeline struct {
 	vad    VADer
 	agc    *AGC
 	logger *zap.Logger
+
+	// turnEnd is non-nil only when cfg.TurnEndBufferSize > 0; see TurnEnd()
+	// and the observe() calls in ProcessFrames/Process48k.
+	turnEnd *turnEndTracker
 
 	aec      *AEC
 	farEnd   []int16 // far-end reference for AEC (set by SetFarEnd)
@@ -197,6 +212,8 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 			HangoverFrames: cfg.VADConfig.HangoverFrames,
 		}
 	}
+	turnEnd := newTurnEndTracker(cfg.TurnEndBufferSize, vad)
+
 	var agc *AGC
 	if cfg.AGC != nil {
 		agcCfg := *cfg.AGC
@@ -252,6 +269,7 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 		suppressor:    sup,
 		telemetry:     telem,
 		telemetryTags: tags,
+		turnEnd:       turnEnd,
 	}
 }
 
@@ -346,6 +364,11 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 				return fmt.Errorf("pipeline: noise reducer: %w", err)
 			}
 		}
+
+		// TurnEnd: feed the (post-AEC/NR, pre-suppression) frame into the
+		// end-of-utterance tracker. No-op (nil-safe) when TurnEndBufferSize
+		// was 0 (the default).
+		p.turnEnd.observe(processSamples)
 
 		var cleaned []int16
 		usedSuppressor := false
@@ -511,6 +534,7 @@ func (p *Pipeline) Reset() {
 	if p.limiter != nil {
 		p.limiter.Reset()
 	}
+	p.turnEnd.reset()
 	// Zero-fill (rather than nil) so Process48k does not need to distinguish
 	// "never used" from "reset"; a nil check there just means "not yet sized".
 	if p.resample48kDownHist != nil {
@@ -538,6 +562,39 @@ func (p *Pipeline) SetFarEnd(samples []int16) {
 	p.farEndMu.Lock()
 	p.farEnd = samples
 	p.farEndMu.Unlock()
+}
+
+// TurnEnd returns a channel of TurnEndEvent notifications for real-time
+// end-of-utterance detection -- energy drop sustained for ~200ms of silence
+// following speech -- for consumers such as an ASR trigger in a duplex
+// translation pipeline (see ROADMAP.md Phase 1, "VAD -- energy-based turn
+// marker"; LangStream Week 1 wires this to its ASR call).
+//
+// It returns nil if PipelineConfig.TurnEndBufferSize was 0 (the default) --
+// callers must check for nil before ranging over the result, exactly as with
+// rtp.Session.CleanAudio(). Delivery is non-blocking and drops the oldest
+// buffered event to make room for the newest one if the consumer falls
+// behind. The channel is closed by Pipeline.Close(), so ranging over it
+// terminates cleanly once the pipeline is torn down.
+func (p *Pipeline) TurnEnd() <-chan TurnEndEvent {
+	if p.turnEnd == nil {
+		return nil
+	}
+	return p.turnEnd.ch
+}
+
+// Close releases resources associated with optional opt-in pipeline
+// features that need explicit teardown -- currently just the TurnEnd()
+// event channel. Safe to call multiple times (idempotent, guarded by
+// sync.Once) and safe to call even if TurnEndBufferSize was never
+// configured (no-op in that case).
+//
+// Call this once when the Pipeline itself is being torn down (end of
+// call/session) -- not from Reset(), which is for reusing the same
+// Pipeline across a new stream/file and intentionally leaves the TurnEnd
+// channel open so consumers keep receiving events across resets.
+func (p *Pipeline) Close() {
+	p.turnEnd.close()
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -677,6 +734,10 @@ func (p *Pipeline) Process48k(frame []int16) ([]int16, error) {
 	p.statsMu.Lock()
 	p.framesProcessed++
 	p.statsMu.Unlock()
+
+	// TurnEnd: feed the downsampled 16kHz frame into the end-of-utterance
+	// tracker. No-op (nil-safe) when TurnEndBufferSize was 0 (the default).
+	p.turnEnd.observe(down)
 
 	// Step 2: VAD gate — skip suppressor on silence.
 	isSpeech := true
