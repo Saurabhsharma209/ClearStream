@@ -2123,3 +2123,22 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. Confirm with LangStream side whether `Pipeline.TurnEnd()`'s new event stream should be wired directly into their ASR trigger, and whether it needs to be correlated with `Session.CleanAudio()` by timestamp.
 2. RTP/SIP: due for its regular backlog rotation (last real backlog work was 2026-07-09; 07-12 was decision-driven, not a rotation pick).
 3. AI Model: hasn't rotated since 2026-07-12 (startServer coverage); DeepFilterNet ONNX real-model wiring vs. mock still an open independent priority.
+
+## 2026-07-14
+
+**Agents run:** AI Model (pkg/model pool.go), RTP/SIP (pkg/rtp session.go/rtcp/jitter)
+**Build:** passing (go build ./... verified both on a go1.22 sandbox and this dev Mac's real go1.17 toolchain; CGO_ENABLED=0 go test ./... full suite green)
+
+### Changes
+- pkg/model/pool.go, pkg/model/pool_closed_edge_test.go (new): Fixed a real bug -- SuppressorPool.Acquire/Release/WarmPool never accounted for the pool's channel being closed. After Close(), Acquire and WarmPool's drain loop panicked with a nil-interface dereference (receiving from a closed, drained channel yields a nil Suppressor immediately, select never falls through to default), and Release panicked with "send on closed channel". Added a closed flag guarding all three methods -- implemented as int32 + sync/atomic rather than atomic.Bool, since this dev Mac's real Go toolchain is 1.17 and atomic.Bool requires Go 1.19+ (caught this during integration, not in the agent's own sandbox which had go1.22). 4 new tests (TestAcquireAfterClose, TestReleaseAfterClose, TestWarmPoolAfterClose, TestReleaseAfterCloseClosesSuppressor). Acquire/Release reach 100% coverage.
+- pkg/rtp/session.go, pkg/rtp/rtcp_autoport_test.go (new), pkg/rtp/handlepacket_dtmf_test.go (new): Fixed a real bug -- listenRTCP computed the RTCP port by re-parsing Config.ListenAddr's port text and adding 1. When ListenAddr uses port 0 (OS auto-assign -- the idiomatic Go pattern, and the one this package's own tests otherwise avoid for exactly this reason), the config text is literally "0", so RTCP bound to port 1 instead of the real RTP socket's port+1. Fixed by reading the actual bound port off s.conn.LocalAddr(). Also closed the previously-0%-covered DTMF-dispatch branch in handlePacket (4 new tests: callback fire, nil-callback no-op, parse-error swallow, unknown-event-code swallow). pkg/rtp coverage: 95.3% percent to 96.7 percent.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue -- carried over again)
+- Confirmed today: this dev Mac's local Go toolchain is genuinely 1.17, not just a CGO/dyld quirk -- any new code must avoid Go 1.18+ stdlib additions (atomic.Bool, certain generics-heavy APIs). CI's 1.21/1.22 matrix and any go1.22 sandbox used for agent work will build code that then fails to build here; caught by integration this cycle, but worth flagging as a real toolchain-drift risk.
+- LangStream confirmation still outstanding: whether CleanAudioFrame{PCM, Timestamp} is sufficient for the Week 2 duplex-RTP ASR feed, and whether Pipeline.TurnEnd()'s event stream should be wired directly into their ASR trigger.
+
+### Tomorrow
+1. Consider upgrading this dev Mac's local Go toolchain (currently 1.17) to at least 1.19-1.20 to close the version gap with CI/sandbox builds and avoid repeats of today's atomic.Bool mismatch.
+2. Post-processing: hasn't rotated since 2026-07-13 -- due for a pass.
+3. Audio Pipeline: hasn't rotated since 2026-07-13 (TurnEnd()) -- no urgent backlog item flagged; scan for next highest-value step.
