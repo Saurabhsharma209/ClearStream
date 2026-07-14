@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
-	"strconv"
 	"sync"
 	"time"
 
@@ -688,27 +687,32 @@ func (s *Session) encodeFromPCM(pcm []int16, pt uint8) ([]byte, error) {
 	}
 }
 
-// listenRTCP listens on ListenAddr port+1 for RTCP Receiver Reports.
+// listenRTCP listens on the actual bound RTP port + 1 for RTCP Receiver
+// Reports.
+//
+// Bug fix (2026-07-14): this used to re-parse s.cfg.ListenAddr's port text
+// (host, portStr, err := net.SplitHostPort(s.cfg.ListenAddr); ...). That is
+// broken whenever ListenAddr asks the OS to auto-assign a port (e.g.
+// "127.0.0.1:0", the idiomatic Go way to grab any free port -- used
+// pervasively by this package's own tests, and a realistic production
+// pattern for dynamic-port deployments): the configured port text is always
+// literally "0", so RTCP would try to bind to port 1 -- a fixed, essentially
+// arbitrary port with no relationship to the RTP socket NewSession actually
+// opened. In that mode RTCP receiver reports would silently never be
+// received (rtcpConn stays nil, RTTMs()/QualityReport() never get RR data)
+// and, on most systems, binding port 1 outright fails (invalid group of
+// sub-1024 privileged ports for a non-root process). Reading the real bound
+// address back off s.conn.LocalAddr() fixes both the explicit-port and the
+// OS-assigned-port (":0") cases uniformly.
 func (s *Session) listenRTCP() {
-	host, portStr, err := net.SplitHostPort(s.cfg.ListenAddr)
-	if err != nil {
+	localAddr, ok := s.conn.LocalAddr().(*net.UDPAddr)
+	if !ok || localAddr == nil {
 		close(s.rtcpReady)
 		return
 	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		close(s.rtcpReady)
-		return
-	}
-	rtcpAddr := net.JoinHostPort(host, strconv.Itoa(port+1))
+	rtcpAddr := &net.UDPAddr{IP: localAddr.IP, Port: localAddr.Port + 1}
 
-	addr, err := net.ResolveUDPAddr("udp", rtcpAddr)
-	if err != nil {
-		close(s.rtcpReady)
-		return
-	}
-
-	conn, err := net.ListenUDP("udp", addr)
+	conn, err := net.ListenUDP("udp", rtcpAddr)
 	if err != nil {
 		close(s.rtcpReady)
 		return
