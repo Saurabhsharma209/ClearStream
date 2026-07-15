@@ -267,10 +267,37 @@ func (j *JitterBuffer) GeneratePLC() []int16 {
 	frameLen := len(j.lastGoodFrame)
 	result := make([]int16, frameLen)
 
-	// Fade-to-silence: apply 0.85× attenuation per consecutive loss frame.
-	// Each call to GeneratePLC produces strictly lower energy than the previous,
-	// ensuring perceptual smooth fade rather than abrupt cutoff.
-	// Frame 1: 0.85 × lastGoodFrame; Frame 2: 0.85 × Frame1; etc.
+	// Loss 1-2: pitch-period waveform substitution. detectPitch finds the
+	// fundamental period of the last good frame; repeating its final period
+	// cyclically sounds like the speaker naturally held the syllable, which
+	// is far less perceptible than an immediate amplitude drop -- and this is
+	// the overwhelmingly common real-world loss pattern (a single dropped
+	// packet, not a burst), so getting this case right matters most.
+	//
+	// (This closes a real gap: detectPitch was fully implemented and unit
+	// tested in isolation but was never actually wired into GeneratePLC --
+	// the previous implementation faded from lastGoodFrame starting at loss
+	// 1, contradicting this function's own doc comment above.)
+	if j.consecutiveLoss <= 2 {
+		period := detectPitch(j.lastGoodFrame)
+		if period <= 0 || period > frameLen {
+			period = frameLen
+		}
+		tail := j.lastGoodFrame[frameLen-period:]
+		for i := 0; i < frameLen; i++ {
+			result[i] = tail[i%period]
+		}
+		j.prevPLC = result
+		return result
+	}
+
+	// Loss 3+: exponential fade-to-silence. Apply 0.85x attenuation per
+	// consecutive loss frame, fading from the last waveform-substitution
+	// frame (not lastGoodFrame directly) so the substitution-to-fade
+	// transition itself is monotonically non-increasing in amplitude.
+	// Each call to GeneratePLC produces strictly lower energy than the
+	// previous, ensuring a perceptually smooth fade rather than an abrupt
+	// cutoff or an indefinite loop of repeating audio.
 	src := j.prevPLC
 	if src == nil {
 		src = j.lastGoodFrame

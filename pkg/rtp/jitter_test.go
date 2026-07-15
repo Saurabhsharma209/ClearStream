@@ -478,3 +478,48 @@ func sinApprox(x float64) float64 {
 	// Taylor: sin(x) ≈ x - x³/6 + x⁵/120
 	return x - (x*x*x)/6.0 + (x*x*x*x*x)/120.0
 }
+
+// TestJitterPLCLoss1UsesPitchPeriodSubstitution locks in the GeneratePLC fix:
+// loss 1-2 must genuinely reuse detectPitch's period from the last good
+// frame (a cyclic tail-repeat), not just emit "any non-zero value". Before
+// this fix, detectPitch was fully implemented and unit-tested in isolation
+// but was never actually wired into GeneratePLC -- the real implementation
+// just faded from lastGoodFrame starting at loss 1, contradicting
+// GeneratePLC's own doc comment describing a pitch-substitution phase.
+func TestJitterPLCLoss1UsesPitchPeriodSubstitution(t *testing.T) {
+	jb := NewJitterBuffer(2)
+
+	frameLen := 160
+	goodFrame := make([]int16, frameLen)
+	for i := range goodFrame {
+		goodFrame[i] = int16(1000 + i) // distinctive values so a naive fade would clearly differ
+	}
+	jb.OnGoodPacket(goodFrame)
+
+	period := detectPitch(goodFrame)
+	want := make([]int16, frameLen)
+	tail := goodFrame[frameLen-period:]
+	for i := 0; i < frameLen; i++ {
+		want[i] = tail[i%period]
+	}
+
+	got := jb.GeneratePLC()
+	if len(got) != len(want) {
+		t.Fatalf("PLC loss 1 length = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("PLC loss 1 sample %d = %d, want %d (pitch-period tail-repeat of lastGoodFrame)", i, got[i], want[i])
+		}
+	}
+
+	// Loss 2 should reproduce the identical substitution (deterministic,
+	// same lastGoodFrame/period) -- not an attenuated copy. The fade only
+	// begins at loss 3.
+	got2 := jb.GeneratePLC()
+	for i := range want {
+		if got2[i] != want[i] {
+			t.Fatalf("PLC loss 2 sample %d = %d, want %d (still substitution phase, no decay yet)", i, got2[i], want[i])
+		}
+	}
+}

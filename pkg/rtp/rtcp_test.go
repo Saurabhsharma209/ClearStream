@@ -70,7 +70,10 @@ func TestPLCFadeToSilence_RTCPBasic(t *testing.T) {
 	}
 	jb.onGoodPacket(frame)
 
-	// Generate PLC frames — each should be quieter than the previous
+	// Loss 1-2 use pitch-period waveform substitution (see GeneratePLC in
+	// jitter.go): both calls repeat the same detected pitch period from the
+	// same lastGoodFrame, so they are non-decaying relative to each other.
+	// Loss 3+ is where the exponential fade-to-silence actually begins.
 	plc1 := jb.generatePLC()
 	plc2 := jb.generatePLC()
 	plc3 := jb.generatePLC()
@@ -83,11 +86,14 @@ func TestPLCFadeToSilence_RTCPBasic(t *testing.T) {
 		return sum
 	}
 
-	if energy(plc1) <= energy(plc2) {
-		t.Error("PLC frame 1 should be louder than frame 2 (fade to silence)")
+	if energy(plc1) == 0 {
+		t.Error("PLC frame 1 should be non-silent (pitch-period waveform substitution)")
+	}
+	if energy(plc2) > energy(plc1) {
+		t.Error("PLC frame 2 should not be louder than frame 1 (still in substitution phase)")
 	}
 	if energy(plc2) <= energy(plc3) {
-		t.Error("PLC frame 2 should be louder than frame 3 (fade to silence)")
+		t.Error("PLC frame 2 should be louder than frame 3 (fade to silence begins at loss 3)")
 	}
 }
 
