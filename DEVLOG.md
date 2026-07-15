@@ -2142,3 +2142,23 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. Consider upgrading this dev Mac's local Go toolchain (currently 1.17) to at least 1.19-1.20 to close the version gap with CI/sandbox builds and avoid repeats of today's atomic.Bool mismatch.
 2. Post-processing: hasn't rotated since 2026-07-13 -- due for a pass.
 3. Audio Pipeline: hasn't rotated since 2026-07-13 (TurnEnd()) -- no urgent backlog item flagged; scan for next highest-value step.
+
+## 2026-07-15
+
+**Agents run:** Audio Pipeline (pkg/audio TurnEnd VAD-clone coverage), RTP/SIP (pkg/rtp PLC pitch-period substitution), Post-processing (pkg/file context cancellation)
+**Build:** passing ✅ (go build ./... on go1.17 dev Mac; CGO_ENABLED=0 go test ./... full suite green)
+
+### Changes
+- `pkg/audio/pipeline_turnend_vad_test.go` (new): Found `cloneVADForTurnEnd` (added 07-13 with TurnEnd()) sitting at 13.3% coverage — every existing TurnEnd test left `PipelineConfig.VAD`/`VADConfig`/`UseAdaptiveVAD` unset, so the clone's `*VAD`/`*AdaptiveVAD` branches never ran, only the nil-default fallback. This is exactly the VAD-bypass + TurnEnd combination ROADMAP.md's LangStream Week 1 plan expects in production. Added 6 tests confirming threshold propagation (both `*VAD` and `VADConfig` construction paths), forced `HangoverFrames=0` on the clone regardless of source hangover (for both VAD types), and full `*AdaptiveVAD` clone behavior through its own calibration window. `cloneVADForTurnEnd`: 13.3%→100%; pkg/audio: 92.9%→93.9%.
+- `pkg/rtp/jitter.go`, `jitter_test.go`, `rtcp_test.go`: Found a real behavior bug — `GeneratePLC()`'s doc comment described two-phase PLC (loss 1-2: pitch-period waveform substitution via `detectPitch`; loss 3+: exponential fade), and `detectPitch()` was fully implemented and unit-tested but never actually called from `GeneratePLC()`. The real implementation applied a flat 0.85x decay starting at loss 1, causing an audible amplitude drop on the most common real-world loss pattern (a single dropped packet) instead of a natural pitch-cycle repeat — affecting both wire audio and the `Session.CleanAudio()` feed LangStream's Week 2 duplex-RTP/ASR work depends on. Wired `detectPitch` into loss 1-2, with existing fade-decay now sourced from the substitution frame for loss 3+. Fixed one stale test that had encoded the old (wrong) behavior; added a new test locking in pitch-period substitution. pkg/rtp coverage: 96.5%→96.3% (GeneratePLC itself at 91.7%; net negligible dip from one new defensive branch).
+- `pkg/file/processor.go`, `processor_cancel_test.go` (new): Found `ProcessWithOptions`/`ProcessDir`/`ProcessDirFull` had zero cancellation support, unlike `StreamProcess` (which already takes a `context.Context`). A long-running `dir` batch job had no way to be aborted mid-run without orphaning the in-flight FFmpeg child process. Added `Options.Context` (defaults to `context.Background()`), fail-fast `ctx.Err()` check before probing, and switched `decodeAndSuppress`/`encodeAndMux` to `exec.CommandContext` so cancellation actually kills the FFmpeg child and surfaces `context.Canceled` cleanly. `ProcessDir`/`ProcessDirFull` cascade this for free (Options passed by value per worker). 4 new tests (pre-cancelled, mid-decode kill, mid-encode kill, batch-level cancellation). pkg/file coverage: 93.4%→93.0% (a couple of low-value ctx-check branches not fully hit).
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue — carried over again)
+- ROADMAP.md's "Resolved Decisions" table still says `Pipeline.TurnEnd()` "does not exist yet" — stale since it shipped 07-13; worth a doc-only fix next time someone touches ROADMAP.md.
+- LangStream confirmation still outstanding: whether `CleanAudioFrame{PCM, Timestamp}` is sufficient for Week 2, and whether `TurnEnd()`'s event stream should wire directly into their ASR trigger.
+
+### Tomorrow
+1. AI Model: hasn't rotated since 07-14 (pool.go close-safety) aside from that fix — check `pkg/model` for its own next highest-value step (DeepFilterNet ONNX real-model wiring still blocked on this Mac's go1.17/onnxruntime_go generics incompatibility, unaffected in CI).
+2. QA/Testing: hasn't rotated since 07-13 (pkg/sip/pkg/loadtest) — re-scan coverage across all packages for new gaps opened by today\\'s changes.
+3. Consider fixing the stale TurnEnd() line in ROADMAP.md\\'s Resolved Decisions table.
