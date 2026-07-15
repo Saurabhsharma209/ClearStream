@@ -83,6 +83,16 @@ type Options struct {
 	// partial failure without reprocessing files that already succeeded.
 	// Default: false (always reprocess every matching file).
 	SkipExisting bool
+
+	// Context, if set, allows cancelling in-progress processing -- including
+	// killing any currently-running FFmpeg child process -- via ctx.Done().
+	// This applies to Process/ProcessWithOptions, and to every file handled
+	// by ProcessDir/ProcessDirFull: once cancelled, the in-flight file's
+	// FFmpeg process is killed and any not-yet-started files in the same
+	// batch fail fast with ctx.Err() instead of being processed. If nil,
+	// context.Background() is used and processing cannot be cancelled once
+	// started. StreamProcess is unaffected (it already takes its own ctx).
+	Context context.Context
 }
 
 // telemetry returns o.Telemetry if set, otherwise a no-op sink, so callers
@@ -92,6 +102,17 @@ func (o Options) telemetry() telemetry.Sink {
 		return o.Telemetry
 	}
 	return telemetry.NoopSink{}
+}
+
+// context returns o.Context if set, otherwise context.Background(), so
+// callers never need to nil-check before use. A nil Context means
+// processing (including any in-progress FFmpeg child process) cannot be
+// cancelled once started.
+func (o Options) context() context.Context {
+	if o.Context != nil {
+		return o.Context
+	}
+	return context.Background()
 }
 
 // ProcessorConfig holds configuration for a Processor.
@@ -126,6 +147,11 @@ func (p *Processor) Process(src, dst string) error {
 //
 // For video files, the video track passes through untouched.
 func (p *Processor) ProcessWithOptions(src, dst string, opts Options) error {
+	ctx := opts.context()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("file: %w", err)
+	}
+
 	logger := p.cfg.Logger.With(
 		zap.String("src", src),
 		zap.String("dst", dst),
@@ -160,7 +186,7 @@ func (p *Processor) ProcessWithOptions(src, dst string, opts Options) error {
 	defer os.Remove(tmpAudio.Name())
 
 	// 3. Decode audio to raw 16kHz mono PCM via FFmpeg pipe
-	if err := p.decodeAndSuppress(src, tmpAudio.Name(), info, opts.AGC, logger, opts.OnProgress); err != nil {
+	if err := p.decodeAndSuppress(ctx, src, tmpAudio.Name(), info, opts.AGC, logger, opts.OnProgress); err != nil {
 		return fmt.Errorf("file: decode+suppress: %w", err)
 	}
 
@@ -225,6 +251,9 @@ func isAlreadyProcessed(src, dst string) bool {
 // Supported extensions: .mp3 .wav .flac .ogg .aac .mp4 .mkv .mov .avi .webm .m4a
 // Files are processed concurrently, bounded by opts.MaxConcurrency
 // (default runtime.NumCPU() when unset/zero/negative).
+// If opts.Context is cancelled, the in-flight FFmpeg process for any file
+// currently processing is killed and every not-yet-started file fails fast
+// with ctx.Err() instead of being processed.
 // Returns a slice of errors (one per failed file; nil entries = success).
 func (p *Processor) ProcessDir(srcDir, dstDir string, opts Options) []error {
 	supported := map[string]bool{
@@ -317,9 +346,12 @@ func (p *Processor) ProcessDir(srcDir, dstDir string, opts Options) []error {
 
 // decodeAndSuppress decodes audio from src to 16kHz mono PCM,
 // runs it through the suppressor (and optional AGC), and writes raw PCM to pcmPath.
-func (p *Processor) decodeAndSuppress(src, pcmPath string, info *audio.MediaInfo, agc *audio.AGCConfig, logger *zap.Logger, onProgress func(float64)) error {
-	// FFmpeg decode command: any input → 16kHz mono signed 16-bit PCM on stdout
-	decodeCmd := exec.Command(p.cfg.FFmpegPath,
+func (p *Processor) decodeAndSuppress(ctx context.Context, src, pcmPath string, info *audio.MediaInfo, agc *audio.AGCConfig, logger *zap.Logger, onProgress func(float64)) error {
+	// FFmpeg decode command: any input → 16kHz mono signed 16-bit PCM on stdout.
+	// exec.CommandContext ensures the child process is killed if ctx is
+	// cancelled while decoding is in progress (e.g. a caller-triggered abort
+	// of a long-running batch job).
+	decodeCmd := exec.CommandContext(ctx, p.cfg.FFmpegPath,
 		"-i", src,
 		"-vn",                                      // drop video
 		"-ar", fmt.Sprintf("%d", p.cfg.SampleRate), // resample to 16kHz
@@ -405,6 +437,14 @@ func (p *Processor) decodeAndSuppress(src, pcmPath string, info *audio.MediaInfo
 
 	suppressErr := <-errCh
 
+	// If ctx was cancelled, that's the real cause of any FFmpeg/pipe error
+	// above (the process was just killed) -- surface ctx.Err() directly so
+	// callers can detect cancellation via errors.Is(err, context.Canceled)
+	// rather than parsing a generic "signal: killed" message.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if ffmpegErr != nil {
 		if typed := parseFFmpegError(stderrBuf.String()); typed != nil {
 			return fmt.Errorf("ffmpeg decode: %w", typed)
@@ -416,6 +456,7 @@ func (p *Processor) decodeAndSuppress(src, pcmPath string, info *audio.MediaInfo
 
 // encodeAndMux re-encodes the cleaned PCM and muxes it with the original video (if any).
 func (p *Processor) encodeAndMux(pcmPath, originalSrc, dst string, info *audio.MediaInfo, outCodec string, outRate int, opts Options, logger *zap.Logger) error {
+	ctx := opts.context()
 	args := []string{"-y"} // overwrite output
 
 	// Input 1: clean PCM
@@ -455,13 +496,20 @@ func (p *Processor) encodeAndMux(pcmPath, originalSrc, dst string, info *audio.M
 
 	args = append(args, dst)
 
-	cmd := exec.Command(p.cfg.FFmpegPath, args...)
+	// exec.CommandContext ensures the child process is killed if ctx is
+	// cancelled while encoding is in progress.
+	cmd := exec.CommandContext(ctx, p.cfg.FFmpegPath, args...)
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
 
 	logger.Debug("ffmpeg encode", zap.Strings("args", args))
 
 	if err := cmd.Run(); err != nil {
+		// If ctx was cancelled, surface that directly rather than a generic
+		// "signal: killed" error, mirroring decodeAndSuppress's behaviour.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if typed := parseFFmpegError(stderrBuf.String()); typed != nil {
 			return fmt.Errorf("ffmpeg decode: %w", typed)
 		}
@@ -623,6 +671,9 @@ type DirResult struct {
 
 // ProcessDirFull is like ProcessDir but returns a DirResult for every file
 // in srcDir (including unsupported files, which are marked Skipped=true).
+// If opts.Context is cancelled, the in-flight FFmpeg process for any file
+// currently processing is killed and every not-yet-started file fails fast
+// with ctx.Err() instead of being processed.
 func (p *Processor) ProcessDirFull(srcDir, dstDir string, opts Options) []DirResult {
 	supported := map[string]bool{
 		".mp3": true, ".wav": true, ".flac": true, ".ogg": true,
