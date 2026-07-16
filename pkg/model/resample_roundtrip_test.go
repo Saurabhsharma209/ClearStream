@@ -1,4 +1,4 @@
-//go:build rnnoise
+//go:build rnnoise || onnx
 
 package model
 

@@ -21,7 +21,9 @@ package model
 //   - Output "output" : [1, 480] float32  (denoised, same normalisation)
 //
 // Because ClearStream operates at 16 kHz internally, each 160-sample frame is
-// linearly upsampled to 480 samples before inference and downsampled back after.
+// upsampled to 480 samples before inference and downsampled back after, using
+// the shared Catmull-Rom/Kaiser-sinc resampler in resample.go (see that file
+// for the rationale; it is also used by the CGo RNNoise backend).
 //
 // # Graceful degradation
 //
@@ -153,31 +155,4 @@ func (r *rnnoiseONNXSuppressor) logWarn(msg string, err error) {
 			r.logger.Warn("rnnoise-onnx: " + msg)
 		}
 	})
-}
-
-// upsample3x linearly interpolates a 16kHz frame to 48kHz (3× rate).
-func upsample3x(in []int16) []int16 {
-	out := make([]int16, len(in)*3)
-	for i, s := range in {
-		var next int16
-		if i+1 < len(in) {
-			next = in[i+1]
-		} else {
-			next = s
-		}
-		out[i*3] = s
-		out[i*3+1] = int16((int32(s)*2 + int32(next)) / 3)
-		out[i*3+2] = int16((int32(s) + int32(next)*2) / 3)
-	}
-	return out
-}
-
-// downsample3x averages every 3 samples to convert 48kHz back to 16kHz.
-func downsample3x(in []int16) []int16 {
-	out := make([]int16, len(in)/3)
-	for i := range out {
-		avg := (int32(in[i*3]) + int32(in[i*3+1]) + int32(in[i*3+2])) / 3
-		out[i] = int16(avg)
-	}
-	return out
 }
