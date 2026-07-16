@@ -71,6 +71,44 @@ func TestExtToMIMEAllBranches(t *testing.T) {
 	}
 }
 
+// TestCodecToExtAllBranches is a white-box test (package http, not
+// http_test) that exercises every branch of codecToExt directly, including
+// its case-insensitive matching (via strings.ToLower) and the "" fallback
+// for unrecognised codecs. Only one codec value (via output_codec=aac) was
+// previously exercised indirectly through handleEnhance, leaving most
+// switch cases uncovered.
+func TestCodecToExtAllBranches(t *testing.T) {
+	cases := []struct {
+		codec string
+		want  string
+	}{
+		{"mp3", ".mp3"},
+		{"libmp3lame", ".mp3"},
+		{"MP3", ".mp3"}, // case-insensitive
+		{"opus", ".opus"},
+		{"libopus", ".opus"},
+		{"ogg", ".opus"},
+		{"OGG", ".opus"}, // case-insensitive
+		{"flac", ".flac"},
+		{"FLAC", ".flac"}, // case-insensitive
+		{"pcm_s16le", ".wav"},
+		{"pcm_mulaw", ".wav"},
+		{"pcm_alaw", ".wav"},
+		{"wav", ".wav"},
+		{"aac", ".aac"},
+		{"m4a", ".aac"},
+		{"AAC", ".aac"}, // case-insensitive
+		{"unknown_codec", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		got := codecToExt(tc.codec)
+		if got != tc.want {
+			t.Errorf("codecToExt(%q) = %q, want %q", tc.codec, got, tc.want)
+		}
+	}
+}
+
 // buildWAVBytesWB produces a minimal valid WAV file from int16 samples.
 func buildWAVBytesWB(samples []int16) []byte {
 	dataSize := uint32(len(samples) * 2)
