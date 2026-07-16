@@ -198,6 +198,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/enhance":
 		h.handleEnhance(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/enhance/dir":
+		h.handleEnhanceDir(w, r)
 	case r.URL.Path == "/enhance/stream":
 		h.handleStream(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/health":
@@ -421,6 +423,143 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
+// dirEnhanceRequest is the JSON body accepted by POST /enhance/dir.
+type dirEnhanceRequest struct {
+	// InputDir is a directory, on the ClearStream server's local filesystem
+	// (or a filesystem/volume it has access to), containing audio/video
+	// files to enhance. Required.
+	InputDir string `json:"input_dir"`
+	// OutputDir is the directory enhanced files are written to. Created if
+	// it does not already exist. Required.
+	OutputDir string `json:"output_dir"`
+	// Workers caps the number of files processed concurrently. If zero or
+	// negative, runtime.NumCPU() is used (mirrors the CLI's `dir -workers`
+	// flag / file.Options.MaxConcurrency).
+	Workers int `json:"workers"`
+	// SkipExisting, if true, skips files whose destination already exists
+	// with a modification time >= the source's, making it safe to re-run
+	// this endpoint over a partially completed batch (mirrors the CLI's
+	// `dir -skip-existing` flag / file.Options.SkipExisting).
+	SkipExisting bool `json:"skip_existing"`
+}
+
+// dirEnhanceFileResult reports the outcome of enhancing a single file as
+// part of a POST /enhance/dir batch.
+type dirEnhanceFileResult struct {
+	Src        string `json:"src"`
+	Dst        string `json:"dst"`
+	Skipped    bool   `json:"skipped"`
+	SkipReason string `json:"skip_reason,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// dirEnhanceResponse is the JSON response body for POST /enhance/dir.
+type dirEnhanceResponse struct {
+	Processed int                    `json:"processed"`
+	Skipped   int                    `json:"skipped"`
+	Failed    int                    `json:"failed"`
+	ElapsedMs float64                `json:"elapsed_ms"`
+	Files     []dirEnhanceFileResult `json:"files"`
+}
+
+// handleEnhanceDir processes POST /enhance/dir: batch noise-suppression of
+// every audio/video file in a server-local directory, writing enhanced
+// copies to another server-local directory.
+//
+// This is the HTTP-layer equivalent of the CLI's `clearstream dir`
+// subcommand (both wrap pkg/file.Processor.ProcessDirFull) -- previously
+// the HTTP API only exposed single-file upload/download via POST /enhance,
+// so any caller wanting the CLI's directory-batch capability (with
+// worker-count and skip-existing support) over HTTP had no way to reach it.
+//
+// Accepts: application/json body, see dirEnhanceRequest.
+// Returns: application/json body, see dirEnhanceResponse.
+//
+// Unlike POST /enhance (which accepts an uploaded file), this endpoint
+// operates on paths in the ClearStream server's own filesystem -- it is
+// intended for trusted/internal deployments where ClearStream runs
+// alongside (or shares a volume with) the recording pipeline, the same
+// trust model already assumed by this handler (no auth, permissive CORS).
+// If the request is cancelled (client disconnect), in-flight FFmpeg
+// processes are killed and not-yet-started files fail fast, same as
+// file.Options.Context behaviour.
+func (h *Handler) handleEnhanceDir(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	h.metrics.RequestsTotal++
+	h.reqTotal.Inc()
+	stopTimer := telemetry.StartTimer(h.telemetry, telemetry.MetricFrameLatencyMS, map[string]string{"component": "http", "endpoint": "/enhance/dir"})
+	defer stopTimer()
+
+	var req dirEnhanceRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxUploadSize)).Decode(&req); err != nil {
+		h.metrics.RequestsFailed++
+		h.reqFailed.Inc()
+		h.recordError("/enhance/dir")
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if req.InputDir == "" || req.OutputDir == "" {
+		h.metrics.RequestsFailed++
+		h.reqFailed.Inc()
+		h.recordError("/enhance/dir")
+		writeError(w, http.StatusBadRequest, "input_dir and output_dir are required")
+		return
+	}
+
+	proc := file.NewProcessor(file.ProcessorConfig{
+		FFmpegPath: h.ffmpegPath,
+		SampleRate: h.sampleRate,
+		Channels:   1,
+		Suppressor: h.suppressor,
+		Logger:     h.logger,
+	})
+
+	results := proc.ProcessDirFull(req.InputDir, req.OutputDir, file.Options{
+		MaxConcurrency: req.Workers,
+		SkipExisting:   req.SkipExisting,
+		Telemetry:      h.telemetry,
+		Context:        r.Context(),
+	})
+
+	resp := dirEnhanceResponse{Files: make([]dirEnhanceFileResult, 0, len(results))}
+	for _, res := range results {
+		fr := dirEnhanceFileResult{Src: res.Src, Dst: res.Dst, Skipped: res.Skipped, SkipReason: res.SkipReason}
+		switch {
+		case res.Skipped:
+			resp.Skipped++
+		case res.Err != nil:
+			fr.Error = res.Err.Error()
+			resp.Failed++
+		default:
+			resp.Processed++
+		}
+		resp.Files = append(resp.Files, fr)
+	}
+	resp.ElapsedMs = time.Since(start).Seconds() * 1000
+
+	if resp.Failed > 0 {
+		h.metrics.RequestsFailed++
+		h.reqFailed.Inc()
+		h.recordError("/enhance/dir")
+	} else {
+		h.metrics.RequestsOK++
+		h.reqOK.Inc()
+	}
+	h.metrics.AvgProcessingMs = h.metrics.AvgProcessingMs*0.9 + resp.ElapsedMs*0.1
+	h.procDuration.Observe(time.Since(start).Seconds())
+
+	h.logger.Info("enhanced directory",
+		zap.String("input_dir", req.InputDir),
+		zap.String("output_dir", req.OutputDir),
+		zap.Int("processed", resp.Processed),
+		zap.Int("skipped", resp.Skipped),
+		zap.Int("failed", resp.Failed),
+	)
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp) //nolint:errcheck
+}
+
 // handleHealth processes GET /health, returning a JSON status payload
 // including the active suppressor model name and process uptime.
 func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -444,6 +583,7 @@ func (h *Handler) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"supported_codecs":        []string{"pcmu", "pcma", "g722", "opus"},
 		"endpoints": map[string]string{
 			"POST /enhance":           "Upload audio file for noise suppression",
+			"POST /enhance/dir":       "Batch-enhance a server-local directory of audio/video files",
 			"GET /health":             "Health check",
 			"GET /info":               "SDK info",
 			"GET /metrics/prometheus": "Prometheus metrics",
