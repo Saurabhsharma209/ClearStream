@@ -2162,3 +2162,23 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. AI Model: hasn't rotated since 07-14 (pool.go close-safety) aside from that fix — check `pkg/model` for its own next highest-value step (DeepFilterNet ONNX real-model wiring still blocked on this Mac's go1.17/onnxruntime_go generics incompatibility, unaffected in CI).
 2. QA/Testing: hasn't rotated since 07-13 (pkg/sip/pkg/loadtest) — re-scan coverage across all packages for new gaps opened by today\\'s changes.
 3. Consider fixing the stale TurnEnd() line in ROADMAP.md\\'s Resolved Decisions table.
+
+## 2026-07-16
+
+**Agents run:** AI Model (pkg/model resample unification), QA/Testing (pkg/http coverage), API Layer (pkg/http batch endpoint)
+**Build:** passing (go build ./... and CGO_ENABLED=0 go test ./pkg/model/... ./pkg/http/... on this dev Mac's go1.17 toolchain)
+
+### Changes
+- `pkg/model/resample.go` (new), `rnnoise.go`, `rnnoise_onnx.go`, `resample_linear_test.go`, `resample_roundtrip_test.go`: Found the `-tags onnx` backend (`rnnoise_onnx.go`) still carried its own old naive linear-interpolation/box-average `upsample3x`/`downsample3x`, while the default `rnnoise.go` backend had already been upgraded (Catmull-Rom + 15-tap Kaiser-sinc FIR, ~40dB image rejection vs ~13dB). Since `rnnoise-onnx` is the documented no-CGo alternative, its users were silently getting materially worse resampling with no indication. Extracted the shared high-quality implementation into `resample.go` (build tag `rnnoise || onnx`), removed both duplicates, rewrote the linear-interpolation test file's now-stale exact-value assertions into invariant-based tests shared across both backends.
+- `pkg/http/exttomime_test.go`: `codecToExt` (maps `output_codec` form field to response file extension) was at 42.9% coverage -- only the `aac` branch was exercised. Added `TestCodecToExtAllBranches` covering opus/ogg, flac, pcm/wav, case-insensitive matching, and the unknown/empty fallback. `codecToExt`: 42.9% -> 100%; pkg/http: 92.1%.
+- `pkg/http/handler.go`, `handler_enhance_dir_test.go` (new): Added `POST /enhance/dir` -- the HTTP-layer equivalent of the CLI's `clearstream dir` subcommand, wrapping `file.Processor.ProcessDirFull` with `workers`/`skip_existing` support. This exact gap was flagged twice in DEVLOG (07-10, 07-11: "currently HTTP only does single-file /enhance"). Returns a JSON summary (processed/skipped/failed + per-file results), respects request cancellation via `r.Context()`. 5 new tests including a full end-to-end run against real ffmpeg.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue -- carried over again)
+- Two pre-existing, unrelated test flakes confirmed (not caused by today's changes, reproduced on base commit c126f43 with today's diff stashed out): `pkg/file`'s FFmpeg-cancellation kill-timing tests and `pkg/model`'s `TestDeepFilterServerSuppressor_StartServer*` subprocess `WaitDelay` I/O-completion flake. Both are sandbox process/signal-timing sensitive, not logic bugs; worth investigating if they start blocking CI.
+- LangStream confirmation still outstanding: whether `CleanAudioFrame{PCM, Timestamp}` is sufficient for Week 2, and whether `Pipeline.TurnEnd()`'s event stream should wire directly into their ASR trigger.
+
+### Tomorrow
+1. Audio Pipeline / RTP-SIP / Post-processing: all rotated 07-15, due for their next rotation.
+2. QA/Testing: investigate the two sandbox test flakes above (`pkg/file` FFmpeg-cancel timing, `pkg/model` deepfilter-server WaitDelay) to see if they're masking a real race vs. pure environment timing.
+3. Consider fixing the stale `Pipeline.TurnEnd()` line in ROADMAP.md's Resolved Decisions table (flagged since 07-15, still not done).
