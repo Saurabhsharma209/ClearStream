@@ -1832,11 +1832,11 @@ RNNoise achieved dramatically better background suppression (+33.51 dB vs +4.34 
 - `pkg/rtp/session_playback_test.go`: New file. 4 Session-level tests covering InjectBotAudio (single frame, multi-frame with remainder padding), ClearPlayback (discard count + empty-queue verification), PlaybackStats counters (Pushed/Cleared). Coverage: 84.8% ? 88.3% ?.
 
 ### Blocked
-- pkg/eval `max`, `evalFile`, `decodeToRawPCM` still 0% Ñ require ffmpeg binary, not testable without integration harness.
+- pkg/eval `max`, `evalFile`, `decodeToRawPCM` still 0% ï¿½ require ffmpeg binary, not testable without integration harness.
 - Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass.
 
 ### Tomorrow
-1. Audio Pipeline: A/B test Process48k vs 8kHz path Ñ measure SNR on real call samples
+1. Audio Pipeline: A/B test Process48k vs 8kHz path ï¿½ measure SNR on real call samples
 2. API Layer: Add pkg/http/handler.go POST /enhance endpoint (add streaming support)
 
 ## 2026-06-29
@@ -2185,18 +2185,19 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 
 ## 2026-07-17
 
-**Agents run:** RTP/SIP (jitter buffer sequence-drift resync)
-**Build:** passing (go build ./... and CGO_ENABLED=0 go test ./pkg/rtp/... on this dev Mac's go1.17 toolchain)
+**Agents run:** Audio Pipeline (diarizer wiring bug), RTP/SIP (jitter sequence-drift resync), Post-processing (NormalizePeak wiring bug)
+**Build:** passing (go build ./... and CGO_ENABLED=0 go test ./... on this dev Mac's go1.17 toolchain)
 
 ### Changes
-- `pkg/rtp/jitter.go`: found that `maxSeqDrift` (declared "seq-number gap that signals reset/wrap") was never referenced anywhere in the package -- a real "documented but not wired up" gap. Without it, a large sequence-number discontinuity (e.g. a mid-call codec renegotiation or SIP re-INVITE/session-resume that restarts RTP sequence numbering without changing the SSRC) was indistinguishable from ordinary packet loss: `Pop()` would tail-chase the gap one seq number at a time, reporting hundreds to thousands of spurious loss/PLC events (tens of seconds of fabricated fade-to-silence audio) before ever reaching real, already-buffered packets. Wired `maxSeqDrift` into `JitterBuffer.Push()`: when the forward or backward distance from the current `nextSeq` to an incoming packet's sequence number exceeds `maxSeqDrift` (500), the buffer now discards its stale contents and immediately re-primes around the new sequence range, instead of waiting to catch up one seq at a time. Ordinary small gaps (including gaps that straddle the 16-bit wraparound boundary) are untouched and still go through the normal loss/PLC path.
-- `pkg/rtp/jitter_seqdrift_test.go` (new): 4 tests -- large forward drift resync, large backward drift resync, small-gap regression (still reported as ordinary loss), and a wraparound-adjacent small gap that must NOT false-positive as a drift/reset.
-- Coverage: pkg/rtp 96.3% -> 96.4%.
+- `pkg/audio/pipeline.go`, `pkg/audio/diarize.go`, `pkg/audio/diarize_test.go`: Found a real dead-wiring bug -- `NewPipeline()` built the `Pipeline` struct literal but never assigned `cfg.Diarizer` to the `diarizer` field, so any caller configuring `PipelineConfig.Diarizer` silently got no diarization at all (`DiarizationSegments()` always returned nil). Masked by an existing test that only asserted no panic, never that diarization actually ran. Fixed the wiring, and while in the area, implemented the two-channel far-end diarization `EnergyDiarizer` had promised in its doc comment but never delivered (`SetFarEndRMS`, new `FarEndAwareDiarizer` interface, wired into `Pipeline.ProcessFrames` off the existing AEC far-end reference). Also corrected two stale \`Pipeline.TurnEnd() does not exist yet\` references in ROADMAP.md (shipped 2026-07-13, flagged as stale since 07-15). 8 new tests, including a regression test that would have caught the original dead-wiring bug. `DiarizationSegments` coverage 66.7% -> 100%; pkg/audio 94.0% -> 94.2%.
+- `pkg/rtp/jitter.go`, `pkg/rtp/jitter_seqdrift_test.go` (new): Found \`maxSeqDrift\` (declared as the seq-number gap that signals reset/wrap) was never referenced anywhere in the package. Without it, a large sequence-number discontinuity (mid-call codec renegotiation, SIP re-INVITE/session-resume without an SSRC change) was indistinguishable from ordinary packet loss -- \`Pop()\` would tail-chase the gap one seq at a time, generating hundreds to thousands of spurious loss/PLC events. Wired \`maxSeqDrift\` into \`JitterBuffer.Push()\`: a forward/backward gap from \`nextSeq\` exceeding 500 now triggers an immediate discard-and-re-prime instead of tail-chasing. Ordinary small gaps, including ones straddling the 16-bit wraparound boundary, are unaffected. 4 new tests. pkg/rtp coverage: 96.3% -> 96.4%.
+- `pkg/file/processor.go`, `pkg/file/processor_normalizepeak_test.go` (new): Found \`Options.NormalizePeak\` was a fully user-facing, documented, HTTP-exposed (\`normalize_peak\` form field) flag that did nothing -- no code in the pipeline ever read it, and the existing test only asserted \`no error\`, not that normalization occurred. Implemented \`normalizePeakPCM()\`: rescales the decoded s16le PCM so its peak sample lands at -1 dBFS, leaving silence untouched and guarding against truncated/odd-length buffers; wired into \`ProcessWithOptions\` between decode+suppress and re-encode. 7 new tests (6 unit + 1 end-to-end via fake ffmpeg) including a before/after regression proving the flag now has an effect. pkg/file coverage: 93.0% -> 92.1% (dip is two low-value defensive branches, same class DEVLOG has previously accepted).
 
 ### Blocked
 - Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue -- carried over again)
+- pkg/file's FFmpeg-cancellation kill-timing flake (flagged 07-16) did not reproduce in 3 consecutive local runs this cycle, but a genuine root-cause candidate was found while looking: \`decodeAndSuppress\` calls \`decodeCmd.Wait()\` before draining the stderr-reading goroutine, violating os/exec's documented contract (stderr pipe reads must complete before Wait()). Plausible contributor to the sandbox timing-sensitivity; not fixed this cycle (out of scope for the NormalizePeak deliverable, and touching kill-timing code without dedicated coverage right before a rotation risked new flakiness). Recommend a dedicated pass to drain stderr before Wait(), or switch to a buffered cmd.Stderr instead of StderrPipe().
 
 ### Tomorrow
-1. Audio Pipeline / Post-processing: due for their next rotation (last rotated 07-15/07-16 respectively per above).
-2. QA/Testing: investigate the two sandbox test flakes noted 07-16 (pkg/file FFmpeg-cancel timing, pkg/model deepfilter-server WaitDelay).
-3. Consider fixing the stale Pipeline.TurnEnd() line in ROADMAP.md's Resolved Decisions table (flagged since 07-15, still not done).
+1. QA/Testing: hasn't rotated since 07-13 (pkg/sip/pkg/loadtest); also investigate the pkg/model deepfilter-server WaitDelay flake (07-16) and the decodeAndSuppress stderr/Wait() ordering issue flagged above.
+2. AI Model: hasn't rotated since 07-16 (resample unification); DeepFilterNet ONNX real-model wiring still blocked on this Mac's go1.17/onnxruntime_go generics incompatibility (unaffected in CI).
+3. API Layer: hasn't rotated since 07-16 (batch endpoint); scan for Config.Validate()/doc-comment gaps.
