@@ -135,6 +135,39 @@ func (j *JitterBuffer) Push(seq uint16, ts uint32, payload []byte) bool {
 	}
 	j.lastArrival = now
 
+	// Detect a sequence-number discontinuity far larger than ordinary packet
+	// loss could plausibly produce (RFC 3550 does not guarantee sequence
+	// continuity across events like mid-call codec renegotiation or a SIP
+	// re-INVITE/session resume, which can restart RTP sequence numbering
+	// without changing the SSRC). Without this check, a huge gap (e.g.
+	// nextSeq=100, incoming seq=6000) is indistinguishable from "5900
+	// packets lost": Pop() would spend the next 5900 calls each reporting
+	// one lost packet / emitting one PLC frame -- tens of seconds of
+	// fabricated audio -- before ever reaching the real, already-arrived
+	// packets. maxSeqDrift was declared for exactly this purpose but was
+	// never wired up anywhere; resync immediately instead of tail-chasing
+	// the gap one sequence number at a time.
+	if j.primed {
+		fwd := seq - j.nextSeq // uint16 wraparound: forward distance nextSeq -> seq
+		bwd := j.nextSeq - seq // uint16 wraparound: backward distance seq -> nextSeq
+		fwdIsForward := fwd > 0 && fwd < 0x8000
+		bwdIsBackward := bwd > 0 && bwd < 0x8000
+		if (fwdIsForward && fwd > maxSeqDrift) || (bwdIsBackward && bwd > maxSeqDrift) {
+			// Discard everything currently buffered -- it belongs to the old
+			// sequence-number stream and is no longer relevant -- then let
+			// this packet re-prime the buffer from scratch, exactly like the
+			// startup path below. Adaptive depth / jitter timing stats are
+			// intentionally left untouched: the network characteristics
+			// haven't changed, only the sender's sequence numbering has.
+			for i := range j.buf {
+				putJitterPayload(j.buf[i].payload)
+				j.buf[i].payload = nil
+			}
+			j.buf = j.buf[:0]
+			j.primed = false
+		}
+	}
+
 	// Copy payload to avoid aliasing with caller's buffer. Pooled: see
 	// jitterPayloadPool above -- avoids a fresh heap allocation per packet.
 	p := getJitterPayload(len(payload))

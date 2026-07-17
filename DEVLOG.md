@@ -2182,3 +2182,21 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. Audio Pipeline / RTP-SIP / Post-processing: all rotated 07-15, due for their next rotation.
 2. QA/Testing: investigate the two sandbox test flakes above (`pkg/file` FFmpeg-cancel timing, `pkg/model` deepfilter-server WaitDelay) to see if they're masking a real race vs. pure environment timing.
 3. Consider fixing the stale `Pipeline.TurnEnd()` line in ROADMAP.md's Resolved Decisions table (flagged since 07-15, still not done).
+
+## 2026-07-17
+
+**Agents run:** RTP/SIP (jitter buffer sequence-drift resync)
+**Build:** passing (go build ./... and CGO_ENABLED=0 go test ./pkg/rtp/... on this dev Mac's go1.17 toolchain)
+
+### Changes
+- `pkg/rtp/jitter.go`: found that `maxSeqDrift` (declared "seq-number gap that signals reset/wrap") was never referenced anywhere in the package -- a real "documented but not wired up" gap. Without it, a large sequence-number discontinuity (e.g. a mid-call codec renegotiation or SIP re-INVITE/session-resume that restarts RTP sequence numbering without changing the SSRC) was indistinguishable from ordinary packet loss: `Pop()` would tail-chase the gap one seq number at a time, reporting hundreds to thousands of spurious loss/PLC events (tens of seconds of fabricated fade-to-silence audio) before ever reaching real, already-buffered packets. Wired `maxSeqDrift` into `JitterBuffer.Push()`: when the forward or backward distance from the current `nextSeq` to an incoming packet's sequence number exceeds `maxSeqDrift` (500), the buffer now discards its stale contents and immediately re-primes around the new sequence range, instead of waiting to catch up one seq at a time. Ordinary small gaps (including gaps that straddle the 16-bit wraparound boundary) are untouched and still go through the normal loss/PLC path.
+- `pkg/rtp/jitter_seqdrift_test.go` (new): 4 tests -- large forward drift resync, large backward drift resync, small-gap regression (still reported as ordinary loss), and a wraparound-adjacent small gap that must NOT false-positive as a drift/reset.
+- Coverage: pkg/rtp 96.3% -> 96.4%.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue -- carried over again)
+
+### Tomorrow
+1. Audio Pipeline / Post-processing: due for their next rotation (last rotated 07-15/07-16 respectively per above).
+2. QA/Testing: investigate the two sandbox test flakes noted 07-16 (pkg/file FFmpeg-cancel timing, pkg/model deepfilter-server WaitDelay).
+3. Consider fixing the stale Pipeline.TurnEnd() line in ROADMAP.md's Resolved Decisions table (flagged since 07-15, still not done).
