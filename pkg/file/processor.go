@@ -7,9 +7,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,7 +49,12 @@ type Options struct {
 	// AudioOnly strips video and outputs audio-only when true.
 	AudioOnly bool
 
-	// NormalizePeak applies peak normalization to the output (-1 dBFS target).
+	// NormalizePeak, if true, rescales the cleaned audio (after noise
+	// suppression and optional AGC, before re-encoding) so its single
+	// largest-magnitude sample reaches -1 dBFS, leaving a small amount of
+	// headroom for downstream lossy re-encoding. A fully silent file is
+	// left untouched. Default: false (output level is whatever the
+	// suppressor/AGC produced).
 	NormalizePeak bool
 
 	// AGC enables Automatic Gain Control on this file processing job.
@@ -188,6 +195,17 @@ func (p *Processor) ProcessWithOptions(src, dst string, opts Options) error {
 	// 3. Decode audio to raw 16kHz mono PCM via FFmpeg pipe
 	if err := p.decodeAndSuppress(ctx, src, tmpAudio.Name(), info, opts.AGC, logger, opts.OnProgress); err != nil {
 		return fmt.Errorf("file: decode+suppress: %w", err)
+	}
+
+	// 3b. Optional peak normalization of the cleaned PCM, applied after
+	// suppression/AGC and before re-encoding.
+	if opts.NormalizePeak {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("file: %w", err)
+		}
+		if err := normalizePeakPCM(tmpAudio.Name()); err != nil {
+			return fmt.Errorf("file: normalize peak: %w", err)
+		}
 	}
 
 	if opts.OnProgress != nil {
@@ -452,6 +470,64 @@ func (p *Processor) decodeAndSuppress(ctx context.Context, src, pcmPath string, 
 		return fmt.Errorf("ffmpeg decode: %w\nstderr: %s", ffmpegErr, stderrBuf.String())
 	}
 	return suppressErr
+}
+
+const targetPeakDBFS = -1.0
+
+// normalizePeakPCM reads pcmPath (raw signed 16-bit little-endian mono PCM,
+// as written by decodeAndSuppress after noise suppression/AGC), finds the
+// single largest-magnitude sample, and rescales every sample by one gain
+// factor so that peak lands exactly at targetPeakDBFS.
+//
+// This implements Options.NormalizePeak. Previously the field was accepted
+// by ProcessWithOptions (and plumbed all the way from pkg/http's
+// normalize_peak form field) but nothing in the pipeline ever read it, so
+// requesting peak normalization silently had no effect on the output.
+//
+// A fully silent file (peak == 0) is left untouched: there is no peak to
+// normalize to, and scaling would either divide by zero or amplify the
+// noise floor/quantization error with no audible benefit.
+func normalizePeakPCM(pcmPath string) error {
+	data, err := os.ReadFile(pcmPath)
+	if err != nil {
+		return fmt.Errorf("read pcm: %w", err)
+	}
+	// Ignore a single trailing odd byte, if any -- shouldn't normally happen
+	// for s16le PCM, but guards against a truncated file rather than
+	// panicking on an out-of-range slice index below.
+	n := (len(data) - (len(data) % 2)) / 2
+	if n == 0 {
+		return nil
+	}
+
+	var peak int32
+	for i := 0; i < n; i++ {
+		v := int32(int16(binary.LittleEndian.Uint16(data[i*2 : i*2+2])))
+		if v < 0 {
+			v = -v
+		}
+		if v > peak {
+			peak = v
+		}
+	}
+	if peak == 0 {
+		return nil // silence; nothing to normalize
+	}
+
+	target := 32767.0 * math.Pow(10, targetPeakDBFS/20.0)
+	gain := target / float64(peak)
+
+	for i := 0; i < n; i++ {
+		v := float64(int16(binary.LittleEndian.Uint16(data[i*2:i*2+2]))) * gain
+		if v > 32767 {
+			v = 32767
+		} else if v < -32768 {
+			v = -32768
+		}
+		binary.LittleEndian.PutUint16(data[i*2:i*2+2], uint16(int16(v)))
+	}
+
+	return os.WriteFile(pcmPath, data, 0644)
 }
 
 // encodeAndMux re-encodes the cleaned PCM and muxes it with the original video (if any).
