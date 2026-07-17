@@ -174,3 +174,158 @@ type nopWriter struct{}
 func (nopWriter) Write(b []byte) (int, error) { return len(b), nil }
 func (n *noopSuppressor) Close() error        { return nil }
 func (n *noopSuppressor) Name() string        { return "noop" }
+
+// --- Two-channel (far-end aware) diarization tests ---
+
+func TestFarEndAwareDiarizerInterface(t *testing.T) {
+	var _ FarEndAwareDiarizer = (*EnergyDiarizer)(nil)
+	// Compile-time check that EnergyDiarizer satisfies FarEndAwareDiarizer.
+}
+
+// TestEnergyDiarizerFarEndOnly verifies that when the near-end mic is
+// silent but an active far-end reference is supplied via SetFarEndRMS, the
+// frame is attributed to SpeakerFarEnd rather than silently staying
+// SpeakerSilence -- this is the two-channel diarization gap that previously
+// had no concrete implementation despite being documented on EnergyDiarizer.
+func TestEnergyDiarizerFarEndOnly(t *testing.T) {
+	d := NewEnergyDiarizer(DefaultEnergyDiarizerConfig())
+	ts := int64(0)
+	for i := 0; i < 10; i++ {
+		d.SetFarEndRMS(makeSpeech(160))
+		label := d.ProcessFrame(makeSilence(160), ts)
+		if label != SpeakerFarEnd {
+			t.Fatalf("frame %d: expected SpeakerFarEnd, got %s", i, label)
+		}
+		ts += 10
+	}
+	cur := d.CurrentSegment()
+	if cur.Speaker != SpeakerFarEnd {
+		t.Errorf("expected ongoing segment SpeakerFarEnd, got %s", cur.Speaker)
+	}
+}
+
+// TestEnergyDiarizerNearEndPriority verifies that when both near-end and
+// far-end are simultaneously active, the near-end mic (post-AEC) takes
+// priority -- matching the documented attribution rule on SetFarEndRMS.
+func TestEnergyDiarizerNearEndPriority(t *testing.T) {
+	d := NewEnergyDiarizer(DefaultEnergyDiarizerConfig())
+	d.SetFarEndRMS(makeSpeech(160))
+	label := d.ProcessFrame(makeSpeech(160), 0)
+	if label != SpeakerNearEnd {
+		t.Fatalf("expected SpeakerNearEnd to take priority over active far-end, got %s", label)
+	}
+}
+
+// TestEnergyDiarizerFarEndDefaultsToSilence verifies backward compatibility:
+// a diarizer that never has SetFarEndRMS called behaves exactly as before
+// (near-end mic energy alone determines near/silence classification).
+func TestEnergyDiarizerFarEndDefaultsToSilence(t *testing.T) {
+	d := NewEnergyDiarizer(DefaultEnergyDiarizerConfig())
+	label := d.ProcessFrame(makeSilence(160), 0)
+	if label != SpeakerSilence {
+		t.Fatalf("expected SpeakerSilence with no far-end reference supplied, got %s", label)
+	}
+}
+
+// TestEnergyDiarizerFarEndTurnTransition verifies a direct far-end -> near-end
+// handover (double-talk resolving to near-end) correctly closes the far-end
+// segment and opens a near-end one, and that Reset() clears the far-end RMS
+// state so a reused diarizer instance doesn't leak stale far-end energy into
+// a new call leg.
+func TestEnergyDiarizerFarEndTurnTransition(t *testing.T) {
+	d := NewEnergyDiarizer(DefaultEnergyDiarizerConfig())
+	ts := int64(0)
+
+	// Far-end only for 100ms.
+	for i := 0; i < 10; i++ {
+		d.SetFarEndRMS(makeSpeech(160))
+		d.ProcessFrame(makeSilence(160), ts)
+		ts += 10
+	}
+	// Direct handover to near-end speech (far-end drops out simultaneously).
+	for i := 0; i < 10; i++ {
+		d.SetFarEndRMS(makeSilence(160))
+		label := d.ProcessFrame(makeSpeech(160), ts)
+		if label != SpeakerNearEnd {
+			t.Fatalf("frame %d: expected SpeakerNearEnd after handover, got %s", i, label)
+		}
+		ts += 10
+	}
+
+	segs := d.Segments()
+	var hasFarEnd bool
+	for _, s := range segs {
+		if s.Speaker == SpeakerFarEnd {
+			hasFarEnd = true
+		}
+	}
+	if !hasFarEnd {
+		t.Errorf("expected a completed SpeakerFarEnd segment before the handover, got %v", segs)
+	}
+
+	d.Reset()
+	// After Reset, far-end RMS must not leak into the next call leg: a
+	// silent near-end frame with no fresh SetFarEndRMS call must be silence.
+	label := d.ProcessFrame(makeSilence(160), 0)
+	if label != SpeakerSilence {
+		t.Fatalf("expected SpeakerSilence after Reset (stale far-end RMS leaked), got %s", label)
+	}
+}
+
+// TestPipelineDiarizerFarEndWiring verifies Pipeline.ProcessFrames feeds the
+// far-end reference set via Pipeline.SetFarEnd into a FarEndAwareDiarizer
+// (e.g. EnergyDiarizer) each frame, so two-channel diarization works
+// end-to-end through the pipeline, not just when driving EnergyDiarizer
+// directly.
+func TestPipelineDiarizerFarEndWiring(t *testing.T) {
+	diarizer := NewEnergyDiarizer(DefaultEnergyDiarizerConfig())
+	sup := &noopSuppressor{}
+	cfg := PipelineConfig{
+		SampleRate:      16000,
+		InputSampleRate: 16000,
+		Suppressor:      sup,
+		Diarizer:        diarizer,
+	}
+	p := NewPipeline(cfg)
+
+	p.SetFarEnd(makeSpeech(160))
+
+	silentBytes := int16ToBytes(makeSilence(160))
+	var buf nopWriter
+	for i := 0; i < 5; i++ {
+		if err := p.ProcessFrames(silentBytes, &buf); err != nil {
+			t.Fatalf("ProcessFrames error: %v", err)
+		}
+	}
+
+	cur := diarizer.CurrentSegment()
+	if cur.Speaker != SpeakerFarEnd {
+		t.Errorf("expected pipeline to wire far-end reference into diarizer, got current segment speaker %s", cur.Speaker)
+	}
+}
+
+// TestPipelineDiarizerNoFarEndUnaffected verifies that when no far-end
+// reference has ever been set, a configured diarizer behaves exactly as
+// before this change (single-channel, silence for a silent near-end frame).
+func TestPipelineDiarizerNoFarEndUnaffected(t *testing.T) {
+	diarizer := NewEnergyDiarizer(DefaultEnergyDiarizerConfig())
+	sup := &noopSuppressor{}
+	cfg := PipelineConfig{
+		SampleRate:      16000,
+		InputSampleRate: 16000,
+		Suppressor:      sup,
+		Diarizer:        diarizer,
+	}
+	p := NewPipeline(cfg)
+
+	silentBytes := int16ToBytes(makeSilence(160))
+	var buf nopWriter
+	if err := p.ProcessFrames(silentBytes, &buf); err != nil {
+		t.Fatalf("ProcessFrames error: %v", err)
+	}
+
+	cur := diarizer.CurrentSegment()
+	if cur.Speaker != SpeakerSilence {
+		t.Errorf("expected SpeakerSilence with no far-end reference ever set, got %s", cur.Speaker)
+	}
+}

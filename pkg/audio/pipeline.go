@@ -270,6 +270,7 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 		telemetry:     telem,
 		telemetryTags: tags,
 		turnEnd:       turnEnd,
+		diarizer:      cfg.Diarizer,
 	}
 }
 
@@ -405,6 +406,15 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 		}
 
 		if p.diarizer != nil {
+			// If the diarizer supports two-channel attribution, feed it the
+			// same far-end reference used for AEC so it can label frames
+			// SpeakerFarEnd instead of only ever SpeakerNearEnd/SpeakerSilence.
+			if fd, ok := p.diarizer.(FarEndAwareDiarizer); ok {
+				p.farEndMu.Lock()
+				fe := p.farEnd
+				p.farEndMu.Unlock()
+				fd.SetFarEndRMS(fe)
+			}
 			p.diarizer.ProcessFrame(outSamples, time.Now().UnixMilli())
 		}
 
