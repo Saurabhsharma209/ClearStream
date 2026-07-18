@@ -2201,3 +2201,23 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. QA/Testing: hasn't rotated since 07-13 (pkg/sip/pkg/loadtest); also investigate the pkg/model deepfilter-server WaitDelay flake (07-16) and the decodeAndSuppress stderr/Wait() ordering issue flagged above.
 2. AI Model: hasn't rotated since 07-16 (resample unification); DeepFilterNet ONNX real-model wiring still blocked on this Mac's go1.17/onnxruntime_go generics incompatibility (unaffected in CI).
 3. API Layer: hasn't rotated since 07-16 (batch endpoint); scan for Config.Validate()/doc-comment gaps.
+
+## 2026-07-18
+
+**Agents run:** Post-processing (pkg/file stderr/Wait ordering), AI Model (pkg/model deepfilter-server zombie process), QA/Testing (pkg/billing coverage)
+**Build:** passing ✅ (go build ./... on this dev Mac's go1.17 toolchain; CGO_ENABLED=0 go test ./... full suite green)
+
+### Changes
+- `pkg/file/processor.go`, `pkg/file/processor_stderr_drain_test.go` (new): Found a real bug — `decodeAndSuppress` called `decodeCmd.Wait()` on the ffmpeg decode subprocess *before* draining the goroutine reading `decodeCmd.StderrPipe()`, violating `os/exec`'s documented contract ("it is incorrect to call Wait before all reads from the pipe have completed"). `Wait()` can close the pipe out from under the still-reading goroutine, truncating stderr (dropping `OnProgress` data) or racing with the read — a plausible root cause of the flaky FFmpeg-cancellation kill-timing test flagged 07-16/07-17. Fixed by joining the stderr-reading goroutine before calling `Wait()` (kept `encodeAndMux` as-is — it already uses a buffered `cmd.Stderr`, unaffected). New test drives a fake ffmpeg emitting 200 rapid progress lines with no delay and asserts all are drained before exit. pkg/file: 92.1% → 92.7%.
+- `pkg/model/deepfilter_server.go`, `pkg/model/deepfilter_server_startserver_test.go`: Investigated the 07-16-flagged `startServer` WaitDelay flake — ran the real tests (`TestStartServer_Success/ScriptNotFound/RelativePathResolved/Timeout`) 40x under real concurrent Mac load, did not reproduce. Instead found and fixed a genuine zombie-process leak: the timeout/deadline-exceeded path called `cmd.Process.Kill()` but never `cmd.Wait()`, unlike `Close()` a few lines down which does both — since the caller discards the whole suppressor (`nil, err`) on this path, a killed subprocess had no remaining code path to reap it. Added `cmd.Wait()` after `Kill()` plus a regression assertion (`s.cmd.ProcessState != nil` post-timeout).
+- `pkg/billing/wal.go` (untouched — test-only), `pkg/billing/wal_rotate_gap_test.go` (new): Closed `WALWriter.rotate()`'s coverage gap (76.9% → 100%) — 3 untested branches: `w.f == nil` fast path (real nil-deref guard), `w.f.Close()` error path, `os.Remove` non-`NotExist` error path. pkg/billing: 91.9% → 94.1%.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution (incl. `-race`, which requires CGO); CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue — carried over again)
+- Two pre-existing sandbox-timing flakes (`pkg/file` FFmpeg-cancel kill-timing, `pkg/model` deepfilter-server `TestStartServer_Success`) surfaced again during today's full-suite run but did not reproduce on isolated `-count=1` reruns — same class flagged 07-16/07-17, still unresolved but non-blocking.
+- staticcheck still can't run locally (min Go 1.19, this Mac has 1.17); CI's matrix is unaffected.
+
+### Tomorrow
+1. API Layer: hasn't rotated since 07-16 (batch endpoint) — original Day-1 backlog items (CLI fix, HTTP handler, doc comments, Config.Validate(), Version) are all now shipped; scan the current `clearstream.go`/`pkg/http` surface for its next real highest-value gap.
+2. Audio Pipeline / RTP/SIP: both last rotated 07-17 — due again in the normal rotation.
+3. Consider upgrading this dev Mac's local Go toolchain (still 1.17) to close the version/API gap with CI (1.21/1.22) and unblock local `-race` runs.
