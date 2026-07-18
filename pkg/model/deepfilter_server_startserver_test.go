@@ -255,4 +255,13 @@ func TestStartServer_Timeout(t *testing.T) {
 	if s.cmd == nil {
 		t.Fatal("startServer: expected s.cmd to be set (subprocess was started) even though it timed out")
 	}
+
+	// Regression guard: startServer must Wait() on the process it just killed,
+	// not just Kill() it, otherwise the killed subprocess is left as a zombie
+	// with no other code path to reap it (newDeepFilterServerSuppressor drops
+	// the whole suppressor -- including s.cmd -- on this exact error path).
+	// A non-nil ProcessState is os/exec's proof that Wait() completed.
+	if s.cmd.ProcessState == nil {
+		t.Error("startServer: expected s.cmd.ProcessState to be set after the timeout/kill path, indicating Wait() reaped the process (avoiding a zombie); got nil")
+	}
 }

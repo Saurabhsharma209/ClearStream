@@ -128,6 +128,10 @@ func (s *deepFilterServerSuppressor) startServer(scriptPath string) error {
 		}
 	}
 	_ = cmd.Process.Kill()
+	// Reap the killed process so a long-running caller (e.g. a server process
+	// that retries auto-start) does not leak a zombie process on every failed
+	// attempt; Close() already does the same Kill()+Wait() pairing below.
+	_ = cmd.Wait()
 	return fmt.Errorf("server did not become ready within %s", timeout)
 }
 
