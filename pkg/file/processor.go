@@ -448,10 +448,20 @@ func (p *Processor) decodeAndSuppress(ctx context.Context, src, pcmPath string, 
 		errCh <- pipe.Flush(pcmFile)
 	}()
 
-	// Wait for FFmpeg to finish, then close the write end of the pipe
+	// Drain the stderr-reading goroutine BEFORE calling Wait(). Per os/exec's
+	// documented contract for StderrPipe(): "it is incorrect to call Wait
+	// before all reads from the pipe have completed" -- Wait() may close the
+	// underlying pipe out from under a still-reading goroutine, truncating
+	// output or racing with the concurrent Read(). The scanner below only
+	// returns once FFmpeg closes its stderr fd (on normal exit, or once the
+	// process is killed following ctx cancellation), so waiting on it first
+	// cannot deadlock.
+	<-stderrErrCh // drain stderr goroutine
+
+	// Now it is safe to reap FFmpeg's exit status, then close the write end
+	// of the stdout pipe so the PCM reader goroutine below observes EOF.
 	ffmpegErr := decodeCmd.Wait()
 	pw.Close()
-	<-stderrErrCh // drain stderr goroutine
 
 	suppressErr := <-errCh
 
