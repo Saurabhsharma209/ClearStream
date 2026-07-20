@@ -453,6 +453,16 @@ func (s *Session) handlePacket(raw []byte) error {
 		})
 		s.jitter.Reset()
 		s.pipeline.Reset()
+		// DTMFDetector.Reset() is documented as "call on new call leg" -- an
+		// SSRC change is exactly that event, but this call site was missing
+		// (the only existing call was in Stop(), which is a no-op since the
+		// session is being torn down anyway). Without this, lastEvent/lastEnd
+		// from the previous call leg survive the SSRC change: if the new
+		// leg's first telephone-event packet happens to carry the same event
+		// code and end-bit as the old leg's final DTMF packet, ParseDTMFPayload
+		// misidentifies it as a duplicate retransmission and silently drops
+		// it, losing the first DTMF digit of the new call leg.
+		s.dtmf.Reset()
 	}
 	s.currentSSRC = header.SSRC
 	s.ssrcSet = true
