@@ -2221,3 +2221,23 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. API Layer: hasn't rotated since 07-16 (batch endpoint) — original Day-1 backlog items (CLI fix, HTTP handler, doc comments, Config.Validate(), Version) are all now shipped; scan the current `clearstream.go`/`pkg/http` surface for its next real highest-value gap.
 2. Audio Pipeline / RTP/SIP: both last rotated 07-17 — due again in the normal rotation.
 3. Consider upgrading this dev Mac's local Go toolchain (still 1.17) to close the version/API gap with CI (1.21/1.22) and unblock local `-race` runs.
+
+## 2026-07-20
+
+**Agents run:** API Layer (pkg/http Channels wiring), Audio Pipeline (Process48k stage wiring), RTP/SIP (DTMF SSRC-reset)
+**Build:** passing (go build ./... on this dev Mac's go1.17 toolchain; CGO_ENABLED=0 go test ./... full suite green)
+
+### Changes
+- clearstream.go, pkg/http/handler.go, pkg/http/handler_channels_test.go (new): Found Config.Channels was fully threaded through ProcessFile/Pipeline() but NewHTTPHandler() never forwarded it -- HandlerConfig had no Channels field, and both handleEnhance/handleEnhanceDir hardcoded Channels: 1. Setting Channels: 2 at the SDK level silently had no effect over HTTP. Added HandlerConfig.Channels (validated 1/2, defaults to 1), wired into both handlers and exposed in GET /info. 6 new tests.
+- pkg/audio/pipeline.go, pkg/audio/pipeline_48k_test.go: Found Process48k (the 48kHz/WebRTC path) silently ignored UseNoiseReducer/TieredNR, AGC, UseLimiter, and Diarizer -- all fully honored by the parallel 8/16kHz ProcessFrames path, none applied at 48kHz. Wired TieredNR/AdaptiveNoiseReducer before suppression, AGC+Limiter after suppression, and Diarizer on final output, mirroring ProcessFrames ordering. AEC intentionally left unwired (documented) since SetFarEnd has no defined 48kHz semantics without its own resampling. 4 new tests. pkg/audio coverage: 94.2% -> 94.0% (new branches added).
+- pkg/rtp/session.go, pkg/rtp/dtmf_ssrc_reset_test.go (new): Found DTMFDetector.Reset() was only called from Session.Stop() (inert -- session is tearing down anyway), never from the SSRC-change "new call leg" branch in handlePacket that already resets jitter+pipeline. A new call leg whose first DTMF packet shares (eventCode, end) with the old leg's last DTMF packet got misclassified as a dedup retransmission and silently dropped -- losing the first digit of the new leg. Added dtmf.Reset() alongside jitter/pipeline reset. Verified via revert that the new test fails without the fix.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue -- carried over again)
+- No run on 2026-07-19 (gap in schedule).
+- staticcheck still can't run locally (min Go 1.19, this Mac has 1.17); CI's matrix is unaffected.
+
+### Tomorrow
+1. Post-processing: hasn't rotated since 07-18 (stderr/Wait ordering) -- due for its next pass.
+2. AI Model: hasn't rotated since 07-18 (deepfilter-server zombie fix) -- DeepFilterNet ONNX real-model wiring still blocked on go1.17/onnxruntime_go generics incompatibility (unaffected in CI).
+3. QA/Testing: hasn't rotated since 07-18 (pkg/billing) -- re-scan coverage across all packages for new gaps opened by today's three wiring fixes.
