@@ -723,19 +723,27 @@ const Frame48kSamples = 480
 // boundary artefact; see DEVLOG 2026-07-09 and TestABProcess48kVsDirect in
 // ab_process48k_test.go for the measured before/after numbers.
 //
+// Since 2026-07-20, this method also runs noise reduction (TieredNR /
+// AdaptiveNoiseReducer), AGC, the peak limiter, and diarization -- the same
+// optional stages ProcessFrames applies -- so behaviour is consistent between
+// the 8/16kHz and 48kHz code paths. Previously these PipelineConfig fields
+// were silently ignored by this method even when configured. AEC is
+// intentionally NOT run here: SetFarEnd's reference buffer has no defined
+// semantics at 48kHz (there is no far-end resampling implementation for this
+// path), so applying it here would silently corrupt audio rather than
+// cancel echo.
+//
 // Returns a 480-sample enhanced frame and any suppressor error.
 func (p *Pipeline) Process48k(frame []int16) ([]int16, error) {
 	if len(frame) != Frame48kSamples {
 		return nil, fmt.Errorf("audio: Process48k requires %d samples, got %d", Frame48kSamples, len(frame))
 	}
-
 	if p.resample48kDownHist == nil {
 		p.resample48kDownHist = make([]int16, kaiser3xDownHistLen)
 	}
 	if p.resample48kUpHist == nil {
 		p.resample48kUpHist = make([]int16, kaiser3xUpHistLen)
 	}
-
 	// Step 1: Downsample 480 -> 160 via a stateful Kaiser-windowed sinc FIR
 	// anti-alias filter (real cross-frame history, no boundary assumption).
 	var down []int16
@@ -745,14 +753,35 @@ func (p *Pipeline) Process48k(frame []int16) ([]int16, error) {
 	p.framesProcessed++
 	p.statsMu.Unlock()
 
-	// TurnEnd: feed the downsampled 16kHz frame into the end-of-utterance
-	// tracker. No-op (nil-safe) when TurnEndBufferSize was 0 (the default).
-	p.turnEnd.observe(down)
+	// Step 1.5: Adaptive noise reduction -- runs before the suppressor, on
+	// every frame, exactly like ProcessFrames. TieredNR takes priority over
+	// the flat AdaptiveNoiseReducer when both are configured. Previously
+	// neither of these config fields had any effect on this code path even
+	// when set, silently degrading quality for 48kHz callers.
+	processSamples := down
+	if p.tieredNR != nil {
+		var err error
+		processSamples, err = p.tieredNR.Process(processSamples)
+		if err != nil {
+			return nil, fmt.Errorf("audio: Process48k tiered noise reducer: %w", err)
+		}
+	} else if p.noiseReducer != nil {
+		var err error
+		processSamples, err = p.noiseReducer.Process(processSamples)
+		if err != nil {
+			return nil, fmt.Errorf("audio: Process48k noise reducer: %w", err)
+		}
+	}
+
+	// TurnEnd: feed the downsampled (post-NR) 16kHz frame into the
+	// end-of-utterance tracker. No-op (nil-safe) when TurnEndBufferSize was 0
+	// (the default).
+	p.turnEnd.observe(processSamples)
 
 	// Step 2: VAD gate — skip suppressor on silence.
 	isSpeech := true
 	if p.vad != nil {
-		isSpeech = p.vad.IsSpeech(down)
+		isSpeech = p.vad.IsSpeech(processSamples)
 	}
 
 	var processed []int16
@@ -760,12 +789,12 @@ func (p *Pipeline) Process48k(frame []int16) ([]int16, error) {
 		p.statsMu.Lock()
 		p.framesSilent++
 		p.statsMu.Unlock()
-		processed = down
+		processed = processSamples
 	} else if p.suppressor == nil {
-		processed = down
+		processed = processSamples
 	} else {
 		var err error
-		processed, err = p.suppressor.Process(down)
+		processed, err = p.suppressor.Process(processSamples)
 		if err != nil {
 			return nil, err
 		}
@@ -774,9 +803,26 @@ func (p *Pipeline) Process48k(frame []int16) ([]int16, error) {
 		p.statsMu.Unlock()
 	}
 
+	// AGC: adaptive gain applied after suppression, mirroring ProcessFrames.
+	// Previously PipelineConfig.AGC had no effect on this code path.
+	if p.agc != nil {
+		processed = p.agc.Process(processed)
+	}
+
+	// Peak limiter: guards against clipping after AGC or burst events.
+	// Previously PipelineConfig.UseLimiter had no effect on this code path.
+	if p.limiter != nil {
+		processed = p.limiter.Process(processed)
+	}
+
 	// Step 3: Upsample 160 -> 480 via the matching stateful Kaiser-windowed sinc FIR.
 	var out []int16
 	out, p.resample48kUpHist = kaiserFIRUpsample3xStateful(processed, p.resample48kUpHist)
+
+	if p.diarizer != nil {
+		// Previously PipelineConfig.Diarizer had no effect on this code path.
+		p.diarizer.ProcessFrame(out, time.Now().UnixMilli())
+	}
 
 	return out, nil
 }
