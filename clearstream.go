@@ -431,6 +431,7 @@ func (cs *ClearStream) NewHTTPHandler() http.Handler {
 		Suppressor: cs.model,
 		FFmpegPath: cs.cfg.FFmpegPath,
 		SampleRate: cs.cfg.SampleRate,
+		Channels:   cs.cfg.Channels,
 		Logger:     cs.logger,
 		PoolSize:   cs.PoolSize(),
 		Telemetry:  cs.cfg.telemetry(),

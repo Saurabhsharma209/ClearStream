@@ -34,6 +34,7 @@ type Handler struct {
 	suppressor  model.Suppressor
 	ffmpegPath  string
 	sampleRate  int
+	channels    int
 	poolSize    int
 	logger      *zap.Logger
 	metrics     *Metrics
@@ -70,6 +71,15 @@ type HandlerConfig struct {
 	// SampleRate is the internal processing sample rate for POST /enhance.
 	// Must be one of 8000, 16000, 32000, 48000 Hz if set. Default: 16000.
 	SampleRate int
+	// Channels is the number of audio channels to process for POST /enhance
+	// and POST /enhance/dir (1 = mono, 2 = stereo). Must be 1 or 2 if set.
+	// Default: 1 (mono). Previously this was hardcoded to 1 in both handlers
+	// regardless of the caller's intent -- clearstream.Config.Channels was
+	// never forwarded from clearstream.New(cfg).NewHTTPHandler(), so setting
+	// Channels: 2 on the top-level SDK config silently had no effect on the
+	// HTTP API even though it worked for ProcessFile/ProcessFileWithOptions
+	// and Pipeline().
+	Channels int
 	// Logger is an optional zap logger. If nil, a no-op logger is used so
 	// the handler never panics on a nil logger call.
 	Logger *zap.Logger
@@ -93,6 +103,7 @@ type HandlerConfig struct {
 //   - Suppressor must be non-nil (a nil Suppressor would panic on the first
 //     request, since every handler path calls Suppressor.Name()).
 //   - SampleRate, if non-zero, must be exactly 8000, 16000, 32000, or 48000 Hz.
+//   - Channels, if non-zero, must be 1 or 2.
 //   - PoolSize, if non-zero, must be positive (it is caller-reported metadata).
 func (c HandlerConfig) Validate() error {
 	if c.Suppressor == nil {
@@ -101,6 +112,9 @@ func (c HandlerConfig) Validate() error {
 	validSampleRates := map[int]bool{8000: true, 16000: true, 32000: true, 48000: true}
 	if c.SampleRate != 0 && !validSampleRates[c.SampleRate] {
 		return fmt.Errorf("clearstream/http: SampleRate %d is not supported; use one of 8000, 16000, 32000, 48000", c.SampleRate)
+	}
+	if c.Channels != 0 && (c.Channels < 1 || c.Channels > 2) {
+		return fmt.Errorf("clearstream/http: Channels %d out of range [1, 2]", c.Channels)
 	}
 	if c.PoolSize < 0 {
 		return fmt.Errorf("clearstream/http: PoolSize %d must not be negative", c.PoolSize)
@@ -128,6 +142,9 @@ func NewHandler(cfg HandlerConfig) *Handler {
 				cfg.SampleRate = 0
 			}
 		}
+		if cfg.Channels != 0 && (cfg.Channels < 1 || cfg.Channels > 2) {
+			cfg.Channels = 0
+		}
 		if cfg.PoolSize < 0 {
 			cfg.PoolSize = 0
 		}
@@ -141,6 +158,9 @@ func NewHandler(cfg HandlerConfig) *Handler {
 	if cfg.SampleRate == 0 {
 		cfg.SampleRate = 16000
 	}
+	if cfg.Channels == 0 {
+		cfg.Channels = 1
+	}
 
 	reg := prometheus.NewRegistry()
 	sink := cfg.Telemetry
@@ -151,6 +171,7 @@ func NewHandler(cfg HandlerConfig) *Handler {
 		suppressor: cfg.Suppressor,
 		ffmpegPath: cfg.FFmpegPath,
 		sampleRate: cfg.SampleRate,
+		channels:   cfg.Channels,
 		poolSize:   cfg.PoolSize,
 		logger:     cfg.Logger,
 		telemetry:  sink,
@@ -329,7 +350,7 @@ func (h *Handler) handleEnhance(w http.ResponseWriter, r *http.Request) {
 	proc := file.NewProcessor(file.ProcessorConfig{
 		FFmpegPath: h.ffmpegPath,
 		SampleRate: h.sampleRate,
-		Channels:   1,
+		Channels:   h.channels,
 		Suppressor: h.suppressor,
 		Logger:     h.logger,
 	})
@@ -509,7 +530,7 @@ func (h *Handler) handleEnhanceDir(w http.ResponseWriter, r *http.Request) {
 	proc := file.NewProcessor(file.ProcessorConfig{
 		FFmpegPath: h.ffmpegPath,
 		SampleRate: h.sampleRate,
-		Channels:   1,
+		Channels:   h.channels,
 		Suppressor: h.suppressor,
 		Logger:     h.logger,
 	})
@@ -578,6 +599,7 @@ func (h *Handler) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"version":                 "0.1.0",
 		"model":                   h.suppressor.Name(),
 		"sample_rate":             h.sampleRate,
+		"channels":                h.channels,
 		"frame_size_samples":      160,
 		"max_concurrent_sessions": h.poolSize,
 		"supported_codecs":        []string{"pcmu", "pcma", "g722", "opus"},
