@@ -168,6 +168,27 @@ func (p *Processor) ProcessWithOptions(src, dst string, opts Options) error {
 		opts.OnProgress(0.0)
 	}
 
+	// 0. Stat the source up front. audio.Probe's FFmpeg-based fallback path
+	// does not reliably surface a missing/unreadable src as an error (it can
+	// return a zero-value MediaInfo with a nil error), which previously let
+	// a bad src fall all the way through to decodeAndSuppress -- spawning a
+	// full FFmpeg subprocess just to fail there, with the specific error
+	// depending on scraping FFmpeg's stderr text. Stat-ing first makes the
+	// common typed-error cases (ErrFileNotFound, ErrPermission) deterministic
+	// and avoids the wasted subprocess spawn. This runs after OnProgress(0.0)
+	// so that contract (progress(0.0) fires even when src is missing) holds.
+	if fi, statErr := os.Stat(src); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return fmt.Errorf("file: %q: %w", src, ErrFileNotFound)
+		}
+		if os.IsPermission(statErr) {
+			return fmt.Errorf("file: %q: %w", src, ErrPermission)
+		}
+		return fmt.Errorf("file: stat %q: %w", src, statErr)
+	} else if fi.IsDir() {
+		return fmt.Errorf("file: %q is a directory, not a media file: %w", src, ErrFileNotFound)
+	}
+
 	// 1. Probe source
 	info, err := audio.Probe(p.cfg.FFmpegPath, src)
 	if err != nil {

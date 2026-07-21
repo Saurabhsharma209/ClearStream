@@ -182,6 +182,40 @@ func TestErrFileNotFoundWrapping(t *testing.T) {
 	}
 }
 
+// TestMissingSrcFailsFastWithoutFFmpeg locks in the ProcessWithOptions
+// pre-flight os.Stat check: a missing src must resolve deterministically to
+// ErrFileNotFound WITHOUT requiring ffmpeg to be installed or spawning any
+// subprocess, unlike TestErrFileNotFoundWrapping above which exercises the
+// FFmpeg-stderr-scrape fallback. This also guards against a real prior gap:
+// audio.Probe's FFmpeg fallback path could return a zero-value MediaInfo with
+// a nil error for a missing file, letting a bad src fall through all the way
+// to decodeAndSuppress before failing.
+func TestMissingSrcFailsFastWithoutFFmpeg(t *testing.T) {
+	p := file.NewProcessor(file.ProcessorConfig{FFmpegPath: "/nonexistent/ffmpeg/binary", Logger: zap.NewNop()})
+	err := p.Process("/tmp/clearstream_definitely_missing_98765.wav", filepath.Join(t.TempDir(), "out.wav"))
+	if err == nil {
+		t.Fatal("expected error for missing src, got nil")
+	}
+	if !errors.Is(err, file.ErrFileNotFound) {
+		t.Errorf("expected error to wrap ErrFileNotFound, got: %v", err)
+	}
+}
+
+// TestDirAsSrcFailsWithErrFileNotFound verifies passing a directory as src
+// (a plausible caller mistake, e.g. a mixed-up src/dst argument order) fails
+// fast and deterministically instead of being handed to FFmpeg.
+func TestDirAsSrcFailsWithErrFileNotFound(t *testing.T) {
+	p := file.NewProcessor(file.ProcessorConfig{FFmpegPath: "/nonexistent/ffmpeg/binary", Logger: zap.NewNop()})
+	srcDir := t.TempDir()
+	err := p.Process(srcDir, filepath.Join(t.TempDir(), "out.wav"))
+	if err == nil {
+		t.Fatal("expected error for directory src, got nil")
+	}
+	if !errors.Is(err, file.ErrFileNotFound) {
+		t.Errorf("expected error to wrap ErrFileNotFound, got: %v", err)
+	}
+}
+
 func TestProcessDirSkipsUnsupportedExtensions(t *testing.T) {
 	src := t.TempDir()
 	dst := t.TempDir()
