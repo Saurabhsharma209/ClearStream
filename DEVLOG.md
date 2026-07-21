@@ -2241,3 +2241,23 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. Post-processing: hasn't rotated since 07-18 (stderr/Wait ordering) -- due for its next pass.
 2. AI Model: hasn't rotated since 07-18 (deepfilter-server zombie fix) -- DeepFilterNet ONNX real-model wiring still blocked on go1.17/onnxruntime_go generics incompatibility (unaffected in CI).
 3. QA/Testing: hasn't rotated since 07-18 (pkg/billing) -- re-scan coverage across all packages for new gaps opened by today's three wiring fixes.
+
+## 2026-07-21
+
+**Agents run:** Post-processing (pkg/file ProcessWithOptions fast-fail), AI Model (pkg/model Aggressiveness wiring), QA/Testing (pkg/rtp DTMF/SSRC ordering)
+**Build:** passing (go build ./... and CGO_ENABLED=0 go test ./... on this dev Mac's go1.17 toolchain -- full suite green, including pkg/file and pkg/model which showed sandbox-only timing flakes during a separate Linux CI-sandbox run used for today's agent orchestration)
+
+### Changes
+- pkg/file/processor.go, pkg/file/processor_test.go: Found audio.Probe's FFmpeg fallback path could return a zero-value MediaInfo with a nil error for a missing/unreadable src, letting a bad path fall all the way through to decodeAndSuppress (spawning a full FFmpeg subprocess) before finally failing -- and only resolving to the typed ErrFileNotFound by scraping FFmpeg's stderr text. Added an os.Stat pre-check (placed after the existing OnProgress(0.0) call so that documented ordering contract still holds) that deterministically maps ENOENT/EACCES/directory-as-src to ErrFileNotFound/ErrPermission without needing ffmpeg installed at all. 2 new tests prove this without ffmpeg on PATH.
+- pkg/model/aggressiveness.go (new), deepfilter.go, rnnoise.go, rnnoise_onnx.go, rnnoise_nocgo.go, rnnoise_onnx_stub.go, deepfilter_stub.go, interface.go: Found SuppressorConfig.Aggressiveness was dead wiring -- documented, populated by every NoiseProfile, even asserted on in profile_test.go, but NewSuppressor never passed it to any backend constructor and no constructor used it, so every profile's chosen suppression strength silently had zero effect on the audio. Implemented a shared wet/dry blend (blendAggressiveness) threaded through RNNoise (CGo + nocgo fallback), RNNoise-ONNX, and DeepFilterNet, using variadic ...int params to preserve source compatibility with existing no-arg callers (e.g. tools/rnnoise_process). New aggressiveness_test.go regression-tests the blend math and both backend call sites.
+- pkg/rtp/session.go, pkg/rtp/dtmf_ssrc_reset_test.go: Yesterday's (07-20) DTMF/SSRC-reset fix added s.dtmf.Reset() to the SSRC-change branch in handlePacket, but that branch ran AFTER the DTMF payload-type early-return. So a new call leg whose very first packet was itself a DTMF telephone-event packet (no preceding audio packet on the new SSRC -- realistic for IVR confirmation tones or a caller pressing a key before speaking) never reached the SSRC-change check at all: currentSSRC wasn't updated and dtmf.Reset() never fired, leaking the old leg's dedup state and silently dropping the new leg's first DTMF digit. Moved SSRC-change detection above the DTMF dispatch so it always runs first. New test verified failing against the pre-fix ordering (via temporary revert) and passing after.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue -- carried over again)
+- Today's agent orchestration ran in a Linux/arm64 cloud sandbox (the usual ~/ClearStream home-directory path was on a full disk in that environment) -- work was done in isolated clones there, then transferred via a git bundle and re-verified/pushed from this dev Mac. Two known flakes (pkg/file FFmpeg-cancel kill-timing, pkg/model deepfilter-server WaitDelay) reproduced 100% in that Linux sandbox but did NOT reproduce here on the Mac's full test suite -- reinforces prior notes (07-16/07-18) that these are sandbox/process-timing artifacts, not logic bugs.
+- staticcheck still can't run locally (min Go 1.19, this Mac has 1.17); CI's matrix is unaffected.
+
+### Tomorrow
+1. Audio Pipeline / RTP-SIP: both last rotated 07-20 (RTP-SIP) -- Audio Pipeline due for its next pass.
+2. API Layer: hasn't rotated since 07-20 (Channels wiring) -- scan clearstream.go/pkg/http for the next real gap.
+3. Consider whether DeepFilterNet real-model ONNX wiring is worth revisiting now that pkg/model/aggressiveness.go exists as a shared primitive -- the onnx build tag itself compiles fine (confirmed today), only the runtime shared library + exported model are missing.
