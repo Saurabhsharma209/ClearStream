@@ -422,18 +422,17 @@ func (s *Session) handlePacket(raw []byte) error {
 		return err
 	}
 
-	// Handle DTMF telephone-event packets (RFC4733)
-	if header.PayloadType == s.cfg.DTMFPayloadType {
-		digit, err := s.dtmf.ParseDTMFPayload(payload)
-		if err != nil {
-			s.logger.Warn("dtmf parse error", zap.Error(err))
-		} else if digit != nil && s.cfg.OnDTMF != nil {
-			s.cfg.OnDTMF(*digit)
-		}
-		return nil
-	}
-
-	// Detect SSRC change (new call leg)
+	// Detect SSRC change (new call leg). This must run before any
+	// payload-type-specific dispatch (including the DTMF branch just below)
+	// so that jitter/pipeline/dtmf state is reset even when the new leg's
+	// very first packet is itself a DTMF telephone-event packet rather than
+	// an audio packet. Previously this check ran AFTER the DTMF dispatch,
+	// which returned early -- so a new leg whose first packet was DTMF
+	// bypassed SSRC-change detection entirely: currentSSRC was never
+	// updated and s.dtmf.Reset() never fired for that packet, leaving the
+	// detector's (eventCode, end) dedup state from the OLD leg in place and
+	// reproducing exactly the "first DTMF digit of new call leg silently
+	// dropped" bug this Reset() call was added to fix.
 	if s.ssrcSet && header.SSRC != s.currentSSRC {
 		s.logger.Info(fmt.Sprintf("SSRC changed: %d → %d, pipeline reset", s.currentSSRC, header.SSRC))
 		s.telemetry.RecordMetric(telemetry.Metric{
@@ -466,6 +465,17 @@ func (s *Session) handlePacket(raw []byte) error {
 	}
 	s.currentSSRC = header.SSRC
 	s.ssrcSet = true
+
+	// Handle DTMF telephone-event packets (RFC4733)
+	if header.PayloadType == s.cfg.DTMFPayloadType {
+		digit, err := s.dtmf.ParseDTMFPayload(payload)
+		if err != nil {
+			s.logger.Warn("dtmf parse error", zap.Error(err))
+		} else if digit != nil && s.cfg.OnDTMF != nil {
+			s.cfg.OnDTMF(*digit)
+		}
+		return nil
+	}
 
 	// Push into jitter buffer
 	ready := s.jitter.Push(header.SequenceNumber, header.Timestamp, payload)
