@@ -46,15 +46,20 @@ const (
 
 // rnnoiseONNXSuppressor wraps an exported RNNoise ONNX model.
 type rnnoiseONNXSuppressor struct {
-	mu        sync.Mutex
-	session   *ort.DynamicAdvancedSession
-	modelPath string
-	logger    *zap.Logger
-	warnOnce  sync.Once
+	mu             sync.Mutex
+	session        *ort.DynamicAdvancedSession
+	modelPath      string
+	logger         *zap.Logger
+	warnOnce       sync.Once
+	aggressiveness int
 }
 
 // NewRNNoiseONNX loads the RNNoise ONNX model from modelPath.
-func NewRNNoiseONNX(modelPath string, logger *zap.Logger) (Suppressor, error) {
+//
+// aggressiveness is variadic to preserve source compatibility with existing
+// two-argument callers. If provided, aggressiveness[0] sets
+// SuppressorConfig.Aggressiveness (see aggressiveness.go).
+func NewRNNoiseONNX(modelPath string, logger *zap.Logger, aggressiveness ...int) (Suppressor, error) {
 	if modelPath == "" {
 		return nil, fmt.Errorf("rnnoise-onnx: ModelPath is required")
 	}
@@ -76,7 +81,11 @@ func NewRNNoiseONNX(modelPath string, logger *zap.Logger) (Suppressor, error) {
 		logger, _ = zap.NewProduction()
 	}
 	logger.Info("RNNoise ONNX model loaded", zap.String("path", modelPath))
-	return &rnnoiseONNXSuppressor{session: session, modelPath: modelPath, logger: logger}, nil
+	level := 0
+	if len(aggressiveness) > 0 {
+		level = aggressiveness[0]
+	}
+	return &rnnoiseONNXSuppressor{session: session, modelPath: modelPath, logger: logger, aggressiveness: level}, nil
 }
 
 // Process denoises a 16 kHz mono PCM frame via RNNoise ONNX inference.
@@ -131,7 +140,12 @@ func (r *rnnoiseONNXSuppressor) Process(frame []int16) ([]int16, error) {
 	}
 
 	// Downsample 480 → 160 samples (3× decimation with simple averaging).
-	return downsample3x(up48), nil
+	processed := downsample3x(up48)
+
+	// Apply Aggressiveness (blend toward the original signal for mild/medium
+	// levels; see aggressiveness.go). Levels 0 (default) and 3 (aggressive)
+	// return the model's full-strength output unchanged.
+	return blendAggressiveness(frame, processed, r.aggressiveness), nil
 }
 
 func (r *rnnoiseONNXSuppressor) Name() string { return "rnnoise-onnx" }

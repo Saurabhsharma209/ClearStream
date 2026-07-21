@@ -14,13 +14,19 @@ import (
 // Build with: CGO_ENABLED=1 go build -tags onnx ./...
 // Export model: python -c "from df.enhance import init_df; m,_,_=init_df(); m.export_onnx('deepfilter.onnx')"
 type deepFilterSuppressor struct {
-	mu        sync.Mutex
-	session   *ort.DynamicAdvancedSession
-	modelPath string
-	logger    *zap.Logger
+	mu             sync.Mutex
+	session        *ort.DynamicAdvancedSession
+	modelPath      string
+	logger         *zap.Logger
+	aggressiveness int
 }
 
-func newDeepFilterSuppressor(modelPath string, logger *zap.Logger) (Suppressor, error) {
+// newDeepFilterSuppressor loads the DeepFilterNet ONNX model from modelPath.
+//
+// aggressiveness is variadic to preserve source compatibility with existing
+// two-argument callers. If provided, aggressiveness[0] sets
+// SuppressorConfig.Aggressiveness (see aggressiveness.go).
+func newDeepFilterSuppressor(modelPath string, logger *zap.Logger, aggressiveness ...int) (Suppressor, error) {
 	if modelPath == "" {
 		return nil, fmt.Errorf("deepfilter: ModelPath is required")
 	}
@@ -44,7 +50,11 @@ func newDeepFilterSuppressor(modelPath string, logger *zap.Logger) (Suppressor, 
 	}
 
 	logger.Info("DeepFilterNet model loaded", zap.String("path", modelPath))
-	return &deepFilterSuppressor{session: session, modelPath: modelPath, logger: logger}, nil
+	level := 0
+	if len(aggressiveness) > 0 {
+		level = aggressiveness[0]
+	}
+	return &deepFilterSuppressor{session: session, modelPath: modelPath, logger: logger, aggressiveness: level}, nil
 }
 
 // Process suppresses noise in a 16kHz mono int16 PCM frame using DeepFilterNet.
@@ -92,7 +102,11 @@ func (d *deepFilterSuppressor) Process(frame []int16) ([]int16, error) {
 		}
 		result[i] = int16(f * 32767)
 	}
-	return result, nil
+
+	// Apply Aggressiveness (blend toward the original signal for mild/medium
+	// levels; see aggressiveness.go). Levels 0 (default) and 3 (aggressive)
+	// return the model's full-strength output unchanged.
+	return blendAggressiveness(frame, result, d.aggressiveness), nil
 }
 
 func (d *deepFilterSuppressor) Name() string { return "deepfilter" }

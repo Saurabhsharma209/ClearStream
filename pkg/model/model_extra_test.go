@@ -161,7 +161,7 @@ func TestMockSuppressor_Counters(t *testing.T) {
 }
 
 func TestNewRNNoise_ReturnsPassthrough(t *testing.T) {
-	s, err := NewRNNoise()
+	s, err := NewRNNoise(0)
 	if err != nil {
 		t.Fatalf("NewRNNoise() unexpected error: %v", err)
 	}

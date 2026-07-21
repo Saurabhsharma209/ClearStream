@@ -30,20 +30,30 @@ const rnnoiseFrameSize = 480 // RNNoise requires exactly 480 samples @ 48kHz
 // RNNoise wraps the libRNNoise C library.
 // Install: https://github.com/xiph/rnnoise (build as shared library).
 type RNNoise struct {
-	mu    sync.Mutex
-	state *C.DenoiseState
+	mu             sync.Mutex
+	state          *C.DenoiseState
+	aggressiveness int
 }
 
 // NewRNNoise creates a new RNNoise suppressor.
 // Requires libRNNoise to be installed on the system.
 // Install on Ubuntu: apt-get install librnnoise-dev
 // Install on macOS:  brew install rnnoise
-func NewRNNoise() (*RNNoise, error) {
+//
+// aggressiveness is variadic to preserve source compatibility with existing
+// callers (e.g. tools/rnnoise_process) that invoke NewRNNoise() with no
+// arguments. If provided, aggressiveness[0] sets SuppressorConfig.Aggressiveness
+// (see aggressiveness.go); any value beyond the first is ignored.
+func NewRNNoise(aggressiveness ...int) (*RNNoise, error) {
 	st := C.rnnoise_create(nil)
 	if st == nil {
 		return nil, fmt.Errorf("rnnoise: failed to create DenoiseState")
 	}
-	return &RNNoise{state: st}, nil
+	level := 0
+	if len(aggressiveness) > 0 {
+		level = aggressiveness[0]
+	}
+	return &RNNoise{state: st, aggressiveness: level}, nil
 }
 
 // Process suppresses noise in a 160-sample 16kHz frame.
@@ -82,7 +92,12 @@ func (r *RNNoise) Process(frame []int16) ([]int16, error) {
 	}
 
 	// Downsample 480 @ 48kHz -> 160 @ 16kHz (1/3)
-	return downsample3x(out48), nil
+	processed := downsample3x(out48)
+
+	// Apply Aggressiveness (blend toward the original signal for mild/medium
+	// levels; see aggressiveness.go). Levels 0 (default) and 3 (aggressive)
+	// return the model's full-strength output unchanged.
+	return blendAggressiveness(frame, processed, r.aggressiveness), nil
 }
 
 // Reset clears the RNNoise internal state.

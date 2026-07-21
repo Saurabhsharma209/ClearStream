@@ -69,19 +69,19 @@ func DefaultSuppressorConfig() SuppressorConfig {
 func NewSuppressor(cfg SuppressorConfig) (Suppressor, error) {
 	switch cfg.Backend {
 	case "rnnoise", "":
-		return NewRNNoise()
+		return NewRNNoise(cfg.Aggressiveness)
 	case "rnnoise-onnx":
 		if cfg.ModelPath == "" {
 			return nil, fmt.Errorf("model: rnnoise-onnx requires ModelPath")
 		}
 		logger, _ := zap.NewProduction()
-		return NewRNNoiseONNX(cfg.ModelPath, logger)
+		return NewRNNoiseONNX(cfg.ModelPath, logger, cfg.Aggressiveness)
 	case "deepfilter":
 		if cfg.ModelPath == "" {
 			return nil, fmt.Errorf("model: deepfilter requires ModelPath")
 		}
 		logger, _ := zap.NewProduction()
-		return newDeepFilterSuppressor(cfg.ModelPath, logger)
+		return newDeepFilterSuppressor(cfg.ModelPath, logger, cfg.Aggressiveness)
 	case "deepfilter-server":
 		logger, _ := zap.NewProduction()
 		return newDeepFilterServerSuppressor(cfg.ServerURL, cfg.AutoStartPath, logger)
