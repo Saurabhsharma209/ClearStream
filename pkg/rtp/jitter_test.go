@@ -426,7 +426,7 @@ func TestDetectPitch(t *testing.T) {
 	for i := range frame {
 		frame[i] = makeSample(i)
 	}
-	period := detectPitch(frame)
+	period := detectPitch(frame, 0)
 	// 440 Hz at 16 kHz → period ≈ 36.4 samples. Accept 30–45.
 	if period < 30 || period > 45 {
 		t.Errorf("detectPitch for 440 Hz sine: expected 30–45, got %d", period)
@@ -496,7 +496,7 @@ func TestJitterPLCLoss1UsesPitchPeriodSubstitution(t *testing.T) {
 	}
 	jb.OnGoodPacket(goodFrame)
 
-	period := detectPitch(goodFrame)
+	period := detectPitch(goodFrame, 0)
 	want := make([]int16, frameLen)
 	tail := goodFrame[frameLen-period:]
 	for i := 0; i < frameLen; i++ {
@@ -520,6 +520,69 @@ func TestJitterPLCLoss1UsesPitchPeriodSubstitution(t *testing.T) {
 	for i := range want {
 		if got2[i] != want[i] {
 			t.Fatalf("PLC loss 2 sample %d = %d, want %d (still substitution phase, no decay yet)", i, got2[i], want[i])
+		}
+	}
+}
+
+// TestJitterBufferPitchStateIsolatedPerInstance is a regression test for a
+// real cross-session data bug: detectPitch's octave-jump continuity guard
+// used to be backed by a single PACKAGE-LEVEL variable (`prevDetectedPitch`)
+// shared by every JitterBuffer in the process, instead of being scoped to
+// the individual buffer/call leg. In a production SDK handling multiple
+// concurrent calls, each call gets its own Session and JitterBuffer, but
+// they all ran in the same process -- so one active call's detected pitch
+// could silently corrupt a completely unrelated, concurrent call's PLC
+// pitch estimate (and the shared variable was also unsynchronized, i.e. a
+// data race under concurrent access).
+//
+// This test only uses the public API (NewJitterBuffer/OnGoodPacket/
+// GeneratePLC) -- exactly how two independent calls' Sessions would use
+// their own JitterBuffers -- so it exercises the real bug mechanism rather
+// than poking at internals directly. It runs the same "call B" scenario
+// twice, preceded each time by a different, unrelated "call A" with a
+// distinct pitch period. A correctly isolated JitterBuffer must produce
+// identical PLC output for call B both times, since call B's own audio
+// never changes and it has never lost a packet before -- any difference
+// can only be explained by state leaking in from the unrelated call A.
+func TestJitterBufferPitchStateIsolatedPerInstance(t *testing.T) {
+	frameLen := 160
+
+	makeGoodFrame := func() []int16 {
+		f := make([]int16, frameLen)
+		for i := range f {
+			f[i] = int16(1000 + i) // distinctive ramp, matches TestJitterPLCLoss1UsesPitchPeriodSubstitution
+		}
+		return f
+	}
+
+	// runCallBAfterContaminant simulates an unrelated "call A" (its own
+	// JitterBuffer, with a distinct periodic signal and its own loss/PLC
+	// cycle) immediately followed by a fresh, independent "call B" that
+	// processes the same audio every time. Returns call B's first-loss PLC
+	// output.
+	runCallBAfterContaminant := func(contaminantPeriod int) []int16 {
+		jbA := NewJitterBuffer(2)
+		contaminantFrame := make([]int16, frameLen)
+		for i := range contaminantFrame {
+			contaminantFrame[i] = int16((i % contaminantPeriod) * 300)
+		}
+		jbA.OnGoodPacket(contaminantFrame)
+		jbA.GeneratePLC() // unrelated call A's own loss/PLC cycle
+
+		jbB := NewJitterBuffer(2) // brand-new, independent buffer for "call B"
+		jbB.OnGoodPacket(makeGoodFrame())
+		return jbB.GeneratePLC()
+	}
+
+	got1 := runCallBAfterContaminant(55) // preceded by a ~55-sample-period contaminant
+	got2 := runCallBAfterContaminant(42) // preceded by a ~42-sample-period contaminant
+
+	if len(got1) != len(got2) {
+		t.Fatalf("call B PLC output length differs (%d vs %d) depending on an unrelated preceding call's audio", len(got1), len(got2))
+	}
+	for i := range got1 {
+		if got1[i] != got2[i] {
+			t.Fatalf("call B's PLC output for identical audio differed at sample %d (%d vs %d) depending solely on an unrelated preceding call's pitch -- cross-session pitch-state leakage between JitterBuffer instances", i, got1[i], got2[i])
 		}
 	}
 }

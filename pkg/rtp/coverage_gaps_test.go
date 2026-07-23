@@ -62,7 +62,7 @@ func TestDetectPitch_ShortFrame(t *testing.T) {
 	for i := range frame {
 		frame[i] = 1000 // non-zero, so this isn't also exercising the silence path
 	}
-	got := detectPitch(frame)
+	got := detectPitch(frame, 0)
 	if got != len(frame) {
 		t.Errorf("detectPitch(len=40 frame): want %d, got %d", len(frame), got)
 	}
@@ -73,7 +73,7 @@ func TestDetectPitch_ShortFrame(t *testing.T) {
 // and return n/4.
 func TestDetectPitch_Silence(t *testing.T) {
 	frame := make([]int16, 160) // all-zero PCM => energy == 0 < 1.0
-	got := detectPitch(frame)
+	got := detectPitch(frame, 0)
 	want := len(frame) / 4
 	if got != want {
 		t.Errorf("detectPitch(silence): want %d, got %d", want, got)
@@ -84,14 +84,10 @@ func TestDetectPitch_Silence(t *testing.T) {
 // longer than 900 samples, n/2 exceeds 450 and the search window must be
 // capped so the O(n^2) correlation cost stays bounded.
 func TestDetectPitch_MaxLagCap(t *testing.T) {
-	saved := prevDetectedPitch
-	defer func() { prevDetectedPitch = saved }()
-	prevDetectedPitch = 0 // isolate from continuity guard state left by other tests
-
 	const freq = 100.0
 	const sampleRate = 16000.0
 	frame := makeSineFrame(freq, sampleRate, 1000, 8000.0) // n=1000 -> n/2=500 > 450 cap
-	got := detectPitch(frame)
+	got := detectPitch(frame, 0)                           // no prior state -- isolate from other tests
 
 	if got <= 0 || got > 450 {
 		t.Fatalf("detectPitch: expected a lag in (0, 450] after clamping, got %d", got)
@@ -104,11 +100,10 @@ func TestDetectPitch_MaxLagCap(t *testing.T) {
 	}
 }
 
-// TestDetectPitch_ContinuityGuard covers both the "prevDetectedPitch > 0"
-// body and, within it, the octave-jump rejection branch ("ratio > 1.5 ||
-// ratio < 0.67"). The very first detectPitch call in a process never enters
-// the guard (prevDetectedPitch starts at 0); this test drives it through
-// all three states: no-previous, previous-agrees, previous-disagrees.
+// TestDetectPitch_ContinuityGuard covers both the "prevPitch > 0" body and,
+// within it, the octave-jump rejection branch ("ratio > 1.5 || ratio <
+// 0.67"). Passing prevPitch=0 never enters the guard; this test drives it
+// through all three states: no-previous, previous-agrees, previous-disagrees.
 
 // --- InjectBotAudio (playback.go) -------------------------------------------
 
@@ -214,21 +209,17 @@ func TestInjectBotAudio_RemainderPushFailure(t *testing.T) {
 	}
 }
 func TestDetectPitch_ContinuityGuard(t *testing.T) {
-	saved := prevDetectedPitch
-	defer func() { prevDetectedPitch = saved }()
-
-	// Call 1: prevDetectedPitch == 0 -> guard body skipped (false path).
-	prevDetectedPitch = 0
+	// Call 1: prevPitch == 0 -> guard body skipped (false path).
 	frame440 := makeSineFrame(440.0, 16000.0, 160, 8000.0)
-	first := detectPitch(frame440)
+	first := detectPitch(frame440, 0)
 	if first < 30 || first > 45 {
 		t.Fatalf("detectPitch(440Hz) call 1: expected ~36, got %d", first)
 	}
 
-	// Call 2: prevDetectedPitch was left at `first` by call 1. Same signal
-	// again => ratio ~1.0, within [0.67, 1.5], so the guard body runs but
-	// must NOT override the freshly computed lag.
-	second := detectPitch(frame440)
+	// Call 2: prevPitch == first from call 1. Same signal again => ratio
+	// ~1.0, within [0.67, 1.5], so the guard body runs but must NOT override
+	// the freshly computed lag.
+	second := detectPitch(frame440, first)
 	if second != first {
 		t.Errorf("detectPitch(440Hz) call 2: guard should not fire when ratio~1.0, want %d, got %d", first, second)
 	}
@@ -237,8 +228,7 @@ func TestDetectPitch_ContinuityGuard(t *testing.T) {
 	// newly computed lag for the same 440Hz frame deviates from it by more
 	// than 50%. The guard must reject the new estimate and reuse the stale
 	// previous period instead.
-	prevDetectedPitch = 300
-	third := detectPitch(frame440)
+	third := detectPitch(frame440, 300)
 	if third != 300 {
 		t.Errorf("detectPitch: octave-jump guard should reuse stale previous period 300, got %d", third)
 	}

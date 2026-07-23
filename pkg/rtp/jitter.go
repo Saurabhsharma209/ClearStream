@@ -90,6 +90,9 @@ type JitterBuffer struct {
 	consecutiveLoss int
 	lastGoodFrame   []int16
 	prevPLC         []int16 // last generated PLC frame; used as fade source to guarantee monotonic attenuation
+	prevPitch       int     // per-buffer pitch-continuity state for detectPitch's octave-jump guard.
+	// Previously a package-level global (see detectPitch below) shared across
+	// every concurrent call's JitterBuffer -- this field makes it per-session.
 
 	// Adaptive depth tracking
 	lastArrival  time.Time
@@ -312,7 +315,8 @@ func (j *JitterBuffer) GeneratePLC() []int16 {
 	// the previous implementation faded from lastGoodFrame starting at loss
 	// 1, contradicting this function's own doc comment above.)
 	if j.consecutiveLoss <= 2 {
-		period := detectPitch(j.lastGoodFrame)
+		period := detectPitch(j.lastGoodFrame, j.prevPitch)
+		j.prevPitch = period
 		if period <= 0 || period > frameLen {
 			period = frameLen
 		}
@@ -398,6 +402,7 @@ func (j *JitterBuffer) Reset() {
 	j.consecutiveLoss = 0
 	j.lastGoodFrame = nil
 	j.prevPLC = nil
+	j.prevPitch = 0             // clear per-buffer pitch-continuity state -- new call leg, no prior pitch history
 	j.lastArrival = time.Time{} // CS-002: zero so first post-reset packet doesn't compute stale inter-arrival delta
 	j.arrivalEMAMs = 0
 	j.arrivalVarMs = 0
@@ -438,9 +443,20 @@ func seqLess(a, b uint16) bool {
 // the "blabbering" sound — this guard eliminates them.
 //
 // Falls back to frameLen/4 if no clear pitch is found.
-var prevDetectedPitch int // package-level continuity state (reset is harmless)
-
-func detectPitch(frame []int16) int {
+//
+// prevPitch carries the caller's pitch-continuity state (the previously
+// selected period for that same buffer/call leg) in and the (possibly
+// guard-adjusted) new period out via the return value -- pass 0 if there is
+// no prior state (e.g. first call after NewJitterBuffer/Reset).
+//
+// This used to be a package-level global (`prevDetectedPitch`), which meant
+// the octave-jump continuity guard's state was shared across every
+// concurrent call's JitterBuffer in the process: one active call's detected
+// pitch could silently override or corrupt another, completely unrelated,
+// concurrent call's PLC pitch estimate (and raced under concurrent access).
+// Threading it through as an explicit per-instance parameter/return fixes
+// both the correctness bug and the data race.
+func detectPitch(frame []int16, prevPitch int) int {
 	n := len(frame)
 	if n < 80 {
 		return n // too short to detect
@@ -481,12 +497,11 @@ func detectPitch(frame []int16) int {
 	// If the new period deviates > 50% from the previous period, reuse the
 	// previous one. This eliminates the "blabbering" artifact caused by the
 	// autocorrelation picking a doubled or halved period on ambiguous frames.
-	if prevDetectedPitch > 0 {
-		ratio := float64(bestLag) / float64(prevDetectedPitch)
+	if prevPitch > 0 {
+		ratio := float64(bestLag) / float64(prevPitch)
 		if ratio > 1.5 || ratio < 0.67 {
-			bestLag = prevDetectedPitch // reuse previous — octave jump rejected
+			bestLag = prevPitch // reuse previous — octave jump rejected
 		}
 	}
-	prevDetectedPitch = bestLag
 	return bestLag
 }
