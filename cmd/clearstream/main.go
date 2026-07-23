@@ -94,13 +94,12 @@ func runDir(args []string) {
 	must("init clearstream", err)
 	defer cs.Close()
 
-	// Build a file.Processor using the same internals as cs.ProcessFileWithOptions.
-	fp := file.NewProcessor(file.ProcessorConfig{
-		FFmpegPath: cfg.FFmpegPath,
-		SampleRate: cfg.SampleRate,
-		Channels:   cfg.Channels,
-	})
-
+	// Use cs.ProcessDirWithOptions rather than building our own file.Processor
+	// here: a raw file.Processor never receives cs's configured Suppressor,
+	// which previously made the -model flag a total no-op for this
+	// subcommand -- and worse, silently produced a nil Suppressor that
+	// panicked on the first frame of every file (see the doc comment on
+	// ProcessDirWithOptions in clearstream.go for the full mechanism).
 	opts := file.Options{
 		MaxConcurrency: *workers,
 		SkipExisting:   *skipExisting,
@@ -109,7 +108,7 @@ func runDir(args []string) {
 	fmt.Printf("Processing directory: %s -> %s (workers: %d, model: %s, skip-existing: %v)\n", *input, *output, *workers, *modelBackend, *skipExisting)
 	start := time.Now()
 
-	results := fp.ProcessDirFull(*input, *output, opts)
+	results := cs.ProcessDirWithOptions(*input, *output, opts)
 
 	ok, skipped, failed := 0, 0, 0
 	for _, r := range results {

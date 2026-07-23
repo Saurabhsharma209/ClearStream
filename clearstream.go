@@ -268,6 +268,40 @@ func (cs *ClearStream) ProcessFileWithOptions(src, dst string, opts file.Options
 	return fp.ProcessWithOptions(src, dst, opts)
 }
 
+// ProcessDirWithOptions batch-enhances every audio/video file in srcDir,
+// writing enhanced copies to dstDir, reusing this instance's configured
+// noise-suppression model (mirrors ProcessFileWithOptions, but operating on
+// a whole directory instead of a single file). This is the SDK-level
+// equivalent of the CLI's dir subcommand and pkg/http's POST /enhance/dir
+// handler.
+//
+// Callers should use this instead of constructing a file.Processor
+// directly: doing so bypasses cs.model entirely, silently discarding the
+// configured Model/ModelPath. That was a real bug in cmd/clearstream/main.go
+// prior to this method existing -- the dir subcommand built its own
+// file.Processor without ever setting ProcessorConfig.Suppressor, so the
+// -model flag had zero effect. Worse than silently doing nothing: since
+// file-based processing never wires a VAD (VAD is a Pipeline-only concept
+// that ProcessorConfig has no field for), audio.Pipeline.ProcessFrames
+// unconditionally calls Suppressor.Process on every frame with no nil
+// check, so a nil Suppressor made every dir invocation panic on the first
+// frame of the first file, 100 percent of the time, regardless of which
+// -model was requested.
+
+func (cs *ClearStream) ProcessDirWithOptions(srcDir, dstDir string, opts file.Options) []file.DirResult {
+	fp := file.NewProcessor(file.ProcessorConfig{
+		FFmpegPath: cs.cfg.FFmpegPath,
+		SampleRate: cs.cfg.SampleRate,
+		Channels:   cs.cfg.Channels,
+		Suppressor: cs.model,
+		Logger:     cs.logger,
+	})
+	if opts.Telemetry == nil {
+		opts.Telemetry = cs.cfg.telemetry()
+	}
+	return fp.ProcessDirFull(srcDir, dstDir, opts)
+}
+
 // globalAGC resolves the effective AGCConfig from top-level SDK config.
 // Returns nil if AGC is not enabled.
 func (cs *ClearStream) globalAGC() *audio.AGCConfig {
