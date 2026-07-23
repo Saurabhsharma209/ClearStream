@@ -329,3 +329,39 @@ func TestPipelineDiarizerNoFarEndUnaffected(t *testing.T) {
 		t.Errorf("expected SpeakerSilence with no far-end reference ever set, got %s", cur.Speaker)
 	}
 }
+
+// TestPipelineResetClearsDiarizerState is a regression test for a bug where
+// Pipeline.Reset() reset every other stage (suppressor, VAD, AGC, AEC, noise
+// reducer, tiered NR, limiter, turnEnd) but never called diarizer.Reset().
+// A Pipeline reused across call legs (the documented use of Reset()) would
+// silently carry the previous call's speaker/segment state into the new
+// one instead of restarting at SpeakerSilence.
+func TestPipelineResetClearsDiarizerState(t *testing.T) {
+	diarizer := NewEnergyDiarizer(DefaultEnergyDiarizerConfig())
+	sup := &noopSuppressor{}
+	cfg := PipelineConfig{
+		SampleRate:      16000,
+		InputSampleRate: 16000,
+		Suppressor:      sup,
+		Diarizer:        diarizer,
+	}
+	p := NewPipeline(cfg)
+
+	speechBytes := int16ToBytes(makeSpeech(160))
+	var buf nopWriter
+	for i := 0; i < 5; i++ {
+		if err := p.ProcessFrames(speechBytes, &buf); err != nil {
+			t.Fatalf("ProcessFrames error: %v", err)
+		}
+	}
+
+	if cur := diarizer.CurrentSegment(); cur.Speaker != SpeakerNearEnd {
+		t.Fatalf("setup: expected diarizer mid-speech (SpeakerNearEnd) before Reset, got %s", cur.Speaker)
+	}
+
+	p.Reset()
+
+	if cur := diarizer.CurrentSegment(); cur.Speaker != SpeakerSilence {
+		t.Errorf("Pipeline.Reset() did not reset the diarizer: CurrentSegment().Speaker = %s, want %s (bug: Reset() never called diarizer.Reset(), so speaker state leaked across call legs)", cur.Speaker, SpeakerSilence)
+	}
+}

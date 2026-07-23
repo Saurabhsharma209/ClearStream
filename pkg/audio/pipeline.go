@@ -544,6 +544,9 @@ func (p *Pipeline) Reset() {
 	if p.limiter != nil {
 		p.limiter.Reset()
 	}
+	if p.diarizer != nil {
+		p.diarizer.Reset()
+	}
 	p.turnEnd.reset()
 	// Zero-fill (rather than nil) so Process48k does not need to distinguish
 	// "never used" from "reset"; a nil check there just means "not yet sized".
