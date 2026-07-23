@@ -2261,3 +2261,24 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. Audio Pipeline / RTP-SIP: both last rotated 07-20 (RTP-SIP) -- Audio Pipeline due for its next pass.
 2. API Layer: hasn't rotated since 07-20 (Channels wiring) -- scan clearstream.go/pkg/http for the next real gap.
 3. Consider whether DeepFilterNet real-model ONNX wiring is worth revisiting now that pkg/model/aggressiveness.go exists as a shared primitive -- the onnx build tag itself compiles fine (confirmed today), only the runtime shared library + exported model are missing.
+
+## 2026-07-23
+
+**Agents run:** Audio Pipeline (pkg/audio Diarizer reset), RTP/SIP (pkg/rtp PLC pitch-state isolation), API Layer (clearstream.go / cmd dir panic)
+**Build:** passing (go build ./... on this dev Mac's go1.17 toolchain; CGO_ENABLED=0 go test ./... full suite green)
+
+### Changes
+- `pkg/audio/pipeline.go`, `pkg/audio/diarize_test.go`: Found `Pipeline.Reset()` reset every stage (suppressor, VAD, AGC, AEC, noise reducer, tiered NR, limiter, turnEnd) except the configured `Diarizer` — so reusing a `Pipeline` across call legs silently carried the previous call's speaker/segment state into the new call, corrupting `DiarizationSegments()` output. Masked by an existing test that only checked `Reset()` didn't panic. Added the missing nil-guarded `p.diarizer.Reset()` call. New test `TestPipelineResetClearsDiarizerState` drives the diarizer to `SpeakerNearEnd` then asserts `Reset()` returns it to `SpeakerSilence`; confirmed failing pre-fix. pkg/audio coverage steady at 94.0%.
+- `pkg/rtp/jitter.go`, `jitter_test.go`, `coverage_gaps_test.go`: Found `detectPitch()`'s octave-jump continuity guard used a package-level global (`prevDetectedPitch`) instead of per-`JitterBuffer` state — since ClearStream handles multiple concurrent calls in one process, one call's detected PLC pitch period could leak into and corrupt an unrelated concurrent call's packet-loss-concealment output (also an unsynchronized cross-goroutine data race). Moved the state into a `JitterBuffer.prevPitch` field (cleared in `Reset()`), threaded through `detectPitch(frame, prevPitch)` from `GeneratePLC`. New test `TestJitterBufferPitchStateIsolatedPerInstance` proves call B's PLC output is unaffected by a preceding, unrelated call A; confirmed failing against the old shared-global logic. pkg/rtp coverage steady at 96.4%.
+- `clearstream.go`, `cmd/clearstream/main.go`, `clearstream_dir_test.go` (new), `cmd/clearstream/main_test.go`: Found the CLI's `clearstream dir` subcommand (`runDir`) built its own `file.Processor` directly instead of reusing the `ClearStream` instance's configured model, leaving `Suppressor` **nil** — every invocation panicked with a nil pointer dereference on the first frame of the first file, 100% of the time, regardless of `-model` flag. Added `ClearStream.ProcessDirWithOptions` (mirroring how `pkg/http`'s `handleEnhanceDir` already threads the model through correctly) and switched `runDir` to use it. New tests drive both the SDK method and the real CLI code path end-to-end with a fake ffmpeg.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue — carried over again)
+- No run on 2026-07-22 (gap in schedule).
+- `pkg/audio/pipeline.go`'s `Reset` (76.7%) and `tiered_nr.go`'s `Reset` (75%) still have uncovered branches — worth a QA coverage pass.
+- staticcheck still can't run locally (min Go 1.19, this Mac has 1.17); CI's matrix is unaffected.
+
+### Tomorrow
+1. Post-processing / AI Model / QA-Testing: all last rotated 07-21 — due again in the normal rotation; QA should pick up the pipeline.go/tiered_nr.go Reset() coverage gaps flagged above.
+2. Consider whether DeepFilterNet real-model ONNX wiring is worth revisiting now that pkg/model/aggressiveness.go exists as a shared primitive — runtime shared library + exported model are still the only missing piece.
+3. Stray numbered-suffix temp files noticed in pkg/audio, pkg/rtp, pkg/http (e.g. `agc.go.3911646208...`) during today's scan — appear to be leftover atomic-write temp files, git status shows clean so likely gitignored, but worth a QA pass to confirm they're harmless and clean them up if not.
