@@ -2282,3 +2282,23 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. Post-processing / AI Model / QA-Testing: all last rotated 07-21 — due again in the normal rotation; QA should pick up the pipeline.go/tiered_nr.go Reset() coverage gaps flagged above.
 2. Consider whether DeepFilterNet real-model ONNX wiring is worth revisiting now that pkg/model/aggressiveness.go exists as a shared primitive — runtime shared library + exported model are still the only missing piece.
 3. Stray numbered-suffix temp files noticed in pkg/audio, pkg/rtp, pkg/http (e.g. `agc.go.3911646208...`) during today's scan — appear to be leftover atomic-write temp files, git status shows clean so likely gitignored, but worth a QA pass to confirm they're harmless and clean them up if not.
+
+## 2026-07-27
+
+**Agents run:** Post-processing (pkg/file encodeAndMux error paths), AI Model (pkg/model blendAggressiveness boundary tests)
+**Build:** passing (go build ./... on this dev Mac's go1.17 toolchain; CGO_ENABLED=0 go test ./pkg/file/... ./pkg/model/... green)
+
+### Changes
+- `pkg/file/processor_encodemux_test.go` (new): `encodeAndMux` sat at 71.4% coverage. The existing `TestEncodeAndMuxFakeFFmpegErrorPath`'s own comment noted its induced ffmpeg failure "surfaces from whichever phase runs first (decode or encode)" -- since decode always runs before encode, that test never actually proved encodeAndMux's own typed-error (`parseFFmpegError`) or generic-error fallback branches fire from an ENCODE-phase failure specifically. Added a fake ffmpeg that succeeds on decode (last arg `-`, writes PCM to stdout) but fails only on encode (last arg is the real dst path), with two new tests: one triggering "Unknown encoder" -> `ErrCodecNotFound`, one triggering an unrecognized stderr message -> the generic `fmt.Errorf` fallback that still surfaces the raw ffmpeg stderr. Both isolate encodeAndMux's error handling from decodeAndSuppress's.
+- `pkg/model/aggressiveness_clamp_test.go` (new): `blendAggressiveness` (07-21's Aggressiveness-wiring fix) sat at 84.6% coverage on its int16 saturation clamp. Investigation found the clamp is currently unreachable dead code -- `aggressivenessWetRatio` only ever returns 0, 0.40, 0.70, or 1.0, so wet+dry always sum to 1.0 and the blend is a convex combination of two in-range int16 values, which can't overflow. Rather than force a coverage number with a misleading test, added it as an explicit regression guard (documented as such) plus two real-behavior tests: the length-mismatch defensive branch returns `processed` unchanged instead of risking an index panic, and levels 0/3 correctly take the wet==1.0 shortcut unblended -- locking in pre-Aggressiveness-fix behavior for callers that never set the field.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue -- carried over again)
+- No runs 2026-07-24 through 2026-07-26 (gap in schedule).
+- `blendAggressiveness`'s int16 clamp (pkg/model/aggressiveness.go) remains structurally unreachable under current `aggressivenessWetRatio` outputs -- not a bug, just defensive code with no live path today. Flagging in case a future aggressiveness level changes that.
+- staticcheck still can't run locally (min Go 1.19, this Mac has 1.17); CI's matrix unaffected.
+
+### Tomorrow
+1. Audio Pipeline / RTP-SIP / API Layer: all last rotated 07-23 -- due again in the normal rotation.
+2. QA/Testing: hasn't rotated since 07-21 -- re-scan coverage across all packages, particularly `pkg/sip`/`pkg/loadtest` which haven't been touched in a while.
+3. Consider whether `pkg/model/deepfilter_server.go`'s `startServer` (88.0%) and `pool.go`'s `WarmPool` (89.5%) are worth a closer look next AI Model rotation -- not investigated deeply today to stay within token budget.
