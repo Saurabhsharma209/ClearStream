@@ -493,6 +493,30 @@ func (s *Session) handlePacket(raw []byte) error {
 	// Skips the PCM decode->suppress->encode cycle, cutting per-packet CPU to near zero.
 	if s.isBypassMode() && frame != nil {
 		out := buildRTPPacket(header, frame)
+		// PLC priming fix: bypass mode forwards the raw payload directly and
+		// never called jitter.onGoodPacket, so JitterBuffer.lastGoodFrame was
+		// never populated while bypass mode was active. Any subsequent packet
+		// loss then fell through GeneratePLC no-history branch, producing
+		// permanent flat silence instead of the documented two-phase PLC
+		// (pitch-period substitution then fade-to-silence). Prime the PLC
+		// source here for codecs whose decode is effectively free (G711 and
+		// raw PCM -- a table lookup or memcpy, no subprocess). FFmpeg backed
+		// codecs (Opus, G722, G729) are intentionally skipped: decoding those
+		// per packet would reintroduce the subprocess spawn cost bypass mode
+		// exists to avoid, so those keep the pre-existing silence-only PLC
+		// fallback as an accepted tradeoff.
+		codec := s.cfg.Codec
+		if codec == audio.CodecUnknown {
+			codec = payloadTypeToCodec(header.PayloadType)
+		}
+		if !isFFmpegCodec(codec) {
+			if pcm, decErr := s.decodeToPCM(frame, header.PayloadType); decErr == nil {
+				s.jitter.onGoodPacket(pcm)
+				if isG711PayloadType(header.PayloadType, s.cfg.Codec) {
+					putG711PCM(pcm)
+				}
+			}
+		}
 		// buildRTPPacket copies frame into out -- safe to release frame's
 		// pooled backing array back to the jitter buffer's pool now.
 		s.jitter.ReleasePayload(frame)
@@ -959,6 +983,20 @@ func payloadTypeToCodec(pt uint8) audio.Codec {
 
 // isG711PayloadType reports whether the payload type (or configured codec) is
 // a G.711 variant (mu-law or A-law) -- the only codecs that use the pool helpers.
+// isFFmpegCodec reports whether decodeToPCM or encodeFromPCM for this codec
+// spawns an FFmpeg subprocess (Opus, G722, G729) as opposed to a cheap
+// in-process table lookup or memcpy (G711, raw PCM, or an unrecognised
+// fallback codec). Used by the bypass fast path in handlePacket to decide
+// whether priming the jitter buffer PLC source is worth the decode cost.
+func isFFmpegCodec(codec audio.Codec) bool {
+	switch codec {
+	case audio.CodecOpus, audio.CodecG722, audio.CodecG729:
+		return true
+	default:
+		return false
+	}
+}
+
 func isG711PayloadType(pt uint8, cfgCodec audio.Codec) bool {
 	c := cfgCodec
 	if c == audio.CodecUnknown || c == "" {
