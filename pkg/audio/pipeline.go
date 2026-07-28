@@ -675,6 +675,14 @@ func (p *Pipeline) SetAggressiveness(n int) {
 
 // SetVADThreshold adjusts the VAD energy threshold mid-call.
 // Lower = more sensitive (catches quiet speech); higher = less sensitive.
+//
+// Also propagates to the TurnEnd() feature's independent, hangover-free VAD
+// clone (see cloneVADForTurnEnd) when TurnEndBufferSize > 0. That clone is
+// built once at NewPipeline time from whatever threshold cfg.VAD held then;
+// without this propagation, a mid-call sensitivity change here would keep
+// the suppression-bypass gate and end-of-utterance detection permanently out
+// of sync -- TurnEnd would silently keep classifying frames against the
+// stale threshold captured at construction for the rest of the call.
 func (p *Pipeline) SetVADThreshold(threshold float64) {
 	if vad, ok := p.vad.(*VAD); ok {
 		vad.ThresholdRMS = threshold
@@ -682,6 +690,7 @@ func (p *Pipeline) SetVADThreshold(threshold float64) {
 	if avad, ok := p.vad.(*AdaptiveVAD); ok {
 		avad.VAD.ThresholdRMS = threshold
 	}
+	p.turnEnd.setThreshold(threshold)
 }
 
 // SetAGCTarget adjusts the AGC target RMS level mid-call.

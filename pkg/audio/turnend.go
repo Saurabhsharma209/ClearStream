@@ -152,6 +152,25 @@ func (t *turnEndTracker) observe(frame []int16) {
 	t.silenceFrames = 0
 }
 
+// setThreshold updates the energy threshold on the tracker's own VAD clone,
+// mirroring a Pipeline.SetVADThreshold call on the pipeline's suppression-
+// bypass VAD. Without this, TurnEnd's independent, hangover-free clone (see
+// cloneVADForTurnEnd) would keep using the threshold captured at
+// NewPipeline/newTurnEndTracker time for the rest of the call, silently
+// drifting out of sync with the bypass gate's live sensitivity. Safe to call
+// on a nil *turnEndTracker (no-op), matching every other method here.
+func (t *turnEndTracker) setThreshold(threshold float64) {
+	if t == nil {
+		return
+	}
+	if vad, ok := t.vad.(*VAD); ok {
+		vad.ThresholdRMS = threshold
+	}
+	if avad, ok := t.vad.(*AdaptiveVAD); ok {
+		avad.VAD.ThresholdRMS = threshold
+	}
+}
+
 // reset clears per-utterance detection state. Called from Pipeline.Reset().
 // It does not close the channel: Reset() is for reusing the pipeline across
 // a new stream/file, not for tearing it down -- see Pipeline.Close() for that.
