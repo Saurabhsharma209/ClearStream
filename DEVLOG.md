@@ -2302,3 +2302,24 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. Audio Pipeline / RTP-SIP / API Layer: all last rotated 07-23 -- due again in the normal rotation.
 2. QA/Testing: hasn't rotated since 07-21 -- re-scan coverage across all packages, particularly `pkg/sip`/`pkg/loadtest` which haven't been touched in a while.
 3. Consider whether `pkg/model/deepfilter_server.go`'s `startServer` (88.0%) and `pool.go`'s `WarmPool` (89.5%) are worth a closer look next AI Model rotation -- not investigated deeply today to stay within token budget.
+
+## 2026-07-28
+
+**Agents run:** Audio Pipeline (pkg/audio TurnEnd VAD wiring), RTP/SIP (pkg/rtp bypass-mode PLC priming), QA/Testing (pkg/loadtest edge cases)
+**Build:** passing (go build ./... on this dev Mac's go1.17 toolchain; CGO_ENABLED=0 go test ./... green aside from one known pre-existing flake below)
+
+### Changes
+- pkg/audio/turnend.go, pipeline.go, pipeline_turnend_setvad_test.go (new): Found Pipeline.SetVADThreshold() updated p.vad but never propagated to turnEndTracker's independent VAD clone (cloneVADForTurnEnd, built once at construction) -- a mid-call sensitivity adjustment (documented, supported) silently left TurnEnd() running on the stale construction-time threshold for the rest of the call, permanently desyncing end-of-utterance detection from the live suppression-bypass gate. Added turnEndTracker.setThreshold(), wired into SetVADThreshold. New regression test confirmed failing pre-fix.
+- pkg/rtp/session.go, bypass_plc_test.go (new): Found the fast-bypass path (Suppressor == *model.Passthrough, no other stages) skipped decode entirely and never called jitter.OnGoodPacket(), so JitterBuffer.lastGoodFrame was never populated while bypass mode was active. Next packet loss during bypass hit GeneratePLC()'s no-history branch and emitted permanent flat silence instead of the SDK's normal two-phase PLC, despite real audio flowing seconds earlier -- silently degrading the passthrough/no-suppression deployment mode. Fixed by decoding cheap codecs (G.711/raw PCM) in the bypass path to prime PLC state; FFmpeg-backed codecs (Opus/G.722/G.729) intentionally skipped to preserve bypass mode's near-zero-CPU purpose (new isFFmpegCodec() helper).
+- pkg/loadtest/loadtest_edgecases_test.go (new): Closed untested degenerate-input gaps (zero sessions, zero frames) and pinned down (via recover) that Run(ctx, -1, n) currently panics with "makechan: size out of range" -- flagging pkg/loadtest/loadtest.go's missing input validation as a finding for that workstream, not fixed here (out of QA's file scope).
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue -- carried over again)
+- pkg/file's TestProcessWithOptionsContextCancelKillsRunningFFmpegDuringDecode failed once during a full-suite CGO_ENABLED=0 run today (3.5s vs expected prompt kill) but passed 3/3 in isolated -count=3 reruns immediately after -- consistent with the same sandbox/system-load timing sensitivity flagged repeatedly since 07-16, not a new regression from today's changes (today's commits don't touch pkg/file).
+- New finding (QA, not fixed): pkg/sip/proxy.go's handleStart() silently overwrites an already-active call_id's map entry without calling Stop() on the previous ProxySession, leaking its eagerly-bound UDP socket and goroutines. Worth a fix by the SIP/RTP owner.
+- staticcheck still can't run locally (min Go 1.19, this Mac has 1.17); CI's matrix unaffected.
+
+### Tomorrow
+1. Post-processing / AI Model: last rotated 07-27 -- API Layer due since 07-23, hasn't rotated this week yet, should be next.
+2. Consider the pkg/sip/proxy.go handleStart() socket-leak finding above for RTP/SIP's next rotation.
+3. AI Model: DeepFilterNet ONNX real-model wiring still blocked on go1.17/onnxruntime_go generics incompatibility (unaffected in CI); pkg/model/deepfilter_server.go startServer (88.0%) and pool.go WarmPool (89.5%) coverage still flagged from 07-27 as worth a closer look.
