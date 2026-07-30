@@ -379,6 +379,51 @@ func TestNormalizeSDPCodec_AllCases(t *testing.T) {
 
 // ---- Concurrent access (race detector) ----
 
+// TestServeHTTP_Start_DuplicateCallID_StopsPreviousSession guards against a
+// leak where re-using an already-active call_id silently overwrote the
+// sessions map entry without stopping the session it replaced, leaking that
+// session's bound UDP socket and its receive/RTCP/stats/playback goroutines
+// forever. If the fix is working, the first session's inbound address must
+// become free to bind again once the second (duplicate call_id) start
+// completes.
+func TestServeHTTP_Start_DuplicateCallID_StopsPreviousSession(t *testing.T) {
+	p := newTestProxy(t)
+
+	staleInbound := freeUDPPort(t)
+	body1 := fmt.Sprintf(`{"call_id":"dup","inbound_addr":%q,"agentstream_addr":%q}`, staleInbound, freeUDPPort(t))
+	req1 := httptest.NewRequest(http.MethodPost, "/sip/session/start", strings.NewReader(body1))
+	w1 := httptest.NewRecorder()
+	p.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("first start: expected 200, got %d: %s", w1.Code, w1.Body.String())
+	}
+
+	// Re-use the same call_id with a fresh set of ports, as would happen on a
+	// SIP re-INVITE. This must not leak the first session.
+	body2 := fmt.Sprintf(`{"call_id":"dup","inbound_addr":%q,"agentstream_addr":%q}`, freeUDPPort(t), freeUDPPort(t))
+	req2 := httptest.NewRequest(http.MethodPost, "/sip/session/start", strings.NewReader(body2))
+	w2 := httptest.NewRecorder()
+	p.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("second start (duplicate call_id): expected 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+
+	p.mu.RLock()
+	n := len(p.sessions)
+	p.mu.RUnlock()
+	if n != 1 {
+		t.Errorf("expected exactly 1 active session under call_id \"dup\", got %d", n)
+	}
+
+	// The first session's socket must have been closed by the fix; otherwise
+	// this bind fails with "address already in use".
+	conn, err := net.ListenPacket("udp", staleInbound)
+	if err != nil {
+		t.Fatalf("expected previous session's socket at %s to be released, bind failed: %v", staleInbound, err)
+	}
+	conn.Close()
+}
+
 func TestProxy_ConcurrentStartStop(t *testing.T) {
 	p := newTestProxy(t)
 	const n = 5

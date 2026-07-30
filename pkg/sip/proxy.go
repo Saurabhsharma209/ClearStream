@@ -149,8 +149,24 @@ func (p *Proxy) handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.mu.Lock()
+	prev, existed := p.sessions[req.CallID]
 	p.sessions[req.CallID] = sess
 	p.mu.Unlock()
+
+	if existed {
+		// A session with this call_id was already active. Overwriting the map
+		// entry alone would silently leak the previous session's bound UDP
+		// socket and its receive/RTCP/stats/playback goroutines forever, since
+		// nothing else holds a reference to it once replaced in the map. Stop
+		// it before it is dropped.
+		p.logger.Warn("call_id already active, stopping previous session before replacing it",
+			zap.String("call_id", req.CallID),
+		)
+		prev.InboundSess.Stop()
+		if prev.OutboundSess != nil {
+			prev.OutboundSess.Stop()
+		}
+	}
 
 	sess.InboundSess.Start()
 	if sess.OutboundSess != nil {
