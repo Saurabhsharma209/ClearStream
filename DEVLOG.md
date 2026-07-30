@@ -2323,3 +2323,21 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. Post-processing / AI Model: last rotated 07-27 -- API Layer due since 07-23, hasn't rotated this week yet, should be next.
 2. Consider the pkg/sip/proxy.go handleStart() socket-leak finding above for RTP/SIP's next rotation.
 3. AI Model: DeepFilterNet ONNX real-model wiring still blocked on go1.17/onnxruntime_go generics incompatibility (unaffected in CI); pkg/model/deepfilter_server.go startServer (88.0%) and pool.go WarmPool (89.5%) coverage still flagged from 07-27 as worth a closer look.
+
+## 2026-07-30
+
+**Agents run:** RTP/SIP (pkg/sip proxy handleStart duplicate-call_id session leak)
+**Build:** passing (go build ./... and go test ./... green on this dev Mac's go1.17 toolchain, CGO_ENABLED=0)
+
+### Changes
+- `pkg/sip/proxy.go`, `pkg/sip/proxy_http_test.go` (new test): Fixed the socket/goroutine leak flagged in yesterday's log -- `handleStart()` overwrote `p.sessions[req.CallID]` on a duplicate/re-INVITE call_id without stopping the session it replaced, leaking that session's bound UDP socket and its receive/RTCP/stats/playback goroutines indefinitely. Now captures the previous session under the map lock, swaps it out, then calls `Stop()` on its inbound and outbound sessions (mirroring `handleStop`'s existing lock-then-stop-outside-lock pattern) with a `Warn` log noting the call_id was already active. New test `TestServeHTTP_Start_DuplicateCallID_StopsPreviousSession` starts a session, replaces it under the same call_id, and asserts the first session's inbound address becomes bindable again -- which fails pre-fix since the old socket stays open.
+
+### Blocked
+- Infra note (not a ClearStream bug): today's session started in a constrained ephemeral Linux build sandbox with a nearly-full root disk (accumulated Go build-cache/module-cache litter from prior automated runs, owned by a different user, not deletable from this session). Pivoted to running the actual build/test/commit on the Mac (`~/ClearStream`, go1.17, as in all prior entries), which is clearly the intended environment for this task. Recommend clearing the Linux sandbox's `/tmp` (or provisioning a dedicated disk for it) so future runs don't attempt that path unnecessarily.
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue -- carried over again)
+- staticcheck still can't run locally (min Go 1.19, this Mac has 1.17); CI's matrix unaffected.
+
+### Tomorrow
+1. Post-processing / AI Model / QA-Testing: due for rotation.
+2. AI Model: DeepFilterNet ONNX real-model wiring still blocked on go1.17/onnxruntime_go generics incompatibility.
+3. QA/Testing: `pkg/model/deepfilter_server.go` `startServer` (88.0%) and `pool.go` `WarmPool` (89.5%) coverage still flagged from 07-27 as worth a closer look.
