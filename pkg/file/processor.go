@@ -418,6 +418,7 @@ func (p *Processor) decodeAndSuppress(ctx context.Context, src, pcmPath string, 
 	// Pipe FFmpeg stdout → suppressor → pcmFile
 	pr, pw := io.Pipe()
 	decodeCmd.Stdout = pw
+	setNewProcessGroup(decodeCmd)
 
 	// Capture stderr for both error detection and real-time progress parsing.
 	stderrPipe, err := decodeCmd.StderrPipe()
@@ -428,6 +429,23 @@ func (p *Processor) decodeAndSuppress(ctx context.Context, src, pcmPath string, 
 	if err := decodeCmd.Start(); err != nil {
 		return fmt.Errorf("ffmpeg start: %w", err)
 	}
+
+	// killProcessGroup ensures the whole process group (not just the direct
+	// ffmpeg process) is killed promptly if ctx is cancelled -- exec.Command
+	// Context only kills the immediate child, so any subprocess it forks
+	// (e.g. a shell-wrapped fake ffmpeg spawning "sleep", or conceivably a
+	// real FFmpeg build that shells out) can otherwise keep the stdout
+	// pipe's write end open and delay cancellation by however long that
+	// subprocess keeps running.
+	decodeDone := make(chan struct{})
+	defer close(decodeDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			killProcessGroup(decodeCmd)
+		case <-decodeDone:
+		}
+	}()
 
 	// Stderr goroutine: accumulate for error messages and parse time= for progress.
 	var stderrBuf bytes.Buffer
@@ -608,10 +626,30 @@ func (p *Processor) encodeAndMux(pcmPath, originalSrc, dst string, info *audio.M
 	cmd := exec.CommandContext(ctx, p.cfg.FFmpegPath, args...)
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
+	setNewProcessGroup(cmd)
 
 	logger.Debug("ffmpeg encode", zap.Strings("args", args))
 
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("ffmpeg start: %w", err)
+	}
+
+	// killProcessGroup kills cmd's entire process group (not just the
+	// direct ffmpeg process) promptly on ctx cancellation -- see
+	// decodeAndSuppress for why exec.CommandContext's default
+	// single-process kill isn't sufficient on its own.
+	encodeDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			killProcessGroup(cmd)
+		case <-encodeDone:
+		}
+	}()
+
+	waitErr := cmd.Wait()
+	close(encodeDone)
+	if waitErr != nil {
 		// If ctx was cancelled, surface that directly rather than a generic
 		// "signal: killed" error, mirroring decodeAndSuppress's behaviour.
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -620,7 +658,7 @@ func (p *Processor) encodeAndMux(pcmPath, originalSrc, dst string, info *audio.M
 		if typed := parseFFmpegError(stderrBuf.String()); typed != nil {
 			return fmt.Errorf("ffmpeg decode: %w", typed)
 		}
-		return fmt.Errorf("ffmpeg encode: %w\nstderr: %s", err, stderrBuf.String())
+		return fmt.Errorf("ffmpeg encode: %w\nstderr: %s", waitErr, stderrBuf.String())
 	}
 	return nil
 }
