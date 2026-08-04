@@ -694,7 +694,18 @@ func (p *Pipeline) SetVADThreshold(threshold float64) {
 }
 
 // SetAGCTarget adjusts the AGC target RMS level mid-call.
+//
+// targetRMS must be positive: AGC.Process divides TargetRMS by the measured
+// frame RMS to compute the desired gain, so a zero or negative value (e.g.
+// from an unchecked config/UI input) would drive targetGain to zero or
+// negative -- silently muting or phase-inverting audio for the rest of the
+// call with no error surfaced anywhere. NewAGC already guards this at
+// construction time; this mid-call setter bypassed that guard entirely.
+// Invalid values are ignored and the previous target is kept.
 func (p *Pipeline) SetAGCTarget(targetRMS float64) {
+	if targetRMS <= 0 {
+		return
+	}
 	if p.agc != nil {
 		p.agc.cfg.TargetRMS = targetRMS
 	}
@@ -708,7 +719,7 @@ func (p *Pipeline) Reconfigure(cfg PipelineConfig) {
 		p.tieredNR.SetThresholds(cfg.TieredNR.HighSNRThreshold, cfg.TieredNR.LowSNRThreshold)
 	}
 	if cfg.AGC != nil && p.agc != nil {
-		p.agc.cfg.TargetRMS = cfg.AGC.TargetRMS
+		p.SetAGCTarget(cfg.AGC.TargetRMS)
 	}
 }
 
