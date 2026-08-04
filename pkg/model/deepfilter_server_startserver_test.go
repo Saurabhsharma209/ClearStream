@@ -265,3 +265,52 @@ func TestStartServer_Timeout(t *testing.T) {
 		t.Error("startServer: expected s.cmd.ProcessState to be set after the timeout/kill path, indicating Wait() reaped the process (avoiding a zombie); got nil")
 	}
 }
+
+// makeFakePython3CrashImmediately creates a fake "python3" that exits
+// immediately with a non-zero status, simulating a startup crash (e.g. a
+// missing Python dependency or an uncaught exception during model load).
+func makeFakePython3CrashImmediately(t *testing.T) (dir string) {
+	t.Helper()
+	skipOnWindowsStartServer(t)
+	dir = t.TempDir()
+	script := "#!/bin/sh\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "python3"), []byte(script), 0755); err != nil {
+		t.Fatalf("makeFakePython3CrashImmediately: %v", err)
+	}
+	return dir
+}
+
+// TestStartServer_ProcessExitsEarly is a regression test for a startup
+// crash (missing dependency, uncaught exception, etc.) that used to be
+// invisible to startServer until the full startupTimeout elapsed: it kept
+// polling /health against an already-dead process instead of noticing the
+// exit immediately. startServer must now return promptly, well before the
+// (deliberately generous, relative to the crash) timeout.
+func TestStartServer_ProcessExitsEarly(t *testing.T) {
+	fakeDir := makeFakePython3CrashImmediately(t)
+	putFakePython3OnPath(t, fakeDir)
+
+	s := &deepFilterServerSuppressor{
+		serverURL: "http://127.0.0.1:" + strconv.Itoa(freeTCPPort(t)),
+		client:    &http.Client{Timeout: 100 * time.Millisecond},
+		logger:    makeTestLogger(),
+		// Deliberately much longer than the crash should take to surface, so
+		// a pass here proves fast failure rather than just being lucky with
+		// a short timeout racing a slow poll.
+		startupTimeout:      3 * time.Second,
+		startupPollInterval: 50 * time.Millisecond,
+	}
+	start := time.Now()
+	err := s.startServer(dummyScriptPath(t))
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("startServer: expected an error when the subprocess exits immediately, got nil")
+	}
+	if elapsed >= 3*time.Second {
+		t.Errorf("startServer: took %s, expected early-exit detection well under the 3s startupTimeout", elapsed)
+	}
+	if s.cmd.ProcessState == nil {
+		t.Error("startServer: expected s.cmd.ProcessState to be set once the crashed process is reaped, got nil")
+	}
+}

@@ -242,4 +242,3 @@ func runRTP(args []string) {
 	fmt.Printf("──────────────────────────────────────────────────────────────\n")
 	fmt.Printf("Reports written to: %s\n", *outputDir)
 }
-

@@ -40,6 +40,13 @@ type deepFilterServerSuppressor struct {
 	logger    *zap.Logger
 	cmd       *exec.Cmd // non-nil if we auto-started the server
 
+	// waitOnce/waitErr make cmd.Wait() safe to call from more than one place
+	// (the startServer early-exit watcher, the startServer timeout path, and
+	// Close()) without violating os/exec's "Wait must only be called once"
+	// rule. reap() is the only thing that should ever call cmd.Wait().
+	waitOnce sync.Once
+	waitErr  error
+
 	// startupTimeout and startupPollInterval control how long startServer waits
 	// for the auto-started subprocess to become ready, and how often it polls
 	// /health while waiting. Zero values (the default in production) mean
@@ -106,6 +113,17 @@ func (s *deepFilterServerSuppressor) startServer(scriptPath string) error {
 	}
 	s.cmd = cmd
 
+	// Watch for the subprocess exiting on its own (crash, missing dependency,
+	// import error during model load, etc.) so a dead process is not polled
+	// against for the entire startup timeout before we notice. reap() is
+	// idempotent (sync.Once-guarded), so it is safe to also call it again
+	// from the timeout path below or later from Close().
+	exited := make(chan struct{})
+	go func() {
+		s.reap()
+		close(exited)
+	}()
+
 	// Defaults preserve the documented production behavior (30s deadline,
 	// 500ms poll interval). Tests may set startupTimeout/startupPollInterval
 	// on the struct to shrink these for fast, deterministic exercising of the
@@ -122,7 +140,15 @@ func (s *deepFilterServerSuppressor) startServer(scriptPath string) error {
 	// Wait up to `timeout` for the server to become ready (model loading takes ~5s in prod).
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		time.Sleep(pollInterval)
+		select {
+		case <-exited:
+			// The subprocess exited before ever answering /health -- e.g. a
+			// missing Python dependency or an exception during model load.
+			// Fail fast instead of polling a dead process for the remainder
+			// of the startup timeout.
+			return fmt.Errorf("df_server subprocess exited before becoming ready: %w", s.waitErr)
+		case <-time.After(pollInterval):
+		}
 		if err := s.ping(); err == nil {
 			return nil
 		}
@@ -130,9 +156,22 @@ func (s *deepFilterServerSuppressor) startServer(scriptPath string) error {
 	_ = cmd.Process.Kill()
 	// Reap the killed process so a long-running caller (e.g. a server process
 	// that retries auto-start) does not leak a zombie process on every failed
-	// attempt; Close() already does the same Kill()+Wait() pairing below.
-	_ = cmd.Wait()
+	// attempt. Safe even if the exit-watcher goroutine above already reaped
+	// it first (reap() only ever calls cmd.Wait() once).
+	s.reap()
 	return fmt.Errorf("server did not become ready within %s", timeout)
+}
+
+// reap calls cmd.Wait() exactly once and caches the result, so it can safely
+// be called from multiple places (the startServer early-exit watcher, the
+// startServer timeout path, and Close()) that each need to know the
+// subprocess has been reaped without violating os/exec's rule that Wait must
+// only be called a single time per Cmd.
+func (s *deepFilterServerSuppressor) reap() error {
+	s.waitOnce.Do(func() {
+		s.waitErr = s.cmd.Wait()
+	})
+	return s.waitErr
 }
 
 func (s *deepFilterServerSuppressor) ping() error {
@@ -206,7 +245,7 @@ func (s *deepFilterServerSuppressor) Close() error {
 		_, _ = s.client.Post(s.serverURL+"/shutdown", "application/json", nil)
 		time.Sleep(200 * time.Millisecond)
 		_ = s.cmd.Process.Kill()
-		_ = s.cmd.Wait()
+		s.reap()
 		s.cmd = nil
 	}
 	return nil
