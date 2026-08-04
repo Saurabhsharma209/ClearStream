@@ -98,25 +98,23 @@ func (p *SuppressorPool) WarmPool(n int) error {
 	if n > p.size {
 		return fmt.Errorf("model: WarmPool(%d) exceeds pool capacity %d", n, p.size)
 	}
-	// If the pool already holds at least n items it's a no-op.
-	if len(p.pool) >= n {
+	// If the pool already holds at least n items it is a no-op. We only ever
+	// top up the shortfall below -- existing ready suppressors are left
+	// untouched instead of being drained and recreated from scratch, so a
+	// partial failure here can never leave the pool worse off than it was
+	// before the call. (The previous implementation closed every suppressor
+	// up front -- including ones it did not need to replace -- then returned
+	// an error mid-refill with the pool sitting at whatever partial count it
+	// had reached, discarding good suppressors for nothing.)
+	have := len(p.pool)
+	if have >= n {
 		return nil
 	}
-	// Drain whatever is currently in the pool, closing each suppressor.
-	draining := true
-	for draining {
-		select {
-		case s := <-p.pool:
-			_ = s.Close()
-		default:
-			draining = false
-		}
-	}
-	// Refill with n fresh suppressors.
-	for i := 0; i < n; i++ {
+	need := n - have
+	for i := 0; i < need; i++ {
 		s, err := NewSuppressor(p.cfg)
 		if err != nil {
-			return fmt.Errorf("model: WarmPool init [%d/%d]: %w", i+1, n, err)
+			return fmt.Errorf("model: WarmPool init [%d/%d]: %w", i+1, need, err)
 		}
 		p.pool <- s
 	}
