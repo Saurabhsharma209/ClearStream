@@ -133,8 +133,8 @@ func DefaultConfig() Config {
 // invalid value found. Call before New() to get clear error messages.
 //
 // Rules enforced:
-//   - Model must be one of "", "rnnoise", "deepfilter", "deepfilter-server", or "passthrough".
-//   - Model "deepfilter" requires a non-empty ModelPath.
+//   - Model must be one of "", "rnnoise", "rnnoise-onnx", "deepfilter", "deepfilter-server", or "passthrough".
+//   - Model "deepfilter" or "rnnoise-onnx" requires a non-empty ModelPath.
 //   - SampleRate, if non-zero, must be exactly 8000, 16000, 32000, or 48000 Hz.
 //   - Channels, if non-zero, must be 1 or 2.
 //   - MaxConcurrentSessions, if non-zero, is positive (caller controls the value; zero means "use default").
@@ -147,12 +147,15 @@ func (c *Config) Validate() error {
 	if c.Channels != 0 && (c.Channels < 1 || c.Channels > 2) {
 		return fmt.Errorf("clearstream: Channels %d out of range [1, 2]", c.Channels)
 	}
-	validModels := map[string]bool{"": true, "rnnoise": true, "deepfilter": true, "deepfilter-server": true, "passthrough": true}
+	validModels := map[string]bool{"": true, "rnnoise": true, "rnnoise-onnx": true, "deepfilter": true, "deepfilter-server": true, "passthrough": true}
 	if !validModels[c.Model] {
-		return fmt.Errorf("clearstream: unknown Model %q (valid: rnnoise, deepfilter, deepfilter-server, passthrough)", c.Model)
+		return fmt.Errorf("clearstream: unknown Model %q (valid: rnnoise, rnnoise-onnx, deepfilter, deepfilter-server, passthrough)", c.Model)
 	}
 	if c.Model == "deepfilter" && c.ModelPath == "" {
 		return fmt.Errorf("clearstream: Model \"deepfilter\" requires ModelPath")
+	}
+	if c.Model == "rnnoise-onnx" && c.ModelPath == "" {
+		return fmt.Errorf("clearstream: Model \"rnnoise-onnx\" requires ModelPath")
 	}
 	// Codec-rate mismatch checks.
 	// G.711 µ-law and A-law are fixed at 8 kHz per ITU-T G.711.

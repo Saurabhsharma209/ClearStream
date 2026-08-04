@@ -121,3 +121,14 @@ func TestValidateInvalidSampleRate44100(t *testing.T) {
 		t.Fatal("expected error for SampleRate=44100 (not in {8000,16000,32000,48000}), got nil")
 	}
 }
+
+func TestConfigValidateRNNoiseONNXRequiresModelPath(t *testing.T) {
+	cfg := clearstream.Config{Model: "rnnoise-onnx"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for rnnoise-onnx without ModelPath, got nil")
+	}
+	cfg.ModelPath = "/tmp/model.onnx"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("rnnoise-onnx with ModelPath should validate cleanly, got: %v", err)
+	}
+}
