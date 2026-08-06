@@ -699,15 +699,14 @@ func (p *Pipeline) SetVADThreshold(threshold float64) {
 // frame RMS to compute the desired gain, so a zero or negative value (e.g.
 // from an unchecked config/UI input) would drive targetGain to zero or
 // negative -- silently muting or phase-inverting audio for the rest of the
-// call with no error surfaced anywhere. NewAGC already guards this at
-// construction time; this mid-call setter bypassed that guard entirely.
-// Invalid values are ignored and the previous target is kept.
+// call with no error surfaced anywhere. Invalid values are ignored and the
+// previous target is kept -- enforced by AGC.SetTargetRMS, which also takes
+// AGC.mu so this mid-call write cannot race with Process reading cfg.TargetRMS
+// concurrently on the audio-processing goroutine (this setter used to write
+// p.agc.cfg.TargetRMS directly with no synchronization at all).
 func (p *Pipeline) SetAGCTarget(targetRMS float64) {
-	if targetRMS <= 0 {
-		return
-	}
 	if p.agc != nil {
-		p.agc.cfg.TargetRMS = targetRMS
+		p.agc.SetTargetRMS(targetRMS)
 	}
 }
 

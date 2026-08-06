@@ -1,6 +1,9 @@
 package audio
 
-import "math"
+import (
+	"math"
+	"sync"
+)
 
 // AGCConfig configures the Automatic Gain Control processor.
 // AGC runs as a post-suppression stage: after noise is removed it adaptively
@@ -87,10 +90,11 @@ func ASRConfig() AGCConfig {
 // compensate for network path loss on RTP streams.
 type AGC struct {
 	cfg         AGCConfig
-	currentGain float64 // current linear gain applied to output
-	targetGain  float64 // smoothed target (avoids step jumps between frames)
-	attackCoef  float64 // per-sample smoothing coefficient (gain rise)
-	releaseCoef float64 // per-sample smoothing coefficient (gain fall)
+	mu          sync.RWMutex // guards cfg fields SetTargetRMS can mutate mid-call while Process reads them concurrently
+	currentGain float64      // current linear gain applied to output
+	targetGain  float64      // smoothed target (avoids step jumps between frames)
+	attackCoef  float64      // per-sample smoothing coefficient (gain rise)
+	releaseCoef float64      // per-sample smoothing coefficient (gain fall)
 
 	// CS-013: clip tracking. ClipCount increments every time a sample would
 	// exceed ±32767 after gain — soft limiter catches these, but we count them
@@ -136,8 +140,7 @@ func NewAGC(cfg AGCConfig) *AGC {
 // softLimit applies tanh-based soft saturation above threshold.
 // Unlike hard clipping, tanh rounds the peaks smoothly — no harmonic distortion.
 // Below threshold the signal passes through unchanged (linear region).
-func (a *AGC) softLimit(val float64) float64 {
-	thr := a.cfg.SoftLimitThreshold
+func (a *AGC) softLimit(val, thr float64) float64 {
 	if thr <= 0 || math.Abs(val) <= thr {
 		return val
 	}
@@ -155,6 +158,28 @@ func (a *AGC) softLimit(val float64) float64 {
 	return sign * limited
 }
 
+// SetTargetRMS updates the AGC's desired output RMS level under lock.
+//
+// Process reads cfg.TargetRMS (along with MaxGain and SoftLimitThreshold) on
+// every frame. Before this method existed, Pipeline.SetAGCTarget wrote
+// a.cfg.TargetRMS directly with zero synchronization -- a genuine data race
+// whenever a mid-call config change (e.g. a control-plane handler reacting
+// to a live UI adjustment) overlapped an in-flight ProcessFrames/Process48k
+// call on the RTP media goroutine. go test -race catches this the moment a
+// test exercises both concurrently. SetTargetRMS and Process now share a's
+// mutex, closing that race.
+//
+// targetRMS must be positive; non-positive values are ignored (mirrors the
+// construction-time guard in NewAGC) and the previous target is kept.
+func (a *AGC) SetTargetRMS(targetRMS float64) {
+	if targetRMS <= 0 {
+		return
+	}
+	a.mu.Lock()
+	a.cfg.TargetRMS = targetRMS
+	a.mu.Unlock()
+}
+
 // Process applies adaptive gain to a frame of int16 PCM samples.
 // It measures the frame RMS, computes the desired gain to reach TargetRMS,
 // then smoothly interpolates currentGain per-sample using attack/release coefs.
@@ -164,6 +189,12 @@ func (a *AGC) Process(samples []int16) []int16 {
 	if len(samples) == 0 {
 		return samples
 	}
+
+	a.mu.RLock()
+	targetRMS := a.cfg.TargetRMS
+	maxGain := a.cfg.MaxGain
+	softLimitThr := a.cfg.SoftLimitThreshold
+	a.mu.RUnlock()
 
 	// Measure input RMS for this frame.
 	var sumSq float64
@@ -177,13 +208,13 @@ func (a *AGC) Process(samples []int16) []int16 {
 	// Near-silence guard: if RMS < 1 hold targetGain steady so we don't
 	// pump noise up between words.
 	if rms >= 1.0 {
-		desired := a.cfg.TargetRMS / rms
+		desired := targetRMS / rms
 		// CS-013: input-peak guard. When the input frame already peaks near
 		// full scale (peak > 0.9 × 32768 = 29491), cap MaxGain to 1.0 so we
 		// never boost a loud signal into clipping.  This covers the scenario
 		// where forward NC removed noise but left the speech RMS unchanged —
 		// the AGC would otherwise try to boost toward TargetRMS and clip.
-		effectiveMaxGain := a.cfg.MaxGain
+		effectiveMaxGain := maxGain
 		var peak float64
 		for _, s := range samples {
 			f := math.Abs(float64(s))
@@ -196,7 +227,7 @@ func (a *AGC) Process(samples []int16) []int16 {
 		} else if peak > 23197 { // 0.71 × 32768 ≈ -3 dBFS
 			// Linearly reduce MaxGain between -3 dBFS and -0.9 dBFS.
 			frac := (peak - 23197) / (29491 - 23197)
-			effectiveMaxGain = a.cfg.MaxGain*(1-frac) + 1.0*frac
+			effectiveMaxGain = maxGain*(1-frac) + 1.0*frac
 		}
 		if desired > effectiveMaxGain {
 			desired = effectiveMaxGain
@@ -216,7 +247,7 @@ func (a *AGC) Process(samples []int16) []int16 {
 		}
 
 		// Apply gain then soft-limit instead of hard-clipping.
-		val := a.softLimit(float64(s) * a.currentGain)
+		val := a.softLimit(float64(s)*a.currentGain, softLimitThr)
 
 		// Final int16 boundary guard (should rarely trigger after soft limit).
 		// CS-013: count boundary hits for QA gate (peak < 0.98 or clip_samples < threshold).
