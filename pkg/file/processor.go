@@ -464,25 +464,43 @@ func (p *Processor) decodeAndSuppress(ctx context.Context, src, pcmPath string, 
 		}
 	}()
 
-	// Reader goroutine: pull PCM from FFmpeg, suppress, write to file
+	// Reader goroutine: pull PCM from FFmpeg, suppress, write to file.
+	//
+	// If ProcessFrames (or the PCM write) fails partway through, this
+	// goroutine must keep draining pr rather than returning immediately: pr
+	// is the read end of an unbuffered io.Pipe whose write side is fed by an
+	// os/exec-internal copy goroutine relaying FFmpeg's real stdout (since
+	// decodeCmd.Stdout is set to pw, not an *os.File). Cmd.Wait() below
+	// blocks on that internal copy goroutine finishing, which in turn
+	// blocks on writes to pw being read. If this goroutine stopped reading
+	// as soon as it saw the first error, any FFmpeg output still queued
+	// beyond what had already been read would permanently block that copy
+	// goroutine's write -- hanging decodeCmd.Wait() (and this whole call,
+	// and the ffmpeg child process) forever whenever FFmpeg had more than a
+	// read-buffer's worth of output left to produce. Draining (and
+	// discarding) the rest of pr after the first error keeps FFmpeg able to
+	// finish (or be killed via ctx cancellation) and Wait() able to return.
 	errCh := make(chan error, 1)
 	go func() {
 		buf := make([]byte, audio.FrameSizeBytes*64) // 64 frames per read
+		var firstErr error
 		for {
 			n, rerr := pr.Read(buf)
-			if n > 0 {
+			if n > 0 && firstErr == nil {
 				if perr := pipe.ProcessFrames(buf[:n], pcmFile); perr != nil {
-					errCh <- perr
-					return
+					firstErr = perr
 				}
 			}
-			if rerr == io.EOF {
+			if rerr != nil {
+				if firstErr == nil && rerr != io.EOF {
+					firstErr = rerr
+				}
 				break
 			}
-			if rerr != nil {
-				errCh <- rerr
-				return
-			}
+		}
+		if firstErr != nil {
+			errCh <- firstErr
+			return
 		}
 		errCh <- pipe.Flush(pcmFile)
 	}()
