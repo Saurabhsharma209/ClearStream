@@ -692,9 +692,14 @@ func codecToExt(codec string) string {
 
 // extToMIME maps a file extension (including the leading dot) to its MIME
 // type for the Content-Type response header. Falls back to
-// "application/octet-stream" for unrecognised extensions.
+// "application/octet-stream" for unrecognised extensions. Matching is
+// case-insensitive (mirrors codecToExt above) since filepath.Ext preserves
+// whatever case the caller's uploaded filename used -- e.g. iOS/Windows
+// clients commonly upload ".M4A"/".WAV"/".MP3" in uppercase or mixed case,
+// and previously that fell through to the "application/octet-stream"
+// default here even though the file was enhanced and returned correctly.
 func extToMIME(ext string) string {
-	switch ext {
+	switch strings.ToLower(ext) {
 	case ".mp3":
 		return "audio/mpeg"
 	case ".wav":

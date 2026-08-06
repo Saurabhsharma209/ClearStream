@@ -62,6 +62,16 @@ func TestExtToMIMEAllBranches(t *testing.T) {
 		{".mkv", "video/x-matroska"},
 		{".xyz", "application/octet-stream"},
 		{"", "application/octet-stream"},
+		// Case-insensitive matching: filepath.Ext preserves whatever case
+		// the uploaded filename used, and uppercase/mixed-case extensions
+		// are common from iOS/Windows clients (e.g. "voicememo.M4A").
+		// Previously these fell through to the default branch instead of
+		// resolving to the correct MIME type.
+		{".MP3", "audio/mpeg"},
+		{".WAV", "audio/wav"},
+		{".M4A", "audio/aac"},
+		{".Mp4", "video/mp4"},
+		{".FLAC", "audio/flac"},
 	}
 	for _, tc := range cases {
 		got := extToMIME(tc.ext)
