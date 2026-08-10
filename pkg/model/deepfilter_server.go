@@ -40,6 +40,13 @@ type deepFilterServerSuppressor struct {
 	logger    *zap.Logger
 	cmd       *exec.Cmd // non-nil if we auto-started the server
 
+	// aggressiveness controls the wet/dry blend applied to the server's
+	// enhanced output (see aggressiveness.go). 0 (default) and 3 both mean
+	// "full model strength", matching every other backend's behavior; this
+	// mirrors the field already present on RNNoise and the ONNX DeepFilter
+	// backend.
+	aggressiveness int
+
 	// waitOnce/waitErr make cmd.Wait() safe to call from more than one place
 	// (the startServer early-exit watcher, the startServer timeout path, and
 	// Close()) without violating os/exec's "Wait must only be called once"
@@ -58,17 +65,22 @@ type deepFilterServerSuppressor struct {
 
 // newDeepFilterServerSuppressor creates a suppressor that calls the Python server.
 // If autoStartPath is set and the server isn't reachable, it auto-starts df_server.py.
-func newDeepFilterServerSuppressor(serverURL, autoStartPath string, logger *zap.Logger) (Suppressor, error) {
+func newDeepFilterServerSuppressor(serverURL, autoStartPath string, logger *zap.Logger, aggressiveness ...int) (Suppressor, error) {
 	if serverURL == "" {
 		serverURL = "http://127.0.0.1:7878"
 	}
 
+	level := 0
+	if len(aggressiveness) > 0 {
+		level = aggressiveness[0]
+	}
 	s := &deepFilterServerSuppressor{
 		serverURL: serverURL,
 		client: &http.Client{
 			Timeout: 5 * time.Second,
 		},
-		logger: logger,
+		logger:         logger,
+		aggressiveness: level,
 	}
 
 	// Check if server is already running
@@ -226,12 +238,22 @@ func (s *deepFilterServerSuppressor) Process(frame []int16) ([]int16, error) {
 	}
 
 	// Pad or trim to match input length (resampling can cause ±1 sample difference)
+	var enhanced []int16
 	if len(result) < len(frame) {
 		padded := make([]int16, len(frame))
 		copy(padded, result)
-		return padded, nil
+		enhanced = padded
+	} else {
+		enhanced = result[:len(frame)]
 	}
-	return result[:len(frame)], nil
+
+	// Apply Aggressiveness (blend toward the original signal for mild/medium
+	// levels; see aggressiveness.go). Levels 0 (default) and 3 (aggressive)
+	// return the model's full-strength output unchanged. Without this call,
+	// SuppressorConfig.Aggressiveness was silently ignored for the
+	// deepfilter-server backend even though every other backend (rnnoise,
+	// rnnoise-onnx, deepfilter) already applies it.
+	return blendAggressiveness(frame, enhanced, s.aggressiveness), nil
 }
 
 func (s *deepFilterServerSuppressor) Name() string { return "deepfilter-server" }

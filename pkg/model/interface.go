@@ -84,7 +84,7 @@ func NewSuppressor(cfg SuppressorConfig) (Suppressor, error) {
 		return newDeepFilterSuppressor(cfg.ModelPath, logger, cfg.Aggressiveness)
 	case "deepfilter-server":
 		logger, _ := zap.NewProduction()
-		return newDeepFilterServerSuppressor(cfg.ServerURL, cfg.AutoStartPath, logger)
+		return newDeepFilterServerSuppressor(cfg.ServerURL, cfg.AutoStartPath, logger, cfg.Aggressiveness)
 	case "passthrough":
 		return NewPassthrough(), nil
 	default:
