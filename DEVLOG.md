@@ -2426,3 +2426,25 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. RTP/SIP: last rotated 08-05, due for its next pass.
 2. AI Model / QA-Testing: both last rotated 08-04/08-05 respectively, QA-Testing due next in rotation order; AI Model due after.
 3. Decide what to do with feature/exotel-agentstream (merge or explicitly track) so it doesnt drift further from main.
+
+## 2026-08-10
+
+**Agents run:** AI Model (pkg/model deepfilter-server aggressiveness wiring), RTP/SIP (pkg/rtp jitter buffer stale-duplicate fix), QA/Testing (root package PoolSizeForPeakTracks coverage)
+**Build:** passing (go build ./... and CGO_ENABLED=0 go test ./... green on the dev Mac's go1.17 toolchain; no gap runs 08-07 through 08-09, rotation resumed today per the 08-06 "Tomorrow" list)
+
+### Changes
+- `pkg/model/deepfilter_server.go`, `pkg/model/interface.go`, `pkg/model/deepfilter_server_aggressiveness_test.go` (new): the `deepfilter-server` backend -- its own doc comment calls it "the primary integration path for DeepFilterNet" -- never accepted or applied `SuppressorConfig.Aggressiveness` at all, unlike `rnnoise.go`/`rnnoise_onnx.go`/`deepfilter.go` which all call `blendAggressiveness` on their output. Any caller setting `Aggressiveness: 1` or `2` on this backend silently got full-strength suppression. Added an `aggressiveness` field, wired `cfg.Aggressiveness` through `NewSuppressor`'s `"deepfilter-server"` case (variadic constructor arg, so existing call sites keep compiling), and `Process()` now blends the server's enhanced frame against the original before returning. New regression test confirmed failing pre-fix (wrong constructor arity) and passing post-fix. pkg/model coverage 95.1% -> 95.2%.
+- `pkg/rtp/jitter.go`, `pkg/rtp/jitter_seqdrift_test.go` (new): `JitterBuffer.Push()` handled large sequence-number discontinuities (resync via `maxSeqDrift`) but not the common case of a stale/duplicate packet arriving with `seq` already behind `nextSeq` -- such a packet was buffered like any other, and since `Pop()`'s gap path only ever inspects `buf[0]` and advances `nextSeq` without removing a stale head, one duplicate or late-arriving UDP datagram could wedge the buffer for ~65536 `Pop()` calls (until 16-bit sequence wraparound), reporting spurious loss/PLC and tail-dropping every legitimately-arrived packet queued behind it. Fixed by dropping backward-but-within-drift-window packets in `Push()` before insertion. Two new tests confirmed failing pre-fix (stale entry buffered; legitimate packet unreachable after 20 iterations) and passing post-fix. pkg/rtp coverage 96.2% -> 96.3%.
+- `clearstream_regress_test.go`: `PoolSizeForPeakTracks` (root package, documents a real production incident where a server was under-provisioned from a call-count/session-slot mismatch) was the only 0%-covered exported function left in the repo. Added a 12-case table-driven test plus two integration tests exercising the function's own documented `cfg.MaxConcurrentSessions = PoolSizeForPeakTracks(...)` recipe end-to-end through `New()`/`PoolSize()`, for both `forwardOnly` branches. Also re-verified (no bug found) that this function's doubling and `New()`'s internal suppressor-pool doubling serve different layers and don't double-count. Root package coverage 89.0% -> 91.7%.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue -- carried over again)
+- No runs 2026-08-07 through 2026-08-09 (gap in schedule).
+- `pkg/loadtest.Run(ctx, -1, n)` still panics on negative session count ("makechan: size out of range") -- known since 07-28, pinned by a test, not fixed (production-code change out of QA's file scope; needs the loadtest workstream owner or an explicit rotation slot).
+- `feature/exotel-agentstream` branch (flagged 08-05, 08-06) still unmerged/untracked outside the normal 6-workstream rotation -- untouched again today, still needs a human decision to merge or explicitly track.
+- staticcheck still can't run locally (min Go 1.19, this Mac has 1.17); CI's matrix unaffected.
+
+### Tomorrow
+1. Post-processing / Audio Pipeline / API Layer: all last rotated 08-06 -- due again in the normal rotation.
+2. Consider fixing `pkg/loadtest`'s negative-session panic (needs a workstream slot since it's production code, not test-only).
+3. Decide what to do with `feature/exotel-agentstream` so it doesn't drift further from main.
