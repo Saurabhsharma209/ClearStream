@@ -168,6 +168,28 @@ func (j *JitterBuffer) Push(seq uint16, ts uint32, payload []byte) bool {
 			}
 			j.buf = j.buf[:0]
 			j.primed = false
+		} else if bwdIsBackward {
+			// Stale packet: its sequence number is behind nextSeq, meaning
+			// it was already delivered (a duplicate/retransmission) or
+			// already counted as lost and skipped past. This is well within
+			// maxSeqDrift, so it is NOT a stream reset -- just an
+			// out-of-window straggler (common with duplicated UDP
+			// datagrams, an upstream NAT/SBC retransmit, or a packet that
+			// arrived so far behind its peers that Pop() already moved on).
+			//
+			// Inserting it into buf would be worse than dropping it: Pop()
+			// (below) only ever inspects buf[0], and on a seq mismatch it
+			// advances nextSeq WITHOUT removing the offending head entry --
+			// that's what lets a legitimate future packet "catch up" to
+			// nextSeq after real loss. But a stale entry with seq < nextSeq
+			// can never equal nextSeq again until the 16-bit sequence space
+			// wraps all the way around (~65536 Pop calls later), so it
+			// would permanently wedge the head of the buffer: every Pop()
+			// call reports spurious loss/PLC forever, while every
+			// legitimately-arrived packet queued behind it gets evicted by
+			// the maxDepth tail-drop instead of ever being played out.
+			// Dropping the stale packet here avoids that wedge entirely.
+			return j.primed
 		}
 	}
 

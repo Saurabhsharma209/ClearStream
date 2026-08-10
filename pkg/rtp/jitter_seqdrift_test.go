@@ -160,3 +160,85 @@ func TestJitterBufferWraparoundSmallGapNoFalseDrift(t *testing.T) {
 		t.Errorf("expected to reach seq 50's payload via normal loss catch-up, not a drift resync")
 	}
 }
+
+// TestJitterBufferStaleDuplicateIsDropped verifies that a packet whose
+// sequence number is behind nextSeq (i.e. already delivered, or already
+// skipped past as lost) is rejected by Push() rather than being inserted
+// into the buffer. This is a small backward gap -- well under maxSeqDrift --
+// so it must NOT be treated as a stream reset either; it is simply a stale
+// straggler (duplicate UDP datagram, upstream retransmit, or a packet
+// reordered so far behind its peers that Pop() already moved past it) and
+// should be silently discarded.
+func TestJitterBufferStaleDuplicateIsDropped(t *testing.T) {
+	jb := NewJitterBuffer(2)
+	push(jb, 10, []byte{10})
+	push(jb, 11, []byte{11})
+	if p, ok := jb.Pop(); !ok || p == nil || p[0] != 10 {
+		t.Fatalf("setup: expected seq 10 first, got ok=%v payload=%v", ok, p)
+	}
+	if p, ok := jb.Pop(); !ok || p == nil || p[0] != 11 {
+		t.Fatalf("setup: expected seq 11 second, got ok=%v payload=%v", ok, p)
+	}
+	// nextSeq is now 12, buffer is empty.
+
+	// A duplicate/retransmitted copy of the already-delivered seq-10 packet
+	// arrives late.
+	push(jb, 10, []byte{99})
+	if len(jb.buf) != 0 {
+		t.Fatalf("expected stale duplicate seq 10 to be dropped without buffering, got buf=%v", jb.buf)
+	}
+}
+
+// TestJitterBufferStaleDuplicateDoesNotWedgeBuffer is a regression test for a
+// real production bug: Pop()'s gap-handling path only ever inspects buf[0]
+// and, on a sequence mismatch, advances nextSeq WITHOUT removing the
+// offending head entry (that's what lets a legitimately late packet "catch
+// up" to nextSeq after ordinary loss). Before the fix in Push(), a stale
+// packet with seq behind nextSeq (a duplicate/retransmission, or a very late
+// arrival for a sequence number already counted as lost) was inserted into
+// the buffer like any other packet. Because its seq could never again equal
+// nextSeq until the entire 16-bit sequence space wrapped around
+// (~65536 Pop() calls later), it would permanently wedge the head of the
+// buffer: every subsequent Pop() reports spurious loss/PLC, and every
+// legitimately-arrived packet queued behind it gets evicted by the
+// maxDepth tail-drop instead of ever being played out.
+func TestJitterBufferStaleDuplicateDoesNotWedgeBuffer(t *testing.T) {
+	jb := NewJitterBuffer(2)
+	push(jb, 10, []byte{10})
+	push(jb, 11, []byte{11})
+	jb.Pop() // consumes seq 10
+	jb.Pop() // consumes seq 11; nextSeq is now 12, buffer empty
+
+	// Stale duplicate of an already-delivered packet arrives late.
+	push(jb, 10, []byte{99})
+
+	// A legitimate new packet arrives right after.
+	const wantSeq = 15
+	push(jb, wantSeq, []byte{byte(wantSeq)})
+
+	// Confirm we reach the real seq-15 payload within a handful of ordinary
+	// loss frames (seq 12, 13, 14) instead of the buffer being wedged
+	// indefinitely by the stale seq-10 entry.
+	const maxIterations = 20
+	lossCount := 0
+	var got []byte
+	for i := 0; i < maxIterations; i++ {
+		p, ok := jb.Pop()
+		if !ok {
+			break
+		}
+		if p == nil {
+			lossCount++
+			continue
+		}
+		got = p
+		break
+	}
+
+	if got == nil || got[0] != byte(wantSeq) {
+		t.Fatalf("expected to reach seq %d's payload within %d Pop() calls (a stale duplicate must not wedge the buffer), got payload=%v after %d loss frames", wantSeq, maxIterations, got, lossCount)
+	}
+	if lossCount != 3 {
+		t.Errorf("expected exactly 3 ordinary loss frames (seq 12,13,14) before reaching seq %d, got %d", wantSeq, lossCount)
+	}
+}
