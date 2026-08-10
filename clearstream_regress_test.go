@@ -276,3 +276,106 @@ func TestGlobalAGC_CustomAGCConfig(t *testing.T) {
 	defer cs.Close()
 	_ = cs.Pipeline()
 }
+
+// TestPoolSizeForPeakTracks_AllBranches covers the peakCalls/forwardOnly
+// formula in PoolSizeForPeakTracks (0% covered prior to this test). The
+// function exists specifically to prevent the "server-164" misconfiguration
+// described in its doc comment: an operator set MaxConcurrentSessions to a
+// desired call count (4) on a bidirectional deployment and got half the
+// intended call capacity, because each bidirectional call consumes 2
+// session slots, not 1. This test pins the exact formula (peakCalls*2 for
+// bidirectional, peakCalls unchanged for forward-only) across boundary
+// values a capacity-planning caller might realistically pass in: zero,
+// one, the documented regression scenario, larger fleet sizes, and
+// negative input (documenting that the function does not itself validate
+// peakCalls -- it is a pure arithmetic helper and passes negative input
+// straight through the same formula).
+func TestPoolSizeForPeakTracks_AllBranches(t *testing.T) {
+	cases := []struct {
+		name        string
+		peakCalls   int
+		forwardOnly bool
+		want        int
+	}{
+		{"bidirectional zero calls needs zero slots", 0, false, 0},
+		{"forwardOnly zero calls needs zero slots", 0, true, 0},
+		{"bidirectional single call needs 2 slots", 1, false, 2},
+		{"forwardOnly single call needs 1 slot", 1, true, 1},
+		{"server-164 regression scenario: 4 bidirectional calls need 8 slots, not 4", 4, false, 8},
+		{"forwardOnly 4 calls need exactly 4 slots", 4, true, 4},
+		{"bidirectional 32-call fleet needs 64 slots", 32, false, 64},
+		{"forwardOnly 32-call fleet needs 32 slots", 32, true, 32},
+		{"bidirectional large call volume", 1000, false, 2000},
+		{"forwardOnly large call volume", 1000, true, 1000},
+		{"negative peakCalls bidirectional passes through the formula unvalidated", -1, false, -2},
+		{"negative peakCalls forwardOnly passes through the formula unvalidated", -1, true, -1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := clearstream.PoolSizeForPeakTracks(tc.peakCalls, tc.forwardOnly)
+			if got != tc.want {
+				t.Errorf("PoolSizeForPeakTracks(%d, %v) = %d, want %d", tc.peakCalls, tc.forwardOnly, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPoolSizeForPeakTracks_IntegratesWithNew exercises the exact recipe
+// documented on PoolSizeForPeakTracks itself:
+//
+//	cfg.MaxConcurrentSessions = PoolSizeForPeakTracks(wantedCalls, cfg.ForwardOnly)
+//
+// and confirms that the resulting ClearStream instance reports the computed
+// session-slot count via PoolSize(), not the raw call count. This is the
+// regression the helper exists to prevent: PoolSize() must reflect
+// cfg.MaxConcurrentSessions as configured (New() captures it before
+// applying its own internal suppressor-pool doubling for the model pool),
+// so a caller following the documented recipe gets the capacity they
+// actually asked for.
+func TestPoolSizeForPeakTracks_IntegratesWithNew(t *testing.T) {
+	const wantedCalls = 4
+
+	cfg := clearstream.DefaultConfig()
+	cfg.ForwardOnly = false
+	cfg.MaxConcurrentSessions = clearstream.PoolSizeForPeakTracks(wantedCalls, cfg.ForwardOnly)
+
+	if cfg.MaxConcurrentSessions != 8 {
+		t.Fatalf("PoolSizeForPeakTracks(%d, false) = %d, want 8", wantedCalls, cfg.MaxConcurrentSessions)
+	}
+
+	cs, err := clearstream.New(cfg)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	defer cs.Close()
+
+	if got := cs.PoolSize(); got != 8 {
+		t.Errorf("PoolSize() = %d, want 8 (session slots for %d bidirectional calls)", got, wantedCalls)
+	}
+}
+
+// TestPoolSizeForPeakTracks_ForwardOnlyIntegratesWithNew mirrors the above
+// for a forward-only deployment, where PoolSizeForPeakTracks should be a
+// no-op passthrough and PoolSize() should equal the raw call count.
+func TestPoolSizeForPeakTracks_ForwardOnlyIntegratesWithNew(t *testing.T) {
+	const wantedCalls = 10
+
+	cfg := clearstream.DefaultConfig()
+	cfg.ForwardOnly = true
+	cfg.MaxConcurrentSessions = clearstream.PoolSizeForPeakTracks(wantedCalls, cfg.ForwardOnly)
+
+	if cfg.MaxConcurrentSessions != wantedCalls {
+		t.Fatalf("PoolSizeForPeakTracks(%d, true) = %d, want %d", wantedCalls, cfg.MaxConcurrentSessions, wantedCalls)
+	}
+
+	cs, err := clearstream.New(cfg)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	defer cs.Close()
+
+	if got := cs.PoolSize(); got != wantedCalls {
+		t.Errorf("PoolSize() = %d, want %d (1:1 session slots for forward-only calls)", got, wantedCalls)
+	}
+}
