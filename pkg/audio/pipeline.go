@@ -685,10 +685,10 @@ func (p *Pipeline) SetAggressiveness(n int) {
 // stale threshold captured at construction for the rest of the call.
 func (p *Pipeline) SetVADThreshold(threshold float64) {
 	if vad, ok := p.vad.(*VAD); ok {
-		vad.ThresholdRMS = threshold
+		vad.SetThresholdRMS(threshold)
 	}
 	if avad, ok := p.vad.(*AdaptiveVAD); ok {
-		avad.VAD.ThresholdRMS = threshold
+		avad.VAD.SetThresholdRMS(threshold)
 	}
 	p.turnEnd.setThreshold(threshold)
 }

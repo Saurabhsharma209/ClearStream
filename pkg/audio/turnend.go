@@ -164,10 +164,10 @@ func (t *turnEndTracker) setThreshold(threshold float64) {
 		return
 	}
 	if vad, ok := t.vad.(*VAD); ok {
-		vad.ThresholdRMS = threshold
+		vad.SetThresholdRMS(threshold)
 	}
 	if avad, ok := t.vad.(*AdaptiveVAD); ok {
-		avad.VAD.ThresholdRMS = threshold
+		avad.VAD.SetThresholdRMS(threshold)
 	}
 }
 

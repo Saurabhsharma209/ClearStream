@@ -3,6 +3,7 @@ package audio
 import (
 	"math"
 	"sort"
+	"sync/atomic"
 )
 
 // VAD performs energy-based voice activity detection.
@@ -12,6 +13,11 @@ import (
 type VAD struct {
 	// ThresholdRMS is the RMS energy level below which a frame is silence.
 	// Typical values: 200-500 for 16-bit PCM. Default: 300.
+	//
+	// Read directly at construction time (e.g. DefaultVAD, VADConfig-based
+	// literals). Do NOT write this field directly once IsSpeech may be
+	// running concurrently on another goroutine (e.g. the RTP media loop) --
+	// use SetThresholdRMS instead. See thresholdOverrideBits below.
 	ThresholdRMS float64
 
 	// HangoverFrames is how many silent frames to keep treating as speech
@@ -20,6 +26,63 @@ type VAD struct {
 	HangoverFrames int
 
 	hangover int // current hangover counter
+
+	// thresholdOverrideBits is an atomically-updated mirror of ThresholdRMS,
+	// written by SetThresholdRMS and consulted by IsSpeech via threshold().
+	//
+	// Before this existed, Pipeline.SetVADThreshold and
+	// turnEndTracker.setThreshold wrote v.ThresholdRMS directly with zero
+	// synchronization -- a genuine data race whenever a mid-call
+	// sensitivity change (e.g. a control-plane handler reacting to a live
+	// UI adjustment) overlapped an in-flight ProcessFrames/Process48k call
+	// on the RTP media goroutine, exactly the same bug class SetTargetRMS
+	// fixes for AGC in agc.go. go test -race catches it the moment a test
+	// exercises both concurrently.
+	//
+	// Stored as float64 bits via math.Float64bits/Float64frombits so it can
+	// be read/written with the lock-free sync/atomic package (a plain
+	// sync.Mutex field would be copied by value in cloneVADForTurnEnd's
+	// `cp := *v`, which go vet's copylocks check flags).
+	//
+	// 0 means "no override yet" -- threshold() falls back to the
+	// ThresholdRMS field as constructed. SetThresholdRMS rejects
+	// non-positive values, so a real override is never stored as 0.
+	thresholdOverrideBits uint64
+}
+
+// SetThresholdRMS updates the VAD's energy threshold under atomic guard.
+//
+// IsSpeech reads the threshold via threshold() on every frame; before this
+// method existed, callers (Pipeline.SetVADThreshold, turnEndTracker.setThreshold)
+// wrote v.ThresholdRMS directly with no synchronization at all, racing with
+// IsSpeech on the audio-processing goroutine. See thresholdOverrideBits.
+//
+// threshold must be positive; non-positive values are ignored (mirrors the
+// analogous guard in AGC.SetTargetRMS) and the previous threshold is kept.
+func (v *VAD) SetThresholdRMS(threshold float64) {
+	if threshold <= 0 {
+		return
+	}
+	// Keep the exported ThresholdRMS field in sync for callers that read it
+	// directly (e.g. via a *VAD reference held alongside the Pipeline) --
+	// this write is sequenced-before any later direct read by the same
+	// external caller, same as any other exported-field mutator. The
+	// hot-path IsSpeech/threshold() never reads this field once an override
+	// has been stored; it consults thresholdOverrideBits atomically instead,
+	// so this line does not reintroduce the race being fixed here.
+	v.ThresholdRMS = threshold
+	atomic.StoreUint64(&v.thresholdOverrideBits, math.Float64bits(threshold))
+}
+
+// threshold returns the effective ThresholdRMS: the atomically-stored
+// override from SetThresholdRMS if one has been set, otherwise the
+// ThresholdRMS field as constructed.
+func (v *VAD) threshold() float64 {
+	bits := atomic.LoadUint64(&v.thresholdOverrideBits)
+	if bits == 0 {
+		return v.ThresholdRMS
+	}
+	return math.Float64frombits(bits)
 }
 
 // DefaultVAD returns a VAD with sensible defaults for telephony.
@@ -35,7 +98,7 @@ func DefaultVAD() *VAD {
 // treated as speech (prevents word-end clipping).
 func (v *VAD) IsSpeech(frame []int16) bool {
 	rms := rmsEnergy(frame)
-	if rms >= v.ThresholdRMS {
+	if rms >= v.threshold() {
 		v.hangover = v.HangoverFrames
 		return true
 	}
