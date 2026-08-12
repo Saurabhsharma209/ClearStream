@@ -258,6 +258,34 @@ func (p *Processor) ProcessWithOptions(src, dst string, opts Options) error {
 	return nil
 }
 
+// synchronizedProgress wraps fn so it can be safely invoked from multiple
+// goroutines concurrently. Options.OnProgress is documented as being called
+// 'from the processing goroutine' (singular) with instructions to keep it
+// non-blocking, but ProcessDir/ProcessDirFull share a single Options value
+// -- and therefore the same OnProgress closure -- across every worker
+// goroutine in the batch (one per concurrently-processed file). A caller
+// whose OnProgress mutates its own state (e.g. appending observed values to
+// a slice, exactly as this package doc/tests do for the single-file case)
+// hits an unsynchronized concurrent read-modify-write once that same
+// closure is invoked from multiple files at once, a genuine data race under
+// the Go memory model, not merely interleaved output. Serializing calls
+// here is a cheap, backward-compatible fix: OnProgress already documents
+// that implementations must be non-blocking, so briefly holding a mutex
+// around one invocation stays within that contract. Only ProcessDir and
+// ProcessDirFull install this wrapper; direct ProcessWithOptions callers
+// (single file, single goroutine) are unaffected.
+func synchronizedProgress(fn func(float64)) func(float64) {
+	if fn == nil {
+		return nil
+	}
+	var mu sync.Mutex
+	return func(pct float64) {
+		mu.Lock()
+		defer mu.Unlock()
+		fn(pct)
+	}
+}
+
 // concurrencyLimit returns the number of worker goroutines ProcessDir and
 // ProcessDirFull should use, honouring opts.MaxConcurrency when set to a
 // positive value and falling back to runtime.NumCPU() otherwise.
@@ -332,6 +360,10 @@ func (p *Processor) ProcessDir(srcDir, dstDir string, opts Options) []error {
 
 	if len(jobs) == 0 {
 		return nil
+	}
+
+	if opts.OnProgress != nil {
+		opts.OnProgress = synchronizedProgress(opts.OnProgress)
 	}
 
 	errs := make([]error, len(jobs))
@@ -870,6 +902,10 @@ func (p *Processor) ProcessDirFull(srcDir, dstDir string, opts Options) []DirRes
 			continue
 		}
 		results = append(results, DirResult{Src: src, Dst: dst, Skipped: false})
+	}
+
+	if opts.OnProgress != nil {
+		opts.OnProgress = synchronizedProgress(opts.OnProgress)
 	}
 
 	// Process non-skipped files concurrently.
