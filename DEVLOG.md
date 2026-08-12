@@ -2448,3 +2448,26 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. Post-processing / Audio Pipeline / API Layer: all last rotated 08-06 -- due again in the normal rotation.
 2. Consider fixing `pkg/loadtest`'s negative-session panic (needs a workstream slot since it's production code, not test-only).
 3. Decide what to do with `feature/exotel-agentstream` so it doesn't drift further from main.
+
+
+## 2026-08-12
+
+**Agents run:** Audio Pipeline (pkg/audio VAD threshold race), Post-processing (pkg/file OnProgress race), API Layer (clearstream.go Validate() gap)
+**Build:** passing (go build ./... and CGO_ENABLED=0 go test ./... green on the dev Mac go1.17 toolchain)
+
+### Changes
+- pkg/audio/vad.go, pipeline.go, turnend.go, vad_race_test.go (new): VAD.ThresholdRMS was written directly by SetVADThreshold/turnEndTracker.setThreshold from a control-plane call while IsSpeech read it every 10ms frame on the media goroutine with no synchronization -- the same race class already fixed for AGC.TargetRMS but never applied to VAD. Added SetThresholdRMS() (atomic float64-bits store/load, avoids a mutex to keep cloneVADForTurnEnd's struct copy copylocks-clean) and routed both setters through it.
+- pkg/file/processor.go, processor_onprogress_race_test.go (new): ProcessDir/ProcessDirFull share one Options value (and its OnProgress closure) across every concurrent per-file worker goroutine with no synchronization -- a caller mutating its own state in OnProgress (as the package's own doc examples do) hit a real concurrent read-modify-write once 2+ files were in flight. Added synchronizedProgress() mutex wrapper, applied only at the two batch entry points.
+- clearstream.go, clearstream_validate_test.go: Config.Validate() documented that a non-zero MaxConcurrentSessions must be positive but never enforced it -- a negative value passed validation, then New()'s <=0 guard silently masked it by falling back to the default pool size of 32, hiding a real misconfiguration. Added an explicit negative check.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution under go test -race; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue -- carried over)
+- pkg/loadtest.Run(ctx, -1, n) still panics on negative session count (known since 07-28, out of QA scope, needs a workstream slot) -- untouched again today.
+- feature/exotel-agentstream branch (flagged repeatedly since 08-05) still unmerged/untracked outside the normal rotation -- untouched again today, still needs a human decision.
+- Todays default Linux sandbox (mcp__workspace__bash) had /sessions at 100% disk and /tmp polluted with another sessions unremovable files -- pivoted immediately to the dev Mac via mcp__Control_your_Mac__osascript, consistent with every prior entry recommending this.
+- staticcheck still cant run locally (min Go 1.19, this Mac has 1.17); CIs matrix unaffected.
+
+### Tomorrow
+1. RTP/SIP / QA-Testing: both last rotated 08-10, AI Model also 08-10 -- all due again in normal rotation; RTP/SIP and QA-Testing slightly more overdue.
+2. Consider giving pkg/loadtests negative-session panic an explicit workstream slot (production-code fix, not test-only).
+3. Decide what to do with feature/exotel-agentstream so it doesnt drift further from main.
