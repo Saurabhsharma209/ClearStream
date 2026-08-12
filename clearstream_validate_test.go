@@ -122,6 +122,14 @@ func TestValidateInvalidSampleRate44100(t *testing.T) {
 	}
 }
 
+func TestValidateNegativeMaxConcurrentSessions(t *testing.T) {
+	cfg := clearstream.DefaultConfig()
+	cfg.MaxConcurrentSessions = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for MaxConcurrentSessions=-1, got nil")
+	}
+}
+
 func TestConfigValidateRNNoiseONNXRequiresModelPath(t *testing.T) {
 	cfg := clearstream.Config{Model: "rnnoise-onnx"}
 	if err := cfg.Validate(); err == nil {

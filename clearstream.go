@@ -147,6 +147,9 @@ func (c *Config) Validate() error {
 	if c.Channels != 0 && (c.Channels < 1 || c.Channels > 2) {
 		return fmt.Errorf("clearstream: Channels %d out of range [1, 2]", c.Channels)
 	}
+	if c.MaxConcurrentSessions < 0 {
+		return fmt.Errorf("clearstream: MaxConcurrentSessions %d must not be negative", c.MaxConcurrentSessions)
+	}
 	validModels := map[string]bool{"": true, "rnnoise": true, "rnnoise-onnx": true, "deepfilter": true, "deepfilter-server": true, "passthrough": true}
 	if !validModels[c.Model] {
 		return fmt.Errorf("clearstream: unknown Model %q (valid: rnnoise, rnnoise-onnx, deepfilter, deepfilter-server, passthrough)", c.Model)
