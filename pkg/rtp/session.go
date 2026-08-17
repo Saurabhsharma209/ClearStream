@@ -176,6 +176,20 @@ type Config struct {
 	// loss, PLC, SSRC changes, decode errors, per-packet latency). Optional
 	// -- defaults to telemetry.NoopSink{} (zero-cost) when nil.
 	Telemetry telemetry.Sink
+
+	// Diarizer is an optional speaker diarization engine (see
+	// audio.EnergyDiarizer). When set, every clean PCM frame this session
+	// forwards is also fed to the diarizer, and the session tracks who is
+	// currently speaking (see Session.CurrentSpeaker and
+	// Session.DiarizationSegments). Roadmap Phase 2 ("Multi-speaker
+	// awareness"): previously EnergyDiarizer existed in pkg/audio and was
+	// wired into audio.Pipeline directly, but pkg/rtp.Session -- the only
+	// caller that actually terminates live telephony calls -- never passed
+	// a Diarizer through, so no RTP session could ever surface a speaker
+	// label no matter how it was configured. nil (default) disables
+	// diarization entirely at zero cost, matching every other opt-in
+	// Pipeline stage in this Config.
+	Diarizer audio.Diarizer
 }
 
 // Stats holds per-second session statistics.
@@ -283,6 +297,7 @@ func NewSession(cfg Config) (*Session, error) {
 		Suppressor:      cfg.Suppressor,
 		Logger:          cfg.Logger,
 		AGC:             cfg.AGC,
+		Diarizer:        cfg.Diarizer,
 	})
 
 	// Opt-in clean-audio feed -- nil (disabled) unless explicitly sized.
@@ -849,12 +864,35 @@ func (s *Session) QualityReport() string {
 		band = "fullband(48kHz)"
 	}
 	rttMs := s.RTTMs()
-	return fmt.Sprintf(
+	report := fmt.Sprintf(
 		"RTP: rx=%d tx=%d lost=%d(%.1f%%) latency=%.1fms | Jitter: %.1fms (depth=%d frames) | Band: %s [PT=%d %s] | RTT: %.1fms | Pipeline: %s",
 		rtp.PacketsReceived, rtp.PacketsSent, rtp.PacketsLost, lossRate,
 		rtp.LatencyAvgMs, s.jitter.JitterMs(), s.jitter.Depth(),
 		band, s.cfg.PayloadType, s.cfg.Codec, rttMs, pipe.String(),
 	)
+	// Only append a Speaker field when a Diarizer is actually configured, so
+	// this report's format (and anyone parsing it) is unaffected for the
+	// large majority of sessions that do not use diarization.
+	if s.cfg.Diarizer != nil {
+		report += fmt.Sprintf(" | Speaker: %s", s.CurrentSpeaker())
+	}
+	return report
+}
+
+// CurrentSpeaker returns the live speaker label from this session's
+// configured Diarizer (see Config.Diarizer), or audio.SpeakerUnknown if no
+// Diarizer is configured. Safe to call at any time, including before the
+// session has processed its first packet.
+func (s *Session) CurrentSpeaker() audio.SpeakerLabel {
+	return s.pipeline.CurrentSpeaker()
+}
+
+// DiarizationSegments returns all completed speaker segments recorded so far
+// by this session's configured Diarizer (see Config.Diarizer), or nil if no
+// Diarizer is configured. The in-progress (ongoing) segment is not included
+// here -- use CurrentSpeaker for that.
+func (s *Session) DiarizationSegments() []audio.DiarizedSegment {
+	return s.pipeline.DiarizationSegments()
 }
 
 // isBypassMode returns true when the pipeline is pure passthrough with no extra

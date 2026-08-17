@@ -661,6 +661,24 @@ func (p *Pipeline) DiarizationSegments() []DiarizedSegment {
 	return p.diarizer.Segments()
 }
 
+// CurrentSpeaker returns the speaker label of the diarizer's active (ongoing)
+// segment, or SpeakerUnknown if no Diarizer is configured. This is the
+// live, per-frame counterpart to DiarizationSegments (which only reports
+// completed segments) -- callers that want to surface "who is talking right
+// now" (e.g. pkg/rtp.Session.QualityReport, a live UI indicator) should use
+// this instead of inspecting the tail of DiarizationSegments, since the
+// current segment's EndMs is always -1 and is never included there.
+func (p *Pipeline) CurrentSpeaker() SpeakerLabel {
+	if p.diarizer == nil {
+		return SpeakerUnknown
+	}
+	seg := p.diarizer.CurrentSegment()
+	if seg == nil {
+		return SpeakerUnknown
+	}
+	return seg.Speaker
+}
+
 // SetAggressiveness changes the NR suppression strength mid-call without restart.
 // Propagates to AdaptiveNoiseReducer and TieredNR gate if configured.
 // n: 0-1=mild, 2=medium (default), 3=aggressive.
