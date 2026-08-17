@@ -2471,3 +2471,24 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. RTP/SIP / QA-Testing: both last rotated 08-10, AI Model also 08-10 -- all due again in normal rotation; RTP/SIP and QA-Testing slightly more overdue.
 2. Consider giving pkg/loadtests negative-session panic an explicit workstream slot (production-code fix, not test-only).
 3. Decide what to do with feature/exotel-agentstream so it doesnt drift further from main.
+
+## 2026-08-17
+
+**Agents run:** QA/Testing (pkg/loadtest negative-session panic), RTP/SIP (pkg/rtp G.711 mu-law/A-law MinInt16 overflow), AI Model (pkg/model SuppressorPool.Release(nil) capacity leak)
+**Build:** passing (go build ./... and CGO_ENABLED=0 go test ./... green on the dev Mac's go1.17 toolchain; no runs 2026-08-13 through 2026-08-16, rotation resumed today per the 08-12 "Tomorrow" list plus the long-standing loadtest item)
+
+### Changes
+- pkg/loadtest/loadtest.go, pkg/loadtest/loadtest_edgecases_test.go: closed a known gap flagged since 07-28 and carried in every DEVLOG entry since (08-04, 08-05, 08-06, 08-10) as "out of QA's file scope, needs a workstream slot" -- Run(ctx, sessions, frames) passed an unvalidated sessions count straight into make(chan struct{}, sessions), so Run(ctx, -1, n) panicked with makechan: size out of range. Run now clamps negative sessions to 0 (identical to the existing sessions=0 behavior: clean zero Result, no panic). Updated the previously-pinned TestLoadTestNegativeSessionsPanics to TestLoadTestNegativeSessionsClamped, asserting the new graceful behavior.
+- pkg/rtp/session.go, pkg/rtp/session_regress_test.go: linearToUlaw and linearToAlaw both negated the input sample while still typed int16 (sample = -sample). For sample == math.MinInt16 (-32768) this negation overflows in two's-complement int16 arithmetic and silently stays -32768 instead of becoming +32768, so the most negative possible PCM sample fed an un-clipped negative magnitude into the exponent/mantissa logic instead of saturating like every other large sample. A prior regression test had already found and commented on this exact overflow but only asserted "must not panic," not correctness. Fixed by widening to int (mag := int(sample)) before negating in both encoders; -32768 now encodes identically to -32767 in both u-law and A-law, with the sign bit set.
+- pkg/model/pool.go, pkg/model/pool_release_nil_test.go (new): SuppressorPool.Release only guarded against a nil Suppressor on the already-closed-pool path. On a still-open pool, Release(nil) fell through to p.pool <- s, enqueueing a nil Suppressor into the channel -- Acquire's existing nil-safety check meant this never panicked, but the slot was never replaced by anything, so one stray Release(nil) permanently shrank the pool's effective capacity by one for the rest of its lifetime with no error or log anywhere. Added an unconditional nil check at the top of Release so nil is always a true no-op, plus a test proving full original capacity survives a stray Release(nil).
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution under go test -race; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue -- carried over again)
+- Today's default Linux sandbox (mcp__workspace__bash) hit "No space left on device" on the very first git clone (root disk /sessions permanently ~100% full) and has no Go toolchain installed either -- pivoted immediately to the dev Mac via mcp__Control_your_Mac__osascript, consistent with every prior entry recommending this since 07-30.
+- feature/exotel-agentstream branch (flagged repeatedly since 08-05) still unmerged/untracked outside the normal rotation -- untouched again today, still needs a human decision to merge or explicitly track.
+- staticcheck still can't run locally (min Go 1.19, this Mac has 1.17); CI's matrix unaffected.
+
+### Tomorrow
+1. Audio Pipeline / Post-processing / API Layer: all last rotated 08-12 -- due again in the normal rotation.
+2. Decide what to do with feature/exotel-agentstream so it doesn't drift further from main.
+3. AI Model: pkg/model/deepfilter_server.go's Reset() and passthrough.go's Reset() are the only remaining 0%-coverage lines in the package, but both are genuine no-ops (stateless/no resources) -- worth a quick trivial-coverage test pass rather than a functional fix, low priority.
