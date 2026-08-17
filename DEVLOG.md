@@ -2492,3 +2492,23 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. Audio Pipeline / Post-processing / API Layer: all last rotated 08-12 -- due again in the normal rotation.
 2. Decide what to do with feature/exotel-agentstream so it doesn't drift further from main.
 3. AI Model: pkg/model/deepfilter_server.go's Reset() and passthrough.go's Reset() are the only remaining 0%-coverage lines in the package, but both are genuine no-ops (stateless/no resources) -- worth a quick trivial-coverage test pass rather than a functional fix, low priority.
+
+## 2026-08-17 (session 2)
+
+**Focus:** User-directed feature work (not the normal 6-workstream rotation) -- reviewed roadmap Phase 1 ("Turn-taking detection, Pipeline.TurnEnd()") and Phase 3 ("Multi-speaker isolation") on request.
+
+### Findings
+- Turn-taking detection (Phase 1, P1 for LangStream): already fully built. pkg/audio/turnend.go implements the exact roadmap spec (energy-drop + ~200ms silence -> Pipeline.TurnEnd() event channel), with full test coverage across pipeline_turnend_test.go / pipeline_turnend_vad_test.go / pipeline_turnend_setvad_test.go. Nothing to build.
+- Multi-speaker isolation (Phase 3: x-vector embeddings + NLMS beamforming) is a materially different, much harder problem than what exists today (EnergyDiarizer is energy-based labeling, not ML source separation) -- it needs a trained speaker-embedding model and, for beamforming specifically, multi-channel/multi-mic input that single-channel telephony RTP legs don't have. Flagged this to the user rather than building a hollow stand-in; user chose to finish the roadmap's own stated Phase 2 prerequisite first ("integrate EnergyDiarizer into the RTP session path; surface SpeakerLabel in QualityReport") instead of attempting Phase 3 directly.
+
+### Changes
+- pkg/audio/pipeline.go: added Pipeline.CurrentSpeaker() (live per-frame speaker label from the configured Diarizer's current segment; SpeakerUnknown if none configured) -- the missing live counterpart to the existing DiarizationSegments() (completed segments only).
+- pkg/rtp/session.go, pkg/rtp/session_diarizer_test.go (new): added Config.Diarizer (nil by default), threaded it into the Pipeline built in NewSession, added Session.CurrentSpeaker()/DiarizationSegments(), and QualityReport() now appends "Speaker: <label>" only when a Diarizer is configured. This was the actual Phase 2 gap: EnergyDiarizer was already fully wired into audio.Pipeline, but pkg/rtp.Session (the only package that terminates live calls) had no way to pass a Diarizer through at all.
+
+### Blocked
+- Multi-speaker isolation (Phase 3) as literally scoped (x-vector + beamforming) needs a trained model and multi-channel input; not started. Candidate next steps for whoever picks this up: (a) scaffold a Separator-style interface/build-tag plumbing without a real model yet, or (b) integrate a real pretrained open-source separation model (e.g. an ONNX export of a Conv-TasNet/SepFormer-style model) the way DeepFilterNet is integrated today.
+
+### Tomorrow
+1. Normal rotation: Audio Pipeline / Post-processing / API Layer (all last touched 08-12) still due.
+2. Decide what to do with feature/exotel-agentstream (flagged repeatedly since 08-05).
+3. If multi-speaker isolation continues: pick (a) or (b) above with the user before writing code -- it's a real architecture decision, not a rotation-sized task.
