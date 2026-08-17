@@ -58,10 +58,20 @@ func (p *SuppressorPool) Acquire() Suppressor {
 // with "send on closed channel". This makes Release safe to call from
 // in-flight sessions that are winding down concurrently with pool shutdown.
 func (p *SuppressorPool) Release(s Suppressor) {
+	if s == nil {
+		// Nothing to return. Guard this unconditionally (not just on the
+		// closed path below): previously a nil Release on a still-open pool
+		// fell through to "p.pool <- s", enqueueing a nil Suppressor into
+		// the channel. That nil would later come back out of Acquire (which
+		// already treats a nil result as "pool unavailable" and returns nil
+		// to its caller), but the slot itself was never replaced -- so one
+		// stray Release(nil) permanently shrank the pool's effective
+		// capacity by one for the rest of its lifetime, a silent capacity
+		// leak with no error or log anywhere.
+		return
+	}
 	if atomic.LoadInt32(&p.closed) == 1 {
-		if s != nil {
-			_ = s.Close()
-		}
+		_ = s.Close()
 		return
 	}
 	p.pool <- s
