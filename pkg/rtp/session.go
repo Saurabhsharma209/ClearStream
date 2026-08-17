@@ -1063,14 +1063,20 @@ func encodeG711U(pcm []int16) []byte {
 func linearToUlaw(sample int16) byte {
 	const bias = 0x84
 	sign := byte(0)
-	if sample < 0 {
-		sample = -sample
+	// Convert to int before taking the magnitude: negating int16(-32768)
+	// (math.MinInt16) in int16 arithmetic overflows and silently yields
+	// -32768 again (two's complement has no positive counterpart for the
+	// most negative value), which previously corrupted the extreme sample.
+	// Widening to int first makes the negation exact.
+	mag := int(sample)
+	if mag < 0 {
+		mag = -mag
 		sign = 0x80
 	}
-	if sample > 32635 {
-		sample = 32635
+	if mag > 32635 {
+		mag = 32635
 	}
-	s := int(sample) + bias
+	s := mag + bias
 	var exp byte
 	switch {
 	case s&0x4000 != 0:
@@ -1105,11 +1111,15 @@ func encodeG711A(pcm []int16) []byte {
 
 func linearToAlaw(sample int16) byte {
 	sign := byte(0x00) // positive: bit 7 clear (decoder reads bit7=0 as positive)
-	if sample < 0 {
-		sample = -sample
+	// Same int16 negation-overflow hazard as linearToUlaw above: widen to
+	// int before negating so math.MinInt16 (-32768) maps to the correct
+	// magnitude (32768) instead of silently staying negative.
+	mag := int(sample)
+	if mag < 0 {
+		mag = -mag
 		sign = 0x80 // negative: bit 7 set (decoder reads bit7=1 as negative)
 	}
-	t := int(sample) / 8
+	t := mag / 8
 	if t > 0x0FFF {
 		t = 0x0FFF
 	}

@@ -697,8 +697,28 @@ func TestLinearToAlawClipAndExpClamps(t *testing.T) {
 	// sample = -32768 → sample = -(-32768) → overflows to -32768 in int16 arithmetic.
 	// Actually in Go: -(-32768) for int16 = -32768 (overflow). Let's test:
 	minVal := int16(-32768)
-	enc := linearToAlaw(minVal) // may overflow internally; must not panic
-	_ = enc
+	enc := linearToAlaw(minVal)
+	// Regression guard: linearToAlaw used to negate sample in int16
+	// arithmetic, and negating math.MinInt16 (-32768) overflows and stays
+	// -32768 (two's complement has no positive int16 counterpart for it).
+	// That silently fed a negative magnitude into the clip/exponent logic
+	// instead of clipping like every other large negative sample. Fixed by
+	// widening to int before negating, so -32768 now clips to the same
+	// magnitude as -32767 (both saturate past the encoder's 12-bit range)
+	// and must encode identically.
+	encNeighbor := linearToAlaw(-32767)
+	if enc != encNeighbor {
+		t.Errorf("linearToAlaw(-32768) = 0x%02X, want same as linearToAlaw(-32767) = 0x%02X (both saturate)", enc, encNeighbor)
+	}
+	if sign := enc &^ 0x55 & 0x80; sign == 0 {
+		t.Errorf("linearToAlaw(-32768) = 0x%02X: sign bit should indicate negative", enc)
+	}
+
+	ulawEnc := linearToUlaw(minVal)
+	ulawNeighbor := linearToUlaw(-32767)
+	if ulawEnc != ulawNeighbor {
+		t.Errorf("linearToUlaw(-32768) = 0x%02X, want same as linearToUlaw(-32767) = 0x%02X (both saturate)", ulawEnc, ulawNeighbor)
+	}
 
 	// exp>7 clamp: bl=13 would mean t has 13 bits set => t>=4096, but clip cuts to 4095.
 	// So exp=7 clamp is not separately reachable after the clip. The clip prevents bl>12.
