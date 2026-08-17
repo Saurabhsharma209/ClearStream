@@ -19,7 +19,6 @@ import (
 func TestLoadTestZeroSessions(t *testing.T) {
 	ctx := context.Background()
 	result := loadtest.Run(ctx, 0, 100)
-
 	if result.Sessions != 0 {
 		t.Errorf("expected Sessions=0, got %d", result.Sessions)
 	}
@@ -43,7 +42,6 @@ func TestLoadTestZeroFrames(t *testing.T) {
 	start := time.Now()
 	result := loadtest.Run(ctx, 5, 0)
 	elapsed := time.Since(start)
-
 	if result.Sessions != 5 {
 		t.Errorf("expected Sessions=5, got %d", result.Sessions)
 	}
@@ -58,29 +56,25 @@ func TestLoadTestZeroFrames(t *testing.T) {
 	}
 }
 
-// TestLoadTestNegativeSessionsPanics documents a known gap: Run does not
-// validate the sessions argument before using it to size a buffered channel
-// (sem := make(chan struct{}, sessions)). A negative sessions count causes
-// an unrecoverable runtime panic ("makechan: size out of range") instead of
-// a graceful error or zero Result.
-//
-// This is out of the QA/Testing workstream's file scope to fix (pkg/loadtest/
-// loadtest.go is production code), so it is flagged here as a pinned
-// regression/documentation test rather than silently left uncovered. If a
-// future change adds input validation to Run, this test should be updated
-// to assert the new graceful behavior instead of the panic.
-func TestLoadTestNegativeSessionsPanics(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected Run(ctx, -1, ...) to panic given current unvalidated " +
-				"make(chan struct{}, sessions) call -- if this no longer panics, " +
-				"pkg/loadtest/loadtest.go has added input validation; update this " +
-				"test to assert the new graceful-error behavior instead")
-		}
-		t.Logf("confirmed known gap: Run panicked with negative sessions: %v", r)
-	}()
-
+// TestLoadTestNegativeSessionsClamped documents the fix for a previously
+// pinned known gap: Run used to pass an unvalidated negative sessions count
+// straight into make(chan struct{}, sessions), causing an unrecoverable
+// "makechan: size out of range" panic. Run now clamps any negative sessions
+// value to 0 before use, so a negative count behaves identically to
+// sessions=0: a clean zero Result, no panic, no goroutines spawned.
+func TestLoadTestNegativeSessionsClamped(t *testing.T) {
 	ctx := context.Background()
-	_ = loadtest.Run(ctx, -1, 10)
+	result := loadtest.Run(ctx, -1, 10)
+	if result.Sessions != 0 {
+		t.Errorf("expected negative sessions to clamp to 0, got Sessions=%d", result.Sessions)
+	}
+	if result.Frames != 0 {
+		t.Errorf("expected Frames=0, got %d", result.Frames)
+	}
+	if result.Errors != 0 {
+		t.Errorf("expected Errors=0, got %d", result.Errors)
+	}
+	if math.IsNaN(result.FPS) || math.IsInf(result.FPS, 0) {
+		t.Errorf("FPS must be a finite number for clamped negative sessions, got %v", result.FPS)
+	}
 }

@@ -23,22 +23,35 @@ type Result struct {
 
 // Run executes sessions concurrent pipeline sessions, each processing frames frames.
 // Uses passthrough suppressor — swap for real model to benchmark AI overhead.
+//
+// A negative sessions value is clamped to 0 (no sessions run, a clean zero
+// Result is returned) rather than being passed through to the internal
+// buffered-channel semaphore, which would otherwise panic with
+// "makechan: size out of range".
 func Run(ctx context.Context, sessions, frames int) Result {
+	if sessions < 0 {
+		sessions = 0
+	}
+
 	var totalFrames, totalErrors uint64
 	start := time.Now()
+
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, sessions)
+
 	for i := 0; i < sessions; i++ {
 		wg.Add(1)
 		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
+
 			p := audio.NewPipeline(audio.PipelineConfig{
 				SampleRate: 16000,
 				Channels:   1,
 				Suppressor: model.NewPassthrough(),
 			})
+
 			frame := make([]byte, audio.FrameSizeBytes)
 			for j := 0; j < frames; j++ {
 				if ctx.Err() != nil {
@@ -54,6 +67,7 @@ func Run(ctx context.Context, sessions, frames int) Result {
 		}()
 	}
 	wg.Wait()
+
 	elapsed := time.Since(start).Seconds() * 1000
 	total := atomic.LoadUint64(&totalFrames)
 	return Result{
