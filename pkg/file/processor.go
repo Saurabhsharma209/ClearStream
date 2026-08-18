@@ -128,7 +128,8 @@ type ProcessorConfig struct {
 	SampleRate int // internal processing rate (16000)
 	Channels   int
 	Suppressor model.Suppressor
-	Logger     *zap.Logger
+	// Logger is optional. If nil, NewProcessor substitutes a nop logger.
+	Logger *zap.Logger
 }
 
 // Processor handles file-level audio enhancement.
@@ -137,7 +138,22 @@ type Processor struct {
 }
 
 // NewProcessor creates a new file Processor.
+//
+// cfg.Logger is optional: unlike Options.Logger (used by StreamProcess,
+// which already documented and implemented this fallback), a nil
+// ProcessorConfig.Logger here previously reached ProcessWithOptions'
+// unconditional p.cfg.Logger.With(...) call with no nil guard at all --
+// any caller constructing a Processor without explicitly setting Logger
+// (a plausible, undocumented-as-required omission, not a caller error)
+// crashed the whole process with a nil pointer dereference on the very
+// first ProcessWithOptions/Process/ProcessDir/ProcessDirFull call, before
+// any file was touched. Defaulting to a nop logger here, mirroring
+// StreamProcess's existing nil-safe pattern, makes an unset Logger a
+// harmless no-op instead of a panic.
 func NewProcessor(cfg ProcessorConfig) *Processor {
+	if cfg.Logger == nil {
+		cfg.Logger = zap.NewNop()
+	}
 	return &Processor{cfg: cfg}
 }
 
