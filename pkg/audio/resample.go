@@ -520,16 +520,21 @@ func ToStereo(samples []int16) []int16 {
 // Normalize applies gain to prevent clipping after processing.
 // Returns samples scaled so the peak does not exceed maxAbs (typically 32000).
 func Normalize(samples []int16, maxAbs int16) []int16 {
-	var peak int16
+	var peak int32
 	for _, s := range samples {
-		if s < 0 {
-			s = -s
+		// Widen to int32 before negating: negating math.MinInt16 (-32768) as
+		// an int16 overflows two's-complement arithmetic and silently stays
+		// -32768 instead of becoming +32768, which would leave the loudest
+		// possible sample undetected by the "v > peak" comparison below.
+		v := int32(s)
+		if v < 0 {
+			v = -v
 		}
-		if s > peak {
-			peak = s
+		if v > peak {
+			peak = v
 		}
 	}
-	if peak == 0 || peak <= maxAbs {
+	if peak == 0 || peak <= int32(maxAbs) {
 		return samples
 	}
 	scale := float64(maxAbs) / float64(peak)
