@@ -2512,3 +2512,24 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. Normal rotation: Audio Pipeline / Post-processing / API Layer (all last touched 08-12) still due.
 2. Decide what to do with feature/exotel-agentstream (flagged repeatedly since 08-05).
 3. If multi-speaker isolation continues: pick (a) or (b) above with the user before writing code -- it's a real architecture decision, not a rotation-sized task.
+
+## 2026-08-18
+
+**Agents run:** Audio Pipeline (pkg/audio Normalize MinInt16 overflow), Post-processing (pkg/file NewProcessor nil-Logger panic), API Layer (clearstream.go TelephonyConfig/ContactCenterConfig doc-contract mismatch)
+**Build:** passing (go build ./... and CGO_ENABLED=0 go test ./... green)
+
+### Changes
+- pkg/audio/resample.go, pkg/audio/normalize_minint16_test.go (new): Normalize()'s peak-detection loop negated an int16 sample without widening first, so a buffer whose loudest sample was exactly math.MinInt16 (-32768) overflowed the negation and never registered against the peak accumulator (which starts at 0 and only tracks positive magnitudes). This hit the peak==0 early-return path, so an already-maximally-loud buffer was returned completely unscaled -- the opposite of the function's clipping-prevention contract. Same overflow class as the pkg/rtp G.711 mu-law/A-law fix from 08-17, found independently in a different file. Fixed by widening to int32 before negating/comparing.
+- pkg/file/processor.go, pkg/file/processor_nillogger_test.go (new): NewProcessor(cfg) stored cfg.Logger verbatim with no nil-check, and ProcessWithOptions called p.cfg.Logger.With(...) unconditionally -- any Processor built without explicitly setting Logger panicked with a nil pointer dereference on its first call, before touching any file. StreamProcess's sibling Options.Logger already had the correct nil-safe zap.NewNop() fallback; ProcessorConfig.Logger never got the same treatment, and every existing test helper happened to always pass an explicit logger, so this had zero coverage despite 94.8% package coverage. Fixed by defaulting nil Logger to zap.NewNop() in NewProcessor, mirroring StreamProcess.
+- clearstream.go, clearstream_telephonyconfig_doccontract_test.go (new): TelephonyConfig()'s doc comment promised "optimized for telephony (8kHz G.711 calls). Enables VAD and AGC; uses passthrough suppressor by default" but the implementation left SampleRate at 16000, Model at "rnnoise", and EnableAGC at false -- only VAD was actually wired up. A caller trusting the doc comment to build a real 8kHz G.711 deployment would hit Validate() rejections on setting Codec, or silently run at the wrong sample rate with no AGC if they didn't. ContactCenterConfig() (built on TelephonyConfig()) had the same gap: doc says "PCMA (A-law) codec" but never set Config.Codec. Fixed both to match their documented contracts.
+
+### Blocked
+- Go 1.17 dyld issue on macOS 26 prevents CGO test execution under go test -race; CGO_ENABLED=0 tests pass. (ongoing, unresolved infra issue -- carried over again)
+- Today's default Linux sandbox (mcp__workspace__bash) had /sessions at 100% disk (0 bytes free, though du showed almost nothing -- shared multi-tenant volume, not cleanable from this session) and no Go toolchain on PATH by default. Found a pre-extracted Go 1.22 SDK at /tmp/gotools/go and a writable scratch area at /tmp/cswork (avoiding a stale nobody-owned /tmp/work/ left by an unrelated task), and did the full clone/build/agent/test/push cycle there instead of falling back to the Mac -- worked cleanly end-to-end. Recommend future runs try `/tmp/gotools/go/bin` + a fresh `/tmp/<session>` scratch dir before assuming the Linux sandbox is unusable.
+- feature/exotel-agentstream branch (flagged repeatedly since 08-05) still unmerged/untracked outside the normal rotation -- untouched again today, still needs a human decision.
+- staticcheck still can't run locally (min Go 1.19, this Mac has 1.17); CI's matrix unaffected.
+
+### Tomorrow
+1. RTP/SIP / QA-Testing / AI Model: due again per rotation (RTP/SIP and AI Model last touched 08-17, QA-Testing last touched 08-17).
+2. Decide what to do with feature/exotel-agentstream so it doesn't drift further from main.
+3. Multi-speaker isolation (roadmap Phase 3) still needs an architecture decision (interface scaffold vs real pretrained separation model) before any code is written.
