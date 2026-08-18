@@ -392,8 +392,11 @@ func (cs *ClearStream) Close() error {
 // Swap Model to "rnnoise" for real noise suppression.
 func TelephonyConfig() Config {
 	cfg := DefaultConfig()
+	cfg.SampleRate = 8000
+	cfg.Model = "passthrough"
 	cfg.EnableVAD = true
 	cfg.AdaptiveVAD = true
+	cfg.EnableAGC = true
 	cfg.MaxConcurrentSessions = 64
 	return cfg
 }
@@ -411,6 +414,7 @@ func FileProcessingConfig() Config {
 // PCMA (A-law) codec, adaptive VAD, AGC enabled, 32 concurrent sessions.
 func ContactCenterConfig() Config {
 	cfg := TelephonyConfig()
+	cfg.Codec = "PCMA"
 	cfg.MaxConcurrentSessions = 32
 	return cfg
 }
