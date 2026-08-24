@@ -477,6 +477,12 @@ func (s *Session) handlePacket(raw []byte) error {
 		// misidentifies it as a duplicate retransmission and silently drops
 		// it, losing the first DTMF digit of the new call leg.
 		s.dtmf.Reset()
+		// RTCPStats/LastSR/LastSRReceivedAt describe the OLD call leg until fresh RTCP arrives for the new one (up to a full reporting interval), so QualityReport()/RTTMs() kept reporting stale numbers across an SSRC change -- same stale-data bug class as the dtmf.Reset() gap above, for a different piece of per-leg state.
+		s.mu.Lock()
+		s.RTCPStats = RTCPReceiverReport{}
+		s.LastSR = RTCPSenderReport{}
+		s.LastSRReceivedAt = time.Time{}
+		s.mu.Unlock()
 	}
 	s.currentSSRC = header.SSRC
 	s.ssrcSet = true
@@ -969,7 +975,8 @@ func parseRTPHeader(raw []byte) (rtpHeader, []byte, error) {
 	h.SSRC = binary.BigEndian.Uint32(raw[8:12])
 
 	offset := 12 + int(h.CSRCCount)*4
-	if h.Extension && len(raw) > offset+4 {
+	// len(raw) >= offset+4 is sufficient to read the 2-byte extension length at raw[offset+2:offset+4]; requiring > offset+4 (one byte more) wrongly rejected legal RFC 3550 5.3.1 packets whose header extension exactly fills the remaining bytes (e.g. zero-length extension, no payload after it), leaving offset unadvanced past the extension header so those header bytes were returned to the caller as bogus payload.
+	if h.Extension && len(raw) >= offset+4 {
 		extLen := int(binary.BigEndian.Uint16(raw[offset+2:offset+4])) * 4
 		offset += 4 + extLen
 	}
