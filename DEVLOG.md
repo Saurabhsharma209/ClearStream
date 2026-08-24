@@ -2533,3 +2533,22 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. RTP/SIP / QA-Testing / AI Model: due again per rotation (RTP/SIP and AI Model last touched 08-17, QA-Testing last touched 08-17).
 2. Decide what to do with feature/exotel-agentstream so it doesn't drift further from main.
 3. Multi-speaker isolation (roadmap Phase 3) still needs an architecture decision (interface scaffold vs real pretrained separation model) before any code is written.
+
+## 2026-08-24
+
+**Agents run:** RTP/SIP (pkg/rtp InjectBotAudio 16kHz doc-contract bug)
+**Build:** passing (go build ./... and CGO_ENABLED=0 go test ./... green; one pre-existing flaky timing test in pkg/file -- TestProcessWithOptionsContextCancelKillsRunningFFmpegDuringDecode -- failed once under load and passed clean on immediate re-run in isolation, unrelated to today's change)
+
+### Changes
+- pkg/rtp/playback.go, pkg/rtp/session_playback_test.go (new tests): InjectBotAudio's doc comment promised 8kHz-or-16kHz mono PCM16 input, but the implementation always chunked samples into 160-sample (20ms @ 8kHz) blocks and fed them straight to the 8kHz G.711 encoder with zero resampling -- 16kHz bot/TTS audio played back at 2x speed with doubled pitch, not merely lower quality. Same doc-contract-mismatch bug class as the 08-18 TelephonyConfig fix, found independently in a different package. Added InjectBotAudioAtRate(pcm16, sampleRate), which resamples non-8kHz input via pkg/audio.Resample's existing anti-alias-filtered Kaiser-FIR path before encoding; InjectBotAudio now delegates to it at 8000 (existing callers unaffected). Corrected InjectBotAudio's own doc comment to only claim 8kHz, since that's genuinely all it does now.
+
+### Blocked
+- Today's default Linux sandbox (mcp__workspace__bash) had /sessions at 100% disk with no headroom and every bash call running in an ephemeral, non-persistent filesystem (state does not survive between separate tool calls, unlike prior entries' single-session /tmp workarounds) -- git push failed outright with no credentials configured in that sandbox at all (not just disk space). Did all edit/build/test work there via /dev/shm (tmpfs, persists only within one shell invocation) plus the pre-extracted /tmp/go 1.22 SDK, then replicated the finished patch onto the dev Mac via mcp__Control_your_Mac__osascript (which has git credentials and the repo already cloned) to commit and push. Recommend future runs go straight to the dev Mac given this sandbox's growing unreliability (this is now the third consecutive DEVLOG entry documenting a different flavor of sandbox failure since 08-17).
+- Only one workstream (RTP/SIP) ran today, below the usual 2-3/day target, because most of today's token budget went to working around the sandbox filesystem issue above rather than feature work.
+- feature/exotel-agentstream branch (flagged repeatedly since 08-05) still unmerged/untracked outside the normal rotation -- untouched again today, still needs a human decision.
+- A stale git stash ("WIP on main: 143df0e") was found pre-existing on the dev Mac checkout, left over from an earlier interrupted session -- left untouched (not mine to discard) but flagging for whoever next uses this checkout.
+
+### Tomorrow
+1. QA-Testing / AI Model: both still due per the 08-18 rotation list (only RTP/SIP got done today); AI Model has the longest gap (last touched 08-17).
+2. Decide what to do with feature/exotel-agentstream so it doesn't drift further from main.
+3. Investigate the stale git stash on the dev Mac checkout and either apply or drop it.
