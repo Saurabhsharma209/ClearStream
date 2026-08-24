@@ -16,6 +16,13 @@ type SuppressorPool struct {
 	size      int
 	closeOnce sync.Once
 	closed    int32 // 0 = open, 1 = closed; accessed via sync/atomic (Go 1.17 has no atomic.Bool)
+
+	// outstanding counts Suppressors currently checked out via Acquire and not
+	// yet returned via Release; WarmPool needs this in addition to the
+	// channel length, since a mid-call Suppressor is neither idle-in-pool nor
+	// missing -- it must not be double-counted as a shortfall. Accessed via
+	// sync/atomic.
+	outstanding int32
 }
 
 // NewSuppressorPool creates a pool of n Suppressors using the given config.
@@ -48,6 +55,7 @@ func (p *SuppressorPool) Acquire() Suppressor {
 		return nil
 	}
 	s.Reset()
+	atomic.AddInt32(&p.outstanding, 1)
 	return s
 }
 
@@ -70,10 +78,28 @@ func (p *SuppressorPool) Release(s Suppressor) {
 		// leak with no error or log anywhere.
 		return
 	}
+	// Clamp outstanding at 0 instead of unconditionally decrementing: a
+	// caller that releases more times than it acquired must not drive this
+	// counter negative, since WarmPool below relies on have+outstanding to
+	// avoid over-provisioning the pool past its fixed channel capacity.
+	for {
+		cur := atomic.LoadInt32(&p.outstanding)
+		if cur <= 0 {
+			break
+		}
+		if atomic.CompareAndSwapInt32(&p.outstanding, cur, cur-1) {
+			break
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if atomic.LoadInt32(&p.closed) == 1 {
 		_ = s.Close()
 		return
 	}
+	// Safe to send while holding p.mu: Close (below) also takes p.mu before
+	// closing the channel, so a concurrent Release/Close pair can no longer
+	// race a closed-check against a send on an already-closed channel.
 	p.pool <- s
 }
 
@@ -84,8 +110,10 @@ func (p *SuppressorPool) Size() int { return p.size }
 func (p *SuppressorPool) Close() error {
 	var firstErr error
 	p.closeOnce.Do(func() {
+		p.mu.Lock()
 		atomic.StoreInt32(&p.closed, 1)
 		close(p.pool)
+		p.mu.Unlock()
 		for s := range p.pool {
 			if err := s.Close(); err != nil && firstErr == nil {
 				firstErr = err
@@ -117,10 +145,12 @@ func (p *SuppressorPool) WarmPool(n int) error {
 	// an error mid-refill with the pool sitting at whatever partial count it
 	// had reached, discarding good suppressors for nothing.)
 	have := len(p.pool)
-	if have >= n {
+	outstanding := int(atomic.LoadInt32(&p.outstanding))
+	total := have + outstanding
+	if total >= n {
 		return nil
 	}
-	need := n - have
+	need := n - total
 	for i := 0; i < need; i++ {
 		s, err := NewSuppressor(p.cfg)
 		if err != nil {

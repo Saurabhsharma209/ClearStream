@@ -120,6 +120,7 @@ func (s *deepFilterServerSuppressor) startServer(scriptPath string) error {
 	cmd := exec.Command("python3", scriptPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	setNewProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start python3: %w", err)
 	}
@@ -165,7 +166,7 @@ func (s *deepFilterServerSuppressor) startServer(scriptPath string) error {
 			return nil
 		}
 	}
-	_ = cmd.Process.Kill()
+	killProcessGroup(cmd)
 	// Reap the killed process so a long-running caller (e.g. a server process
 	// that retries auto-start) does not leak a zombie process on every failed
 	// attempt. Safe even if the exit-watcher goroutine above already reaped
@@ -266,7 +267,7 @@ func (s *deepFilterServerSuppressor) Close() error {
 	if s.cmd != nil && s.cmd.Process != nil {
 		_, _ = s.client.Post(s.serverURL+"/shutdown", "application/json", nil)
 		time.Sleep(200 * time.Millisecond)
-		_ = s.cmd.Process.Kill()
+		killProcessGroup(s.cmd)
 		s.reap()
 		s.cmd = nil
 	}
