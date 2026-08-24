@@ -101,3 +101,41 @@ func TestSession_PlaybackStats_Counters(t *testing.T) {
 		t.Errorf("Cleared: want >0 after ClearPlayback, got %d", stats.Cleared)
 	}
 }
+
+// TestSession_InjectBotAudioAtRate_16kHzResamples proves the fix for the
+// InjectBotAudio doc-contract bug: InjectBotAudio's comment promised 8kHz-or-
+// 16kHz mono input, but the implementation always chunked in 160-sample
+// (20ms @ 8kHz) blocks with no resampling step, so 16kHz input silently
+// played back at 2x speed / doubled pitch. InjectBotAudioAtRate now actually
+// resamples. 320 samples of 16kHz input (20ms) must resample down to 160
+// samples (one 8kHz frame), not be chunked directly into two 8kHz frames.
+func TestSession_InjectBotAudioAtRate_16kHzResamples(t *testing.T) {
+	sink, sess := newPlaybackTestSession(t)
+	defer sink.Close()
+	defer sess.Stop()
+
+	ok := sess.InjectBotAudioAtRate(zeroPCM(320), 16000)
+	if !ok {
+		t.Fatal("InjectBotAudioAtRate: expected true for one 20ms@16kHz frame")
+	}
+	if got := sess.playback.Len(); got != 1 {
+		t.Errorf("InjectBotAudioAtRate(16kHz): expected exactly 1 queued 8kHz frame after resampling, got %d (2 would mean the input was chunked at the wrong rate with no resampling)", got)
+	}
+}
+
+// TestSession_InjectBotAudioAtRate_8kHzMatchesInjectBotAudio proves
+// InjectBotAudio(pcm16) == InjectBotAudioAtRate(pcm16, 8000): the rate
+// parameter must not change existing 8kHz-caller behavior.
+func TestSession_InjectBotAudioAtRate_8kHzMatchesInjectBotAudio(t *testing.T) {
+	sink, sess := newPlaybackTestSession(t)
+	defer sink.Close()
+	defer sess.Stop()
+
+	ok := sess.InjectBotAudioAtRate(zeroPCM(160), 8000)
+	if !ok {
+		t.Fatal("InjectBotAudioAtRate(8000): expected true for single frame")
+	}
+	if got := sess.playback.Len(); got != 1 {
+		t.Errorf("InjectBotAudioAtRate(8000): expected 1 queued frame, got %d", got)
+	}
+}

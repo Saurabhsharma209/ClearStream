@@ -148,11 +148,43 @@ func (s *Session) startPlaybackLoop(ctx context.Context) {
 	}
 }
 
-// InjectBotAudio takes PCM16 samples (8kHz or 16kHz mono, little-endian) from
-// a bot/TTS source, encodes them to the session codec, and pushes each 160-sample
-// frame into the playback queue. Returns true if all frames were accepted.
+// InjectBotAudio takes 8kHz mono PCM16 samples (little-endian) from a bot/TTS
+// source, encodes them to the session codec, and pushes each 160-sample (20ms
+// @ 8kHz) frame into the playback queue. Returns true if all frames were
+// accepted.
+//
+// Equivalent to InjectBotAudioAtRate(pcm16, 8000). Use InjectBotAudioAtRate
+// directly for 16kHz (or other) source audio -- see that method doc for why
+// this one no longer claims to accept 16kHz input directly.
 func (s *Session) InjectBotAudio(pcm16 []byte) bool {
+	return s.InjectBotAudioAtRate(pcm16, 8000)
+}
+
+// InjectBotAudioAtRate takes mono PCM16 samples (little-endian) at sampleRate
+// from a bot/TTS source, resamples to 8kHz if sampleRate != 8000, encodes the
+// result to the session codec, and pushes each 160-sample (20ms @ 8kHz) frame
+// into the playback queue. Returns true if all frames were accepted.
+//
+// Fixes a real bug in the previous single-rate InjectBotAudio: its doc
+// comment promised 8kHz-or-16kHz mono input, but the implementation always
+// chunked samples into 160-sample (20ms @ 8kHz) blocks and fed them straight
+// to the 8kHz G.711 encoder with no resampling step at all -- 16kHz bot/TTS
+// audio (a common TTS output rate) played back at 2x speed with doubled
+// pitch, not merely lower quality. 16kHz (or any other non-8kHz rate) is now
+// downsampled to 8kHz via pkg/audio.Resample anti-alias-filtered path (the
+// same Kaiser-FIR downsampler pkg/rtp/session.go already uses for inbound
+// G.711 upsampling) before encoding.
+func (s *Session) InjectBotAudioAtRate(pcm16 []byte, sampleRate int) bool {
 	samples := bytesToInt16Slice(pcm16)
+
+	if sampleRate <= 0 {
+		sampleRate = 8000
+	}
+	if sampleRate != 8000 {
+		if resampled, err := audio.Resample(samples, sampleRate, 8000); err == nil {
+			samples = resampled
+		}
+	}
 
 	// Encode using the session codec, defaulting to G.711 µ-law.
 	codec := s.cfg.Codec
