@@ -2552,3 +2552,22 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. QA-Testing / AI Model: both still due per the 08-18 rotation list (only RTP/SIP got done today); AI Model has the longest gap (last touched 08-17).
 2. Decide what to do with feature/exotel-agentstream so it doesn't drift further from main.
 3. Investigate the stale git stash on the dev Mac checkout and either apply or drop it.
+
+## 2026-08-24 (session 2)
+
+**Agents run:** RTP/SIP (pkg/rtp parseRTPHeader extension boundary bug + stale RTCP stats on SSRC change), AI Model (pkg/model pool.go TOCTOU race + outstanding-counter underflow + deepfilter-server orphaned subprocess)
+**Build:** passing (go build ./... and CGO_ENABLED=0 go test ./pkg/rtp/... ./pkg/model/... green)
+
+### Changes
+- `pkg/rtp/session.go`, `pkg/rtp/rtp_ext_boundary_test.go` (new): `parseRTPHeader`'s extension-length guard required `len(raw) > offset+4` instead of `>= offset+4`, so a legal RFC 3550 5.3.1 packet whose header extension exactly fills the remaining bytes never advanced `offset` past the extension header -- those 4 bytes were returned to the caller as bogus payload. Fixed the boundary check. Also found: on SSRC change, `RTCPStats`/`LastSR`/`LastSRReceivedAt` were never reset alongside the existing `dtmf.Reset()`, so `QualityReport()`/`RTTMs()` kept reporting the old call leg's stale loss/jitter/RTT numbers for up to a full RTCP reporting interval after a new leg started. Added the same reset under `s.mu`.
+- `pkg/model/pool.go`, `pkg/model/deepfilter_server.go`, `pkg/model/pool_close_race_test.go` (new), `pkg/model/procgroup_unix.go` / `procgroup_windows.go` (new): three issues found auditing pool.go. (1) `Release`/`Close` checked `p.closed` and sent on `p.pool` as two unsynchronized steps -- a concurrent `Close()` between them caused `panic: send on closed channel`; fixed by sharing `p.mu` across both. (2) `Release`'s `outstanding` counter could go negative on a double-release, corrupting `WarmPool`'s shortfall math; fixed by clamping at 0 via a CAS loop, and `WarmPool` now subtracts `outstanding` from its shortfall calculation. (3) `deepfilter-server`'s auto-started subprocess was only killed via `cmd.Process.Kill()` on the direct child, orphaning any grandchild it forks; applied the same `Setpgid` + negative-PID `SIGKILL` process-group pattern already used for the `pkg/file` FFmpeg fix (08-06).
+
+### Blocked
+- `pkg/rtp/rtcp_ssrc_reset_test.go`'s `TestSSRCChangeResetsRTCPStats` (if present) should be re-checked against today's new RTCP-reset code; not run today since QA/Testing didn't rotate.
+- `feature/exotel-agentstream` branch (flagged repeatedly since 08-05) still unmerged/untracked -- untouched again today.
+- Today's session ran the assessment and agent work in a Linux sandbox with no GitHub credentials and a nearly-full shared disk; applied the actual fixes directly on the dev Mac (`~/ClearStream`, go1.17) via osascript one-liners (multi-line AppleScript string literals are unreliable for this, so every edit was a single-line `python3 -c` call) and pushed from there, per the standing recommendation in prior entries.
+- staticcheck still can't run locally; CI's matrix unaffected.
+
+### Tomorrow
+1. QA/Testing, Audio Pipeline, Post-processing, API Layer: due per rotation.
+2. Decide what to do with `feature/exotel-agentstream` so it doesn't drift further from main.
