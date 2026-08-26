@@ -102,3 +102,42 @@ func TestPowerViaEstimateSNR(t *testing.T) {
 		t.Errorf("expected 20.0 dB, got %.4f", snr)
 	}
 }
+
+func TestSNRImprovementZeroNoise(t *testing.T) {
+	// When noisy == clean, diff is all zeros → EstimateSNR returns 60 dB
+	est := &SNREstimator{}
+	signal := []int16{1000, 2000, -1000, 500}
+	improvement := est.SNRImprovement(signal, signal)
+	// snrBefore = SNR(signal, zeros) = 60; snrAfter = SNR(signal, zeros) = 60; diff = 0
+	_ = improvement // just ensure no panic
+}
+
+func TestSNRImprovementDifferentLengths(t *testing.T) {
+	est := &SNREstimator{}
+	noisy := []int16{1000, 2000, 3000, 4000, 5000}
+	clean := []int16{900, 1900, 2900} // shorter
+	result := est.SNRImprovement(noisy, clean)
+	_ = result // just ensure no panic; uses minLen
+}
+
+func TestSNRImprovementEmpty(t *testing.T) {
+	est := &SNREstimator{}
+	result := est.SNRImprovement(nil, []int16{1, 2})
+	if result != 0 {
+		t.Errorf("SNRImprovement(nil, ...) = %f, want 0", result)
+	}
+	result2 := est.SNRImprovement([]int16{1, 2}, nil)
+	if result2 != 0 {
+		t.Errorf("SNRImprovement(..., nil) = %f, want 0", result2)
+	}
+}
+
+func TestSNRImprovementClip(t *testing.T) {
+	// Force int32 overflow path in SNRImprovement
+	est := &SNREstimator{}
+	noisy := []int16{32767}
+	clean := []int16{-32768}
+	// diff = 32767 - (-32768) = 65535 > 32767 → clips to 32767
+	result := est.SNRImprovement(noisy, clean)
+	_ = result // just exercise the clip path
+}

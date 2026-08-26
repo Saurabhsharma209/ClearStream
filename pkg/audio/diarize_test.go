@@ -1,6 +1,7 @@
 package audio
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -363,5 +364,125 @@ func TestPipelineResetClearsDiarizerState(t *testing.T) {
 
 	if cur := diarizer.CurrentSegment(); cur.Speaker != SpeakerSilence {
 		t.Errorf("Pipeline.Reset() did not reset the diarizer: CurrentSegment().Speaker = %s, want %s (bug: Reset() never called diarizer.Reset(), so speaker state leaked across call legs)", cur.Speaker, SpeakerSilence)
+	}
+}
+
+func TestDiarizedSegmentString(t *testing.T) {
+	// Closed segment
+	s := DiarizedSegment{Speaker: SpeakerNearEnd, StartMs: 100, EndMs: 500, EnergyRMS: 0.5}
+	str := s.String()
+	if !strings.Contains(str, "near") {
+		t.Errorf("DiarizedSegment.String() missing speaker: %q", str)
+	}
+	if !strings.Contains(str, "400") { // duration 400ms
+		t.Errorf("DiarizedSegment.String() missing duration: %q", str)
+	}
+
+	// Ongoing segment (EndMs == -1)
+	ongoing := DiarizedSegment{Speaker: SpeakerFarEnd, StartMs: 200, EndMs: -1, EnergyRMS: 0.3}
+	str2 := ongoing.String()
+	if !strings.Contains(str2, "ongoing") {
+		t.Errorf("ongoing DiarizedSegment.String() missing 'ongoing': %q", str2)
+	}
+}
+
+func TestDiarizeReportEmpty(t *testing.T) {
+	got := DiarizeReport(nil)
+	if got != "no segments" {
+		t.Errorf("DiarizeReport(nil) = %q, want %q", got, "no segments")
+	}
+	got2 := DiarizeReport([]DiarizedSegment{})
+	if got2 != "no segments" {
+		t.Errorf("DiarizeReport([]) = %q, want %q", got2, "no segments")
+	}
+}
+
+func TestDiarizeReportWithSegments(t *testing.T) {
+	segs := []DiarizedSegment{
+		{Speaker: SpeakerNearEnd, StartMs: 0, EndMs: 100, EnergyRMS: 0.5},
+		{Speaker: SpeakerSilence, StartMs: 100, EndMs: 500, EnergyRMS: 0.0},
+	}
+	got := DiarizeReport(segs)
+	if !strings.Contains(got, "segments:") {
+		t.Errorf("DiarizeReport expected 'segments:', got: %q", got)
+	}
+	if !strings.Contains(got, "near") {
+		t.Errorf("DiarizeReport expected 'near' in output, got: %q", got)
+	}
+}
+
+func TestTimeMs(t *testing.T) {
+	ts := timeMs()
+	if ts <= 0 {
+		t.Errorf("timeMs() = %d, want positive int64", ts)
+	}
+}
+
+func TestEnergyDiarizerStats(t *testing.T) {
+	d := NewEnergyDiarizer(DefaultEnergyDiarizerConfig())
+	ts := int64(0)
+
+	// 5 silence frames (50ms)
+	for i := 0; i < 5; i++ {
+		d.ProcessFrame(makeSilence(160), ts)
+		ts += 10
+	}
+	// 10 speech frames (100ms) → creates completed silence + opens speech
+	for i := 0; i < 10; i++ {
+		d.ProcessFrame(makeSpeech(160), ts)
+		ts += 10
+	}
+	// 32 silence frames (320ms) → closes speech, opens new silence
+	for i := 0; i < 32; i++ {
+		d.ProcessFrame(makeSilence(160), ts)
+		ts += 10
+	}
+
+	stats := d.Stats(ts)
+	if stats.Turns == 0 {
+		t.Error("expected at least 1 speech turn")
+	}
+	if stats.TotalMs <= 0 {
+		t.Errorf("TotalMs = %d, want > 0", stats.TotalMs)
+	}
+	if stats.AvgTurnMs <= 0 {
+		t.Errorf("AvgTurnMs = %f, want > 0", stats.AvgTurnMs)
+	}
+}
+
+func TestEnergyDiarizerStatsPureSilence(t *testing.T) {
+	d := NewEnergyDiarizer(DefaultEnergyDiarizerConfig())
+	ts := int64(0)
+	for i := 0; i < 10; i++ {
+		d.ProcessFrame(makeSilence(160), ts)
+		ts += 10
+	}
+	stats := d.Stats(ts)
+	if stats.Turns != 0 {
+		t.Errorf("expected 0 turns for pure silence, got %d", stats.Turns)
+	}
+	if stats.AvgTurnMs != 0 {
+		t.Errorf("expected AvgTurnMs=0 for pure silence, got %f", stats.AvgTurnMs)
+	}
+}
+
+func TestNewEnergyDiarizerAllDefaults(t *testing.T) {
+	// Zero config → defaults applied
+	d := NewEnergyDiarizer(EnergyDiarizerConfig{})
+	if d.cfg.SilenceThreshold != 0.01 {
+		t.Errorf("default SilenceThreshold = %f, want 0.01", d.cfg.SilenceThreshold)
+	}
+	if d.cfg.SpeakerChangeGapMs != 300 {
+		t.Errorf("default SpeakerChangeGapMs = %d, want 300", d.cfg.SpeakerChangeGapMs)
+	}
+	if d.cfg.SampleRate != 16000 {
+		t.Errorf("default SampleRate = %d, want 16000", d.cfg.SampleRate)
+	}
+}
+
+func TestRMSEmpty(t *testing.T) {
+	// rms() with empty slice should return 0
+	if v := rms(nil); v != 0 {
+		t.Errorf("rms(nil) = %f, want 0", v)
 	}
 }

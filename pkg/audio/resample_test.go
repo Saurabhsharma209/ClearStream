@@ -360,3 +360,105 @@ func (p *passthroughSuppressor) Process(s []int16) ([]int16, error) {
 func (p *passthroughSuppressor) Reset()       {}
 func (p *passthroughSuppressor) Close() error { return nil }
 func (p *passthroughSuppressor) Name() string { return "passthrough" }
+
+func TestToMonoPassthrough(t *testing.T) {
+	samples := []int16{100, 200, 300}
+	out := ToMono(samples, 1)
+	if len(out) != len(samples) {
+		t.Fatalf("ToMono(ch=1) length mismatch: got %d, want %d", len(out), len(samples))
+	}
+	for i, v := range out {
+		if v != samples[i] {
+			t.Errorf("ToMono(ch=1) sample[%d] = %d, want %d", i, v, samples[i])
+		}
+	}
+}
+
+func TestToMonoStereo(t *testing.T) {
+	// Interleaved stereo: L=1000 R=2000 → mono = avg = 1500
+	stereo := []int16{1000, 2000, 1000, 2000}
+	mono := ToMono(stereo, 2)
+	if len(mono) != 2 {
+		t.Fatalf("ToMono stereo: expected 2 samples, got %d", len(mono))
+	}
+	for i, v := range mono {
+		if v != 1500 {
+			t.Errorf("ToMono stereo sample[%d] = %d, want 1500", i, v)
+		}
+	}
+}
+
+func TestToStereo(t *testing.T) {
+	mono := []int16{100, 200, 300}
+	stereo := ToStereo(mono)
+	if len(stereo) != len(mono)*2 {
+		t.Fatalf("ToStereo length: got %d, want %d", len(stereo), len(mono)*2)
+	}
+	for i, s := range mono {
+		if stereo[i*2] != s || stereo[i*2+1] != s {
+			t.Errorf("ToStereo sample[%d]: L=%d R=%d, want both %d", i, stereo[i*2], stereo[i*2+1], s)
+		}
+	}
+}
+
+func TestNormalize_NoClipping(t *testing.T) {
+	// Peak already at or below maxAbs → no change
+	samples := []int16{100, -200, 50}
+	out := Normalize(samples, 300)
+	for i, v := range out {
+		if v != samples[i] {
+			t.Errorf("Normalize(no-clip) sample[%d] = %d, want %d", i, v, samples[i])
+		}
+	}
+}
+
+func TestNormalize_Scales(t *testing.T) {
+	// Peak = 32000, maxAbs = 16000 → scale = 0.5
+	samples := []int16{32000, -32000}
+	out := Normalize(samples, 16000)
+	for i, v := range out {
+		// Allow ±1 for rounding
+		if v > 16001 || v < -16001 {
+			t.Errorf("Normalize sample[%d] = %d, exceeds maxAbs=16000", i, v)
+		}
+	}
+}
+
+func TestNormalize_ZeroPeak(t *testing.T) {
+	// All zeros → no change
+	samples := []int16{0, 0, 0}
+	out := Normalize(samples, 32000)
+	for i, v := range out {
+		if v != 0 {
+			t.Errorf("Normalize(zeros) sample[%d] = %d, want 0", i, v)
+		}
+	}
+}
+
+func TestResampleInvalidRates(t *testing.T) {
+	samples := []int16{1, 2, 3}
+	_, err := Resample(samples, 0, 16000)
+	if err == nil {
+		t.Error("expected error for srcRate=0")
+	}
+	_, err = Resample(samples, 8000, 0)
+	if err == nil {
+		t.Error("expected error for dstRate=0")
+	}
+}
+
+func TestResample32To16kHz(t *testing.T) {
+	// linearResample path (not Kaiser): 32kHz → 16kHz
+	samples := make([]int16, 320) // 10ms at 32kHz
+	for i := range samples {
+		samples[i] = int16(i % 256)
+	}
+	out, err := Resample(samples, 32000, 16000)
+	if err != nil {
+		t.Fatalf("Resample(32k→16k) error: %v", err)
+	}
+	// 320 samples at 32kHz → 160 at 16kHz
+	if len(out) != 160 {
+		t.Errorf("Resample(32k→16k) len=%d, want 160", len(out))
+	}
+}

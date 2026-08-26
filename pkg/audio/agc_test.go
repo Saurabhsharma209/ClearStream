@@ -671,3 +671,30 @@ func TestAGCClipCountQuietInput(t *testing.T) {
 	}
 	t.Logf("Quiet boost PASS: gain=%.3f ClipCount=%d", agc.CurrentGain(), agc.ClipCount)
 }
+
+func TestNewAGCAllDefaults(t *testing.T) {
+	// All zero config → each field gets defaulted
+	agc := NewAGC(AGCConfig{})
+	if agc.currentGain != 1.0 {
+		t.Errorf("default currentGain = %f, want 1.0", agc.currentGain)
+	}
+	if agc.cfg.TargetRMS != 3000 {
+		t.Errorf("default TargetRMS = %f, want 3000", agc.cfg.TargetRMS)
+	}
+	if agc.cfg.MaxGain != 4.0 {
+		t.Errorf("default MaxGain = %f, want 4.0", agc.cfg.MaxGain)
+	}
+}
+
+func TestAGCCurrentGainDBNegative(t *testing.T) {
+	agc := NewAGC(DefaultAGCConfig())
+	// Manually set gain to 0 to test the <= 0 branch
+	agc.currentGain = 0
+	db := agc.CurrentGainDB()
+	if db != -1.7976931348623157e+308 { // -math.MaxFloat64
+		// Just verify it returns a very negative number
+		if db > -1e100 {
+			t.Errorf("CurrentGainDB with gain=0 = %f, want -MaxFloat64", db)
+		}
+	}
+}

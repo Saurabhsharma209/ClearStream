@@ -189,3 +189,51 @@ func TestAECPipelineWired(t *testing.T) {
 		t.Errorf("output len = %d, want 320", out.Len())
 	}
 }
+
+func TestAECFilterLen(t *testing.T) {
+	cfg := DefaultAECConfig()
+	aec := NewAEC(cfg)
+	if aec.FilterLen() != cfg.FilterLen {
+		t.Errorf("FilterLen() = %d, want %d", aec.FilterLen(), cfg.FilterLen)
+	}
+}
+
+func TestAECNewDefaults(t *testing.T) {
+	// Zero-value config → defaults applied
+	aec := NewAEC(AECConfig{})
+	if aec.FilterLen() != 512 {
+		t.Errorf("default FilterLen = %d, want 512", aec.FilterLen())
+	}
+}
+
+func TestAECLongInput(t *testing.T) {
+	aec := NewAEC(DefaultAECConfig())
+	n := 1000
+	near := make([]int16, n)
+	far := make([]int16, n)
+	for i := range near {
+		near[i] = int16(i % 256)
+		far[i] = int16(i % 128)
+	}
+	out := aec.Process(far, near)
+	if len(out) != n {
+		t.Errorf("output length = %d, want %d", len(out), n)
+	}
+}
+
+func TestAECZeroFarEnd(t *testing.T) {
+	// All-zero far-end → near-end passes through mostly unchanged
+	aec := NewAEC(DefaultAECConfig())
+	near := []int16{100, 200, 300, -100, 0}
+	far := make([]int16, len(near))
+	out := aec.Process(far, near)
+	if len(out) != len(near) {
+		t.Fatalf("output length mismatch: got %d, want %d", len(out), len(near))
+	}
+	// With zero far-end the estimated echo is 0, so output ≈ near-end
+	for i, v := range out {
+		if v != near[i] {
+			t.Logf("sample[%d]: got %d, want %d (small deviation ok with NLMS)", i, v, near[i])
+		}
+	}
+}

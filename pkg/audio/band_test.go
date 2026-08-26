@@ -85,3 +85,30 @@ func TestNeedsDownsample(t *testing.T) {
 		t.Error("NeedsDownsample(48000) should be true")
 	}
 }
+
+func TestBandModeString(t *testing.T) {
+	cases := []struct {
+		mode BandMode
+		want string
+	}{
+		{BandNarrow, "narrowband(8kHz)"},
+		{BandWide, "wideband(16kHz)"},
+		{BandSuperWide, "super-wideband(32kHz)"},
+		{BandFull, "fullband(48kHz)"},
+		{BandMode(99), "unknown"},
+	}
+	for _, c := range cases {
+		got := c.mode.String()
+		if got != c.want {
+			t.Errorf("BandMode(%d).String() = %q, want %q", c.mode, got, c.want)
+		}
+	}
+}
+
+func TestBandModeSampleRateDefault(t *testing.T) {
+	// Unknown band mode → default 8000
+	b := BandMode(42)
+	if b.SampleRate() != 8000 {
+		t.Errorf("unknown BandMode.SampleRate() = %d, want 8000", b.SampleRate())
+	}
+}
