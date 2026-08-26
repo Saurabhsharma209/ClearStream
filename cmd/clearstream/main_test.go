@@ -13,6 +13,7 @@
 package main
 
 import (
+	"github.com/exotel/clearstream/pkg/audio"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -89,5 +90,34 @@ func TestRunDir_WiresConfiguredSuppressor(t *testing.T) {
 	outPath := filepath.Join(dstDir, "call.wav")
 	if _, err := os.Stat(outPath); err != nil {
 		t.Fatalf("expected enhanced output at %s, got: %v", outPath, err)
+	}
+}
+
+// TestResolveRTPCodec_PTOverridesCodecWhenExplicitlySet exercises runRTP's
+// documented -pt/-codec precedence contract in isolation, without the
+// subprocess machinery main_subprocess_test.go needs for runRTP itself:
+// -pt "overrides --codec if set" only when the caller actually passed -pt
+// (its zero value, 0, is also a legitimate PCMU payload type and can't
+// double as an "unset" sentinel, which is why runRTP tracks this via
+// fs.Visit rather than checking *pt != 0).
+func TestResolveRTPCodec_PTOverridesCodecWhenExplicitlySet(t *testing.T) {
+	cases := []struct {
+		name            string
+		codec           string
+		ptExplicitlySet bool
+		want            audio.Codec
+	}{
+		{"auto codec always defers to payload type", "auto", false, ""},
+		{"auto codec defers even when pt also set", "auto", true, ""},
+		{"explicit codec applies when pt not set", "pcma", false, audio.Codec("pcma")},
+		{"explicit pt overrides an explicit codec", "pcma", true, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveRTPCodec(tc.codec, tc.ptExplicitlySet)
+			if got != tc.want {
+				t.Fatalf("resolveRTPCodec(%q, %v) = %q, want %q", tc.codec, tc.ptExplicitlySet, got, tc.want)
+			}
+		})
 	}
 }

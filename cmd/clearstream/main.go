@@ -229,6 +229,21 @@ func runFile(args []string) {
 	fmt.Printf("Done in %.1fs -> %s\n", time.Since(start).Seconds(), *output)
 }
 
+// resolveRTPCodec decides the RTP codec to configure from the -codec and
+// -pt flags, per runRTP's documented contract that -pt overrides -codec
+// when explicitly set. codec is the raw -codec flag value ("auto" means
+// "derive from payload type"); ptExplicitlySet is true only when -pt was
+// actually passed on the command line, not merely left at its zero-value
+// default (0 is itself a legal PCMU payload type, so it can't be used as
+// an "unset" sentinel). Returns "" (meaning: let rtppkg.Config resolve
+// Codec from PayloadType instead) whenever codec is "auto" or -pt won.
+func resolveRTPCodec(codec string, ptExplicitlySet bool) audio.Codec {
+	if codec == "auto" || ptExplicitlySet {
+		return ""
+	}
+	return audio.Codec(codec)
+}
+
 func runRTP(args []string) {
 	fs := flag.NewFlagSet("rtp", flag.ExitOnError)
 	listen := fs.String("listen", ":5004", "UDP address to receive RTP packets")
@@ -264,9 +279,17 @@ func runRTP(args []string) {
 				s.PacketsReceived, s.PacketsSent, s.PacketsLost, s.LatencyAvgMs)
 		},
 	}
-	if *codec != "auto" {
-		rtpCfg.Codec = audio.Codec(*codec)
-	}
+	// ptSet tracks whether -pt was explicitly passed on the command line
+	// (as opposed to holding its zero-value default, which is itself a
+	// legal PCMU payload type) so resolveRTPCodec can honor the flag's
+	// own documented contract: "-pt overrides --codec if set".
+	ptSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "pt" {
+			ptSet = true
+		}
+	})
+	rtpCfg.Codec = resolveRTPCodec(*codec, ptSet)
 
 	session, err := cs.NewRTPSession(rtpCfg)
 	must("create RTP session", err)
