@@ -2571,3 +2571,24 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 ### Tomorrow
 1. QA/Testing, Audio Pipeline, Post-processing, API Layer: due per rotation.
 2. Decide what to do with `feature/exotel-agentstream` so it doesn't drift further from main.
+
+## 2026-08-26
+
+**Agents run:** API Layer (cmd/clearstream runRTP -pt/-codec precedence), Audio Pipeline (pkg/audio Pipeline.CurrentSpeaker coverage), Post-processing (pkg/file killProcessGroup coverage)
+**Build:** passing (go build ./... and CGO_ENABLED=0 go test ./... green on the dev Mac's go1.17 toolchain; no run 2026-08-25, rotation resumed today per the 08-24 (session 2) "Tomorrow" list)
+
+### Changes
+- `cmd/clearstream/main.go`, `cmd/clearstream/main_test.go` (new test): `runRTP`'s `-pt` flag has always been documented as "RTP payload type (overrides --codec if set)", but the code set `rtpCfg.Codec` from `-codec` unconditionally whenever it wasn't `"auto"`, regardless of whether `-pt` was actually passed -- so `-pt` never overrode anything. Extracted the precedence decision into `resolveRTPCodec(codec, ptExplicitlySet)`, detecting an explicit `-pt` via `fs.Visit` since its zero value (0) is itself a legal PCMU payload type and can't double as an "unset" sentinel. New table-driven test covers all four codec/pt combinations directly, without the subprocess re-exec machinery `runRTP` itself needs.
+- `pkg/audio/pipeline_currentspeaker_test.go` (new): `Pipeline.CurrentSpeaker` (added 08-17) was the only 0%-covered exported function left in `pkg/audio`. Added a test covering the no-Diarizer `SpeakerUnknown` default and the case where a configured `EnergyDiarizer`'s open segment is live-reflected through `CurrentSpeaker` before it ever appears in `DiarizationSegments` (completed segments only) -- the exact distinction the function's own doc comment describes.
+- `pkg/file/procgroup_unix_test.go` (new): `killProcessGroup` was the only 0%-covered function in `pkg/file`, backing the 08-24 orphaned-subprocess fix pattern. Added a real subprocess test: starts a shell that forks a grandchild `sleep` in the same process group via `setNewProcessGroup`, calls `killProcessGroup`, and confirms both the direct child and the grandchild actually die (not just the direct child, which `cmd.Process.Kill()` alone would guarantee) -- plus a nil-safety test for the two documented no-op guards.
+
+### Blocked
+- Today's default Linux sandbox (`mcp__workspace__bash`) hit "No space left on device" on the very first `git clone` -- the shared `/sessions` volume was at 100% with 0 bytes free (not cleanable from this session; `du` on this session's own directory showed only ~6MB, so the exhaustion is other tenants' data on a shared disk, not anything local). This is now a recurring, multi-week pattern (see 08-17, 08-18, 08-24 x2) with a different specific failure mode nearly every time. Per the standing recommendation, pivoted immediately to the dev Mac via `mcp__Control_your_Mac__osascript`, which has the repo, git credentials, and a working go1.17 toolchain. Also note: `osascript "do shell script"` appears to have an internal timeout well under a minute -- long-running commands (`go test ./...`, `sleep`) must be backgrounded with `&` and polled via a log file rather than awaited directly, and multi-line/nested-quote AppleScript string literals remain unreliable (confirmed again today), so every file edit was done via a single-line `python3 -c`-equivalent (base64-encoded script piped through `python3 -`) rather than heredocs.
+- `pkg/audio/diarize_test.go.1351406117324279980` and similar oddly-named sibling files under `pkg/http/` (`handler.go.3500228123167580552`, etc.) look like leftover artifacts from an interrupted save/rename in a prior session -- left untouched (out of today's file scope, not mine to guess about and discard) but flagging for whoever next touches those packages.
+- `feature/exotel-agentstream` branch (flagged repeatedly since 08-05) still unmerged/untracked outside the normal rotation -- untouched again today, still needs a human decision.
+- QA/Testing: still due per the 08-24 (session 2) rotation list; only 3 of the usual 2-3 target ran today (Audio Pipeline, Post-processing, API Layer), QA/Testing carries forward.
+
+### Tomorrow
+1. QA/Testing: most overdue slot, carried forward from 08-24.
+2. RTP/SIP: due again per rotation (last touched 08-24 session 2).
+3. Decide what to do with `feature/exotel-agentstream` so it doesn't drift further from main; investigate the stray `.NNNNNNNNNN`-suffixed files under `pkg/audio/` and `pkg/http/`.
