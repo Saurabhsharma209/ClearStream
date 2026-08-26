@@ -2592,3 +2592,24 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. QA/Testing: most overdue slot, carried forward from 08-24.
 2. RTP/SIP: due again per rotation (last touched 08-24 session 2).
 3. Decide what to do with `feature/exotel-agentstream` so it doesn't drift further from main; investigate the stray `.NNNNNNNNNN`-suffixed files under `pkg/audio/` and `pkg/http/`.
+
+## 2026-08-26 (session 2)
+
+**Focus:** User-directed infra work (not the normal 6-workstream rotation) -- upgrade the Go toolchain to latest.
+
+### Changes
+- `go.mod`: `go 1.18` -> `go 1.26` (latest stable; released Feb 2026, currently at patch 1.26.7).
+- `.github/workflows/ci.yml`: build-and-test matrix `["1.21", "1.22"]` -> `["1.25", "1.26"]`; the onnx-tag build job and the release job both bumped from `"1.22"` -> `"1.26"`.
+- `Dockerfile`, `Dockerfile.slim`: base images bumped from `golang:1.22-alpine` / `golang:1.21-alpine` to `golang:1.26-alpine`.
+- Downloaded the real go1.26.7 darwin/arm64 toolchain to `~/sdk/go1.26.7` (no system Go touched, no sudo used) and verified against it directly: `go build ./...`, `go vet ./...`, and `go mod tidy` (which only filled in a handful of previously-missing go.sum checksum lines -- no dependency versions changed) are all clean.
+
+### Verification
+- `go test ./...` under go1.26.7: every package passes except two `pkg/file` cancellation-timing tests (`TestProcessWithOptionsContextCancelKillsRunningFFmpegDuringDecode/Encode`) that failed on the full-suite run under parallel load -- both pass cleanly when run in isolation or as `pkg/file` standalone, confirming this is the same pre-existing timing flakiness already documented in the 08-24 entry, not a Go-1.26 regression.
+- `pkg/model`'s CGo-dependent suite (RNNoise) still needs the dev Mac's persistent CGO/dyld caveat noted in every prior entry -- ran under `CGO_ENABLED=0` like all other runs this month; unaffected by the toolchain bump either way.
+
+### Blocked
+- Nothing new. The Linux-sandbox disk-space issue from earlier today (see session 1) still stands as the reason this work also happened on the dev Mac checkout.
+
+### Tomorrow
+1. QA/Testing, RTP/SIP: still due per the normal rotation (unaffected by today's session 2 infra work).
+2. Consider re-enabling `CGO_ENABLED=1` test runs on the dev Mac now that the toolchain is current, if the go1.17-era dyld issue was toolchain-related rather than macOS-version-related -- worth a quick check next time pkg/model rotates.
