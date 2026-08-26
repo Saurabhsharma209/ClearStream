@@ -40,3 +40,7 @@ eval_results.json
 
 # Eval output (large CSVs, WAV outputs)
 eval_out/
+
+# Python virtualenvs (e.g. voice-qa/browser-lab/orchestrator/.venv)
+.venv/
+venv/

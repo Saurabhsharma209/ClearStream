@@ -253,6 +253,8 @@ See [COMPATIBILITY.md](COMPATIBILITY.md) for version-specific caveats and config
 
 ## Development
 
+See [docs/REPO_LAYOUT.md](docs/REPO_LAYOUT.md) for a map of what each top-level directory is for (core SDK vs. eval/QA/tooling).
+
 ```bash
 make test        # all tests with race detector
 make bench       # benchmarks
