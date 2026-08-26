@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -326,5 +327,48 @@ func TestNewSuppressor_DeepfilterServerBackend(t *testing.T) {
 	defer s.Close()
 	if s.Name() != "deepfilter-server" {
 		t.Errorf("Name() = %q, want deepfilter-server", s.Name())
+	}
+}
+
+// TestDeepFilterServer_Reset_Coverage exercises Reset() on deepFilterServerSuppressor.
+func TestDeepFilterServer_Reset_Coverage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	s := &deepFilterServerSuppressor{
+		serverURL: srv.URL,
+		client:    &http.Client{Timeout: 2 * time.Second},
+		logger:    makeTestLogger(),
+	}
+	s.Reset()
+	s.Reset()
+}
+
+// TestDeepFilterServer_Close_WithCmd exercises the cmd != nil branch in Close().
+func TestDeepFilterServer_Close_WithCmd(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot start sleep process: %v", err)
+	}
+
+	s := &deepFilterServerSuppressor{
+		serverURL: srv.URL,
+		client:    &http.Client{Timeout: 2 * time.Second},
+		logger:    makeTestLogger(),
+		cmd:       cmd,
+	}
+
+	if err := s.Close(); err != nil {
+		t.Errorf("Close() with cmd: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Errorf("second Close() after cmd: %v", err)
 	}
 }

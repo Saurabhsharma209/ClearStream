@@ -1,6 +1,7 @@
 package model_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/exotel/clearstream/pkg/model"
@@ -74,4 +75,71 @@ func BenchmarkBatchVsSequential(b *testing.B) {
 			bs.ProcessBatch(frames)
 		}
 	})
+}
+
+// minimalSuppressor implements Suppressor but NOT BatchSuppressor,
+// so AsBatch wraps it in a BatchWrapper (exercising batch.go).
+type minimalSuppressor struct {
+	fail bool
+	name string
+}
+
+func (m *minimalSuppressor) Process(frame []int16) ([]int16, error) {
+	if m.fail {
+		return nil, errors.New("process error")
+	}
+	out := make([]int16, len(frame))
+	copy(out, frame)
+	return out, nil
+}
+
+func (m *minimalSuppressor) Reset() {}
+
+func (m *minimalSuppressor) Close() error { return nil }
+
+func (m *minimalSuppressor) Name() string { return m.name }
+
+// TestBatchWrapper_DirectMethods exercises batch.go Process/Reset/Close/Name.
+func TestBatchWrapper_DirectMethods(t *testing.T) {
+	inner := &minimalSuppressor{name: "minimal"}
+	bw := model.AsBatch(inner) // returns *BatchWrapper since inner lacks ProcessBatch
+
+	// Cast to Suppressor to call the wrapper's own methods.
+	s, ok := bw.(model.Suppressor)
+	if !ok {
+		t.Fatal("BatchWrapper must implement Suppressor")
+	}
+
+	frame := []int16{1, 2, 3, 4}
+	out, err := s.Process(frame)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if len(out) != len(frame) {
+		t.Errorf("Process: got %d samples, want %d", len(out), len(frame))
+	}
+
+	if name := s.Name(); name != "minimal+batch" {
+		t.Errorf("Name() = %q, want %q", name, "minimal+batch")
+	}
+
+	s.Reset()
+	if err := s.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}
+
+// TestBatchWrapper_ProcessBatch_Error verifies partial-result on error.
+func TestBatchWrapper_ProcessBatch_Error(t *testing.T) {
+	inner := &minimalSuppressor{name: "failer", fail: true}
+	bw := model.AsBatch(inner)
+
+	frames := [][]int16{{1, 2}, {3, 4}, {5, 6}}
+	out, err := bw.ProcessBatch(frames)
+	if err == nil {
+		t.Fatal("expected error from failing suppressor, got nil")
+	}
+	if len(out) != len(frames) {
+		t.Errorf("ProcessBatch: output length %d, want %d", len(out), len(frames))
+	}
 }

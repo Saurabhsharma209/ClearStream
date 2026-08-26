@@ -1,3 +1,6 @@
+// Package model internal-package BatchWrapper tests: split out from
+// batch_test.go (package model_test) because these use unexported helpers
+// (errSuppressor) and must live in the internal test package.
 package model
 
 import (
@@ -21,8 +24,11 @@ func (e *errSuppressor) Process(frame []int16) ([]int16, error) {
 	copy(out, frame)
 	return out, nil
 }
-func (e *errSuppressor) Reset()       {}
+
+func (e *errSuppressor) Reset() {}
+
 func (e *errSuppressor) Close() error { return nil }
+
 func (e *errSuppressor) Name() string { return "errsup" }
 
 // TestBatchWrapper_ProcessBatch_ErrorPath exercises the early-exit path in
@@ -78,5 +84,33 @@ func TestBatchWrapper_Name_format(t *testing.T) {
 	bw := &BatchWrapper{s: NewPassthrough()}
 	if got := bw.Name(); got != "passthrough+batch" {
 		t.Errorf("Name() = %q, want %q", got, "passthrough+batch")
+	}
+}
+
+// TestBatchWrapper_ProcessBatch_MidError verifies partial-result semantics:
+// processed frames before the error are returned, remaining frames fall back to originals.
+func TestBatchWrapper_ProcessBatch_MidError(t *testing.T) {
+	inner := &errSuppressor{failAt: 1}
+	bw := &BatchWrapper{s: inner}
+
+	frames := [][]int16{
+		{10, 20},
+		{30, 40},
+		{50, 60},
+	}
+	out, err := bw.ProcessBatch(frames)
+	if err == nil {
+		t.Fatal("expected error from ProcessBatch, got nil")
+	}
+	if len(out) != len(frames) {
+		t.Fatalf("output length = %d, want %d", len(out), len(frames))
+	}
+	if out[0] == nil {
+		t.Error("out[0] should be processed (non-nil)")
+	}
+	for i := 1; i < len(frames); i++ {
+		if len(out[i]) != len(frames[i]) {
+			t.Errorf("out[%d]: got len %d, want %d (original)", i, len(out[i]), len(frames[i]))
+		}
 	}
 }
