@@ -2613,3 +2613,32 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 ### Tomorrow
 1. QA/Testing, RTP/SIP: still due per the normal rotation (unaffected by today's session 2 infra work).
 2. Consider re-enabling `CGO_ENABLED=1` test runs on the dev Mac now that the toolchain is current, if the go1.17-era dyld issue was toolchain-related rather than macOS-version-related -- worth a quick check next time pkg/model rotates.
+
+## 2026-08-26 (session 3)
+
+**Focus:** User-directed repo hygiene / navigability cleanup (not the normal 6-workstream rotation) -- prompted by "do we have a lot of unnecessary files, and are they confusing a developer."
+
+### Findings
+- GitHub itself (tracked files) was already lean: no binaries, no coverage output, no generated audio, `.gitignore` already excluded the obvious junk. The confusion was two real things instead: two stray generated JSON reports sitting at repo root, and heavy test-file fragmentation inside `pkg/model`, `pkg/eval`, and (to a lesser extent) `pkg/audio` from the daily-agent habit of adding a new `*_extra_test.go` / `coverage_*_test.go` file per session instead of extending an existing one.
+- Also found (local-only, not on GitHub): `voice-qa/browser-lab/orchestrator/.venv` -- a Python virtualenv with thousands of files that self-ignores via its own generated `.gitignore` but makes a local directory browse look far larger than what git actually tracks. Documented in the new repo layout doc; added an explicit top-level `.gitignore` rule as a second safety net.
+
+### Changes
+- Removed `audio_processing_report.json` and `impact_report.json` from repo root -- unreferenced one-off generated output from a June debugging session.
+- Added `docs/REPO_LAYOUT.md` (linked from README) mapping every top-level directory, with particular attention to the four different eval/QA surfaces (`pkg/eval`, `qa/e2e`, `qa/eval`, `voice-qa`) that look redundant but each answer a different question.
+- `pkg/model`: merged 8 vaguely-named files (`batch_extra_test.go`, `coverage_batch_test.go`, `coverage_model_test.go`, `interface_batch_test.go`, `interface_extra_test.go`, `model_extra_test.go`, `passthrough_extra_test.go`, `pool_extra_test.go` -- 64 functions) into `batch_test.go`, `passthrough_test.go`, `mock_test.go`, `pool_test.go`, `deepfilter_server_test.go`, and a new `interface_test.go`. Hit and fixed a real internal/external test-package boundary bug mid-merge (some content was `package model_test`, some `package model` -- they can't share a file); split the internal-only BatchWrapper tests into a new `batch_internal_test.go`.
+- `pkg/audio`: merged the single `coverage_boost_test.go` (67 declarations spanning nearly every source file) into `aec_test.go`, `band_test.go`, `diarize_test.go`, `resample_test.go`, `agc_test.go`, `quality_test.go`, `pipeline_internal_test.go`, and a new `codec_internal_test.go`. Left the package's other 28 test files alone -- they already use clear scenario-specific names and aren't part of the confusion.
+- `pkg/eval`: merged `coverage_boost_test.go`, `coverage_boost2_test.go`, `coverage_final_test.go`, `eval_extra_test.go` (66 functions) into existing `transcript_test.go`/`batch_test.go` plus three new files -- `rtp_monitor_test.go`, `report_test.go`, `metrics_test.go` -- for source files (`rtp_monitor.go`, `report.go`, `metrics.go`) that had zero dedicated test file before today despite being fully covered by tests, just scattered across the grab-bag files.
+- All merges done verbatim via a small go/parser-based extraction tool (not manual copy-paste or regex), to guarantee correct handling of braces/strings/comments across ~200 relocated declarations.
+
+### Verification
+- `go build ./...` and `go vet ./...` clean after every package's merge, not just at the end.
+- `go test ./pkg/model/...` (120 tests), `./pkg/audio/...` (235 tests), `./pkg/eval/...` (123 tests), and finally full `go test ./...` all pass with zero failures.
+- Net effect: 13 confusingly-named files deleted, 6 new subject-named files created, ~200 test functions relocated with no logic changes -- same test coverage, easier to find anything.
+
+### Blocked
+- Nothing new today.
+
+### Tomorrow
+1. QA/Testing, RTP/SIP: still due per the normal rotation (carried forward again -- three straight sessions today were all user-directed infra/hygiene work, not the daily rotation).
+2. Decide what to do with `feature/exotel-agentstream` so it doesn't drift further from main.
+3. The stray `.NNNNNNNNNN`-suffixed files flagged under `pkg/http/` on 08-26 (session 1) are still untouched -- out of scope for today's cleanup, still needs a look.
