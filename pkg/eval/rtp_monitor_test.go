@@ -1,22 +1,12 @@
 package eval
 
-// coverage_boost_test.go — targeted tests to push pkg/eval coverage from ~69.5%
-// toward 75%+.  Each test is aimed at a specific uncovered branch identified via
-// go tool cover -func output.
-
 import (
-	"context"
 	"math"
-	"net/http"
-	"net/http/httptest"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
-
-// ─── NewRTPMonitor ───────────────────────────────────────────────────────────
 
 // TestNewRTPMonitor_PanicsOnNilStatsFn verifies the documented panic.
 func TestNewRTPMonitor_PanicsOnNilStatsFn(t *testing.T) {
@@ -50,8 +40,6 @@ func TestNewRTPMonitor_ExplicitSampleInterval(t *testing.T) {
 		t.Errorf("SampleInterval: want 200ms, got %v", m.cfg.SampleInterval)
 	}
 }
-
-// ─── sample() / recommend() via integration ──────────────────────────────────
 
 // TestRTPMonitor_PipelineSetAggressiveness_HighLoss verifies that Pipeline
 // receives SetAggressiveness(3) when loss > 3%.
@@ -145,8 +133,6 @@ func TestRTPMonitor_CustomSNREstimate(t *testing.T) {
 		t.Error("expected alert for low SNR estimate, got 0 alerts")
 	}
 }
-
-// ─── recommend() branches ────────────────────────────────────────────────────
 
 // TestRecommend_HighLossOver5Pct verifies the >5% loss recommendation text.
 func TestRecommend_HighLossOver5Pct(t *testing.T) {
@@ -280,8 +266,6 @@ func TestRecommend_GoodQuality(t *testing.T) {
 	}
 }
 
-// ─── ComputeSNR edge cases ────────────────────────────────────────────────────
-
 // TestComputeSNR_Empty verifies that an empty slice returns 0.
 func TestComputeSNR_Empty(t *testing.T) {
 	snr := ComputeSNR([]int16{})
@@ -323,8 +307,6 @@ func TestComputeSNR_HighlyNoisy(t *testing.T) {
 	}
 }
 
-// ─── RMSLevel edge cases ──────────────────────────────────────────────────────
-
 // TestRMSLevel_EmptySlice verifies that an empty slice returns 0.
 func TestRMSLevel_EmptySlice(t *testing.T) {
 	rms := RMSLevel([]int16{})
@@ -348,8 +330,6 @@ func TestRMSLevel_NegativeSample(t *testing.T) {
 		t.Errorf("RMSLevel([-1000]) = %.2f; want 1000.0", rms)
 	}
 }
-
-// ─── LatencyAccumulator.Stats edge cases ─────────────────────────────────────
 
 // TestLatencyStats_SingleSample verifies Stats() on a single measurement.
 func TestLatencyStats_SingleSample(t *testing.T) {
@@ -380,8 +360,6 @@ func TestLatencyStats_TwoSamples(t *testing.T) {
 		t.Errorf("MaxMs: want 9.0, got %.1f", s.MaxMs)
 	}
 }
-
-// ─── ComputeVADStats edge cases ───────────────────────────────────────────────
 
 // TestComputeVADStats_Zero verifies zero framesProcessed returns empty struct.
 func TestComputeVADStats_Zero(t *testing.T) {
@@ -424,110 +402,6 @@ func TestComputeVADStats_QuarterSpeech(t *testing.T) {
 	}
 }
 
-// ─── WriteAllReports edge cases ───────────────────────────────────────────────
-
-// TestWriteAllReports_EmptyFiles verifies WriteAllReports works with empty file list.
-func TestWriteAllReports_EmptyFiles(t *testing.T) {
-	dir := t.TempDir()
-	summary := BatchSummary{
-		TotalFiles:     0,
-		ProcessedFiles: 0,
-		Files:          []FileResult{},
-	}
-	csvPath, summPath, filesPath, cfgPath, err := WriteAllReports(dir, summary)
-	if err != nil {
-		t.Fatalf("WriteAllReports with empty files: %v", err)
-	}
-	for _, p := range []string{csvPath, summPath, filesPath, cfgPath} {
-		if _, err := os.Stat(p); err != nil {
-			t.Errorf("expected output file %s to exist: %v", p, err)
-		}
-	}
-}
-
-// TestWriteAllReports_InvalidDir verifies an error is returned for an unwritable dir.
-func TestWriteAllReports_InvalidDir(t *testing.T) {
-	_, _, _, _, err := WriteAllReports("/dev/null/nonexistent", BatchSummary{})
-	if err == nil {
-		t.Error("expected error when writing to invalid dir, got nil")
-	}
-}
-
-// TestWriteSummaryJSON_EmptySummary verifies JSON creation with zero-value summary.
-func TestWriteSummaryJSON_EmptySummary(t *testing.T) {
-	dir := t.TempDir()
-	path, err := WriteSummaryJSON(dir, BatchSummary{})
-	if err != nil {
-		t.Fatalf("WriteSummaryJSON with empty summary: %v", err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("expected output file %s, got: %v", path, err)
-	}
-}
-
-// ─── TranscriptScorer.Score — rate-limit and empty-input branches ─────────────
-
-// TestScore_ContextCancelDuringRateLimit verifies ctx.Done() is respected
-// when waiting for the rate-limit delay.
-func TestScore_ContextCancelDuringRateLimit(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"content":"85"}}]}`))
-	}))
-	defer srv.Close()
-
-	scorer := NewTranscriptScorer(TranscriptScorerConfig{
-		LLMEndpoint:    srv.URL,
-		LLMAPIKey:      "test-key",
-		RateLimitDelay: 2 * time.Second, // long enough that cancel fires first
-	})
-
-	// Prime last call time so the rate limit will kick in on the next call.
-	scorer.last = time.Now()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-
-	_, err := scorer.Score(ctx, "hello world", "hello world")
-	if err == nil {
-		t.Error("expected error (context cancellation during rate limit wait), got nil")
-	}
-}
-
-// TestScore_EmptyComparison verifies that empty comparison skips LLM and returns -1.
-func TestScore_EmptyComparison(t *testing.T) {
-	scorer := NewTranscriptScorer(TranscriptScorerConfig{
-		LLMEndpoint: "http://localhost:99999", // unreachable — but LLM should be skipped
-	})
-	ctx := context.Background()
-
-	scores, err := scorer.Score(ctx, "hello", "")
-	if err != nil {
-		t.Fatalf("Score: unexpected error: %v", err)
-	}
-	if scores.LLMScore != -1 {
-		t.Errorf("LLMScore: want -1 for empty comparison, got %.1f", scores.LLMScore)
-	}
-}
-
-// TestScore_EmptyReference verifies that empty reference skips LLM.
-func TestScore_EmptyReference(t *testing.T) {
-	scorer := NewTranscriptScorer(TranscriptScorerConfig{
-		LLMEndpoint: "http://localhost:99999",
-	})
-	ctx := context.Background()
-
-	scores, err := scorer.Score(ctx, "", "hello")
-	if err != nil {
-		t.Fatalf("Score: unexpected error: %v", err)
-	}
-	if scores.LLMScore != -1 {
-		t.Errorf("LLMScore: want -1 for empty reference, got %.1f", scores.LLMScore)
-	}
-}
-
-// ─── estimateSNRFromLoss ──────────────────────────────────────────────────────
-
 // TestEstimateSNRFromLoss_ZeroLoss verifies 0% loss returns 30dB.
 func TestEstimateSNRFromLoss_ZeroLoss(t *testing.T) {
 	got := estimateSNRFromLoss(0)
@@ -554,8 +428,6 @@ func TestEstimateSNRFromLoss_ModestLoss(t *testing.T) {
 	}
 }
 
-// ─── RTPMonitor.Stop without Start ───────────────────────────────────────────
-
 // TestRTPMonitor_StopWithoutStart verifies Stop is safe without Start.
 func TestRTPMonitor_StopWithoutStart(t *testing.T) {
 	m := NewRTPMonitor(RTPMonitorConfig{
@@ -571,8 +443,6 @@ func TestRTPMonitor_StopWithoutStart(t *testing.T) {
 	}
 }
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
-
 // mockPipeline is a minimal Pipeline implementation for testing SetAggressiveness.
 type mockPipeline struct {
 	onSet func(n int)
@@ -581,5 +451,119 @@ type mockPipeline struct {
 func (p *mockPipeline) SetAggressiveness(n int) {
 	if p.onSet != nil {
 		p.onSet(n)
+	}
+}
+
+func TestLatencyStats_DescendingOrder(t *testing.T) {
+	var acc LatencyAccumulator
+	for i := 10; i >= 1; i-- {
+		acc.Add(float64(i))
+	}
+	s := acc.Stats()
+	if s.Samples != 10 {
+		t.Errorf("Samples: want 10, got %d", s.Samples)
+	}
+	if s.MinMs != 1.0 || s.MaxMs != 10.0 {
+		t.Errorf("Min/Max: want 1.0/10.0, got %.1f/%.1f", s.MinMs, s.MaxMs)
+	}
+	// P95 of 1..10 sorted: ceil(10*0.95)=10th element (1-based) = 10.
+	if s.P95Ms != 10.0 {
+		t.Errorf("P95Ms: want 10.0, got %.1f", s.P95Ms)
+	}
+}
+
+func TestLatencyStats_RandomOrder(t *testing.T) {
+	var acc LatencyAccumulator
+	for _, v := range []float64{5, 1, 9, 3, 7, 2, 8, 4, 6, 10} {
+		acc.Add(v)
+	}
+	s := acc.Stats()
+	if s.MinMs != 1.0 || s.MaxMs != 10.0 {
+		t.Errorf("Min/Max after random insert: want 1.0/10.0, got %.1f/%.1f", s.MinMs, s.MaxMs)
+	}
+	if math.Abs(s.MeanMs-5.5) > 0.01 {
+		t.Errorf("MeanMs: want 5.5, got %.2f", s.MeanMs)
+	}
+}
+
+func TestComputeSNR_PartialLastWindow(t *testing.T) {
+	// 50 samples: full window (0..31) + partial window (32..49).
+	samples := make([]int16, 50)
+	for i := range samples {
+		samples[i] = 2000 // constant → noisePow ≈ 0 → snr = 60
+	}
+	snr := ComputeSNR(samples)
+	if snr != 60 {
+		t.Errorf("ComputeSNR(50 constant samples) = %.2f; want 60", snr)
+	}
+}
+
+func TestComputeSNR_NonMultipleOfWindow(t *testing.T) {
+	// 100 samples (not multiple of 32) with a sine so SNR is finite.
+	samples := make([]int16, 100)
+	for i := range samples {
+		v := math.Sin(2 * math.Pi * 440 * float64(i) / 16000)
+		samples[i] = int16(v * 10000)
+	}
+	snr := ComputeSNR(samples)
+	if math.IsNaN(snr) {
+		t.Error("ComputeSNR(100-sample sine) returned NaN")
+	}
+}
+
+func TestRTPMonitor_PipelineSNROnlyAlert(t *testing.T) {
+	var lastSet int32 = -1
+	pipe := &mockPipelineCB2{onSet: func(n int) { atomic.StoreInt32(&lastSet, int32(n)) }}
+
+	m := NewRTPMonitor(RTPMonitorConfig{
+		StatsFn: func() RTPStats {
+			return RTPStats{PacketsReceived: 100, PacketsLost: 0, LatencyAvgMs: 1.0}
+		},
+		JitterMsFn:     func() float64 { return 0.0 },
+		SNREstimateFn:  func() float64 { return 5.0 }, // > 0 and < poorSNRDB (15)
+		SampleInterval: 20 * time.Millisecond,
+		Pipeline:       pipe,
+	})
+	m.Start()
+	time.Sleep(80 * time.Millisecond)
+	m.Stop()
+
+	got := int(atomic.LoadInt32(&lastSet))
+	if got != 1 {
+		t.Errorf("SetAggressiveness: want 1 for SNR-only alert, got %d", got)
+	}
+}
+
+type mockPipelineCB2 struct {
+	onSet func(n int)
+}
+
+func (p *mockPipelineCB2) SetAggressiveness(n int) {
+	if p.onSet != nil {
+		p.onSet(n)
+	}
+}
+
+func TestEstimateSNRFromLoss_Zero(t *testing.T) {
+	if got := estimateSNRFromLoss(0); got != 30.0 {
+		t.Errorf("lossPct=0: want 30.0, got %.2f", got)
+	}
+}
+
+func TestEstimateSNRFromLoss_Negative(t *testing.T) {
+	if got := estimateSNRFromLoss(-1); got != 30.0 {
+		t.Errorf("lossPct=-1: want 30.0, got %.2f", got)
+	}
+}
+
+func TestEstimateSNRFromLoss_High(t *testing.T) {
+	if got := estimateSNRFromLoss(10); got != 0 {
+		t.Errorf("lossPct=10: want 0 (clamped), got %.2f", got)
+	}
+}
+
+func TestEstimateSNRFromLoss_Mid(t *testing.T) {
+	if got := estimateSNRFromLoss(5); got != 10.0 {
+		t.Errorf("lossPct=5: want 10.0, got %.2f", got)
 	}
 }

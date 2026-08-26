@@ -302,3 +302,15 @@ func TestLastLine(t *testing.T) {
 		})
 	}
 }
+
+func TestMax_FirstGreater(t *testing.T) {
+	if got := max(7, 2); got != 7 {
+		t.Errorf("max(7,2) = %d; want 7", got)
+	}
+}
+
+func TestMax_SecondGreater(t *testing.T) {
+	if got := max(3, 5); got != 5 {
+		t.Errorf("max(3,5) = %d; want 5", got)
+	}
+}

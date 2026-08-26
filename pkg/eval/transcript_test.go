@@ -2,8 +2,13 @@ package eval
 
 import (
 	"context"
+	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 // ─── normaliseText ────────────────────────────────────────────────────────────
@@ -254,5 +259,195 @@ func TestScoreAll_SkipsEmptyReference(t *testing.T) {
 	// LLM disabled → AvgLLM should be 0 (no LLM scores accumulated)
 	if summary.AvgLLM != 0 {
 		t.Errorf("AvgLLM = %.4f; want 0 (LLM disabled)", summary.AvgLLM)
+	}
+}
+
+// TestScore_ContextCancelDuringRateLimit verifies ctx.Done() is respected
+// when waiting for the rate-limit delay.
+func TestScore_ContextCancelDuringRateLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"85"}}]}`))
+	}))
+	defer srv.Close()
+
+	scorer := NewTranscriptScorer(TranscriptScorerConfig{
+		LLMEndpoint:    srv.URL,
+		LLMAPIKey:      "test-key",
+		RateLimitDelay: 2 * time.Second, // long enough that cancel fires first
+	})
+
+	// Prime last call time so the rate limit will kick in on the next call.
+	scorer.last = time.Now()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := scorer.Score(ctx, "hello world", "hello world")
+	if err == nil {
+		t.Error("expected error (context cancellation during rate limit wait), got nil")
+	}
+}
+
+// TestScore_EmptyComparison verifies that empty comparison skips LLM and returns -1.
+func TestScore_EmptyComparison(t *testing.T) {
+	scorer := NewTranscriptScorer(TranscriptScorerConfig{
+		LLMEndpoint: "http://localhost:99999", // unreachable — but LLM should be skipped
+	})
+	ctx := context.Background()
+
+	scores, err := scorer.Score(ctx, "hello", "")
+	if err != nil {
+		t.Fatalf("Score: unexpected error: %v", err)
+	}
+	if scores.LLMScore != -1 {
+		t.Errorf("LLMScore: want -1 for empty comparison, got %.1f", scores.LLMScore)
+	}
+}
+
+// TestScore_EmptyReference verifies that empty reference skips LLM.
+func TestScore_EmptyReference(t *testing.T) {
+	scorer := NewTranscriptScorer(TranscriptScorerConfig{
+		LLMEndpoint: "http://localhost:99999",
+	})
+	ctx := context.Background()
+
+	scores, err := scorer.Score(ctx, "", "hello")
+	if err != nil {
+		t.Fatalf("Score: unexpected error: %v", err)
+	}
+	if scores.LLMScore != -1 {
+		t.Errorf("LLMScore: want -1 for empty reference, got %.1f", scores.LLMScore)
+	}
+}
+
+func TestScore_RateLimitWaitThenCall(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"75"}}]}`))
+	}))
+	defer srv.Close()
+
+	scorer := NewTranscriptScorer(TranscriptScorerConfig{
+		LLMEndpoint:    srv.URL,
+		LLMAPIKey:      "test-key",
+		RateLimitDelay: 30 * time.Millisecond,
+	})
+	scorer.last = time.Now() // prime so wait fires
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	scores, err := scorer.Score(ctx, "hello", "hello")
+	if err != nil {
+		t.Fatalf("Score after rate-limit wait: %v", err)
+	}
+	// LLM may or may not succeed; just ensure no crash.
+	_ = scores
+}
+
+func TestScoreAll_WithLLM(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"80"}}]}`))
+	}))
+	defer srv.Close()
+
+	scorer := NewTranscriptScorer(TranscriptScorerConfig{
+		LLMEndpoint:    srv.URL,
+		LLMAPIKey:      "key",
+		RateLimitDelay: 0,
+	})
+	scorer.last = time.Time{} // no wait
+
+	pairs := []struct{ ID, Reference, Comparison string }{
+		{ID: "c1", Reference: "hello world", Comparison: "hello world"},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	results, summary := scorer.ScoreAll(ctx, "test-denoiser", pairs)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	// LLM endpoint was hit; if parsing succeeded LLMScore = 80, AvgLLM = 80.
+	// If parse fails LLMScore = -1 — either is valid; we just need no panic.
+	_ = summary
+}
+
+func TestLLMScore_EmptyChoices(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, "{\"choices\":[]}")
+	}))
+	defer srv.Close()
+
+	scorer := NewTranscriptScorer(TranscriptScorerConfig{
+		LLMEndpoint:    srv.URL,
+		RateLimitDelay: 1,
+	})
+	_, err := scorer.llmScore(context.Background(), "hello world", "hello world")
+	if err == nil {
+		t.Fatal("expected error for empty choices, got nil")
+	}
+	if !strings.Contains(err.Error(), "no choices") {
+		t.Errorf("expected 'no choices' in error, got: %v", err)
+	}
+}
+
+func TestLLMScore_BadJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "not-json{{{")
+	}))
+	defer srv.Close()
+
+	scorer := NewTranscriptScorer(TranscriptScorerConfig{
+		LLMEndpoint:    srv.URL,
+		RateLimitDelay: 1,
+	})
+	_, err := scorer.llmScore(context.Background(), "hello", "hello")
+	if err == nil {
+		t.Fatal("expected JSON decode error, got nil")
+	}
+}
+
+func TestLLMScore_BadScoreContent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, "{\"choices\":[{\"message\":{\"content\":\"not-a-number\"}}]}")
+	}))
+	defer srv.Close()
+
+	scorer := NewTranscriptScorer(TranscriptScorerConfig{
+		LLMEndpoint:    srv.URL,
+		RateLimitDelay: 1,
+	})
+	_, err := scorer.llmScore(context.Background(), "hello", "hello")
+	if err == nil {
+		t.Fatal("expected parse error, got nil")
+	}
+	if !strings.Contains(err.Error(), "parse LLM score") {
+		t.Errorf("expected 'parse LLM score' in error, got: %v", err)
+	}
+}
+
+func TestLLMScore_ValidResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, "{\"choices\":[{\"message\":{\"content\":\"85\"}}]}")
+	}))
+	defer srv.Close()
+
+	scorer := NewTranscriptScorer(TranscriptScorerConfig{
+		LLMEndpoint:    srv.URL,
+		RateLimitDelay: 1,
+	})
+	score, err := scorer.llmScore(context.Background(), "hello world", "hello world")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if score != 85.0 {
+		t.Errorf("score: want 85.0, got %.1f", score)
 	}
 }
