@@ -16,7 +16,7 @@
 #   - Cold start: ~50ms (no init system).
 
 # ── Stage 1: builder ──────────────────────────────────────────────────────────
-FROM golang:1.21-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /build
 
