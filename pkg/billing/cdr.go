@@ -68,7 +68,7 @@ func (c *CDR) BilledSeconds() float64 {
 	return float64(c.BilledUnits) * float64(c.PulseMs) / 1000.0
 }
 
-// Cost returns billable units * unitPriceUSD.
-func (c *CDR) Cost(unitPriceUSD float64) float64 {
-	return float64(c.BilledUnits) * unitPriceUSD
+// Cost returns billable units * unitPriceINR.
+func (c *CDR) Cost(unitPriceINR float64) float64 {
+	return float64(c.BilledUnits) * unitPriceINR
 }

@@ -225,5 +225,5 @@ func TestStaticRateCard_Pricing(t *testing.T) {
 	if fullPrice <= 0 {
 		t.Errorf("default rate card returned non-positive price: %v", fullPrice)
 	}
-	t.Logf("Default rate card full-feature price: $%.10f/unit", fullPrice)
+	t.Logf("Default rate card full-feature price: ₹%.10f/unit", fullPrice)
 }
