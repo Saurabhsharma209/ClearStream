@@ -2642,3 +2642,21 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. QA/Testing, RTP/SIP: still due per the normal rotation (carried forward again -- three straight sessions today were all user-directed infra/hygiene work, not the daily rotation).
 2. Decide what to do with `feature/exotel-agentstream` so it doesn't drift further from main.
 3. The stray `.NNNNNNNNNN`-suffixed files flagged under `pkg/http/` on 08-26 (session 1) are still untouched -- out of scope for today's cleanup, still needs a look.
+
+## 2026-08-28
+
+**Agents run:** RTP/SIP (pkg/rtp jitter buffer), QA/Testing (pkg/model telemetry)
+**Build:** passing (go build ./... clean; CGO_ENABLED=0 go test ./... green except the long-documented pre-existing flaky pkg/file timing test TestProcessWithOptionsContextCancelKillsRunningFFmpegDuringDecode, which fails only under full-suite parallel load and passes clean in isolation -- unrelated to today's changes, same as every prior entry noting it)
+
+### Changes
+- pkg/rtp/jitter.go, pkg/rtp/jitter_duplicate_test.go (new): JitterBuffer.Push had no duplicate-sequence-number detection. A duplicated UDP packet (retransmission/NAT/SBC replay) with a seq number already buffered got inserted as a second entry; once the original popped and nextSeq advanced past it, the leftover duplicate sat permanently at buf[0] behind nextSeq, so Pop's gap-handling branch reported spurious loss/PLC on every subsequent call -- a permanent playback wedge for the rest of the call. Fixed by rejecting any incoming packet whose seq already exists in the buffer.
+- pkg/model/telemetry.go, pkg/model/telemetry_test.go: InstrumentedSuppressor.Reset() called i.Sink.RecordMetric/RecordEvent directly with no nil check, unlike Process (which is nil-safe via StartTimer). A struct literal built without NewInstrumentedSuppressor's NoopSink default (exported fields make this easy to do accidentally) panicked with a nil-pointer dereference on the first Reset(). Fixed to default to telemetry.NoopSink{} like Process already does.
+
+### Blocked
+- feature/exotel-agentstream branch (flagged repeatedly since 08-05) still unmerged/untracked -- untouched again today, still needs a human decision.
+- Linux sandbox (mcp__workspace__bash) still at 100% disk / 0 bytes free -- did all work via mcp__Control_your_Mac__osascript against the dev Mac, per standing recommendation from prior entries. osascript's do shell script timeout still requires backgrounding long-running full-suite test runs and polling a log file.
+
+### Tomorrow
+1. Audio Pipeline, Post-processing, API Layer: due per rotation (all three last touched 08-26, one day before today's RTP/SIP + QA/Testing pair).
+2. Decide what to do with feature/exotel-agentstream so it doesn't drift further from main.
+3. AI Model: last substantive rotation touch was 08-24 (session 2); due again soon.
