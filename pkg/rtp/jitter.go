@@ -193,6 +193,25 @@ func (j *JitterBuffer) Push(seq uint16, ts uint32, payload []byte) bool {
 		}
 	}
 
+	// Duplicate detection: reject a packet whose sequence number already
+	// exists in the buffer (not yet popped). Without this, a duplicated UDP
+	// datagram (retransmit, NAT/SBC replay, or genuine network duplication --
+	// all routine on real RTP paths) is inserted as a second entry with the
+	// same seq alongside the original. Pop() only advances past buf[0] when
+	// its seq exactly equals nextSeq; once the original copy is popped and
+	// nextSeq moves on, the leftover duplicate (now behind nextSeq) is stuck
+	// at the head forever -- Pop()'s gap branch advances nextSeq WITHOUT
+	// removing the mismatched head entry, so every future Pop() call reports
+	// spurious loss/PLC indefinitely, and every legitimately-arrived packet
+	// queued behind the duplicate gets starved until a maxSeqDrift-scale
+	// resync (or the whole call) rescues it. Reject the duplicate up front
+	// instead, before it ever reaches the buffer.
+	for i := range j.buf {
+		if j.buf[i].seq == seq {
+			return j.primed
+		}
+	}
+
 	// Copy payload to avoid aliasing with caller's buffer. Pooled: see
 	// jitterPayloadPool above -- avoids a fresh heap allocation per packet.
 	p := getJitterPayload(len(payload))
