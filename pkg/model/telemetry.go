@@ -41,7 +41,16 @@ func (i *InstrumentedSuppressor) Process(frame []int16) ([]int16, error) {
 // MetricSuppressorResetsTotal counter increment and fires EventSuppressorReset.
 func (i *InstrumentedSuppressor) Reset() {
 	i.Suppressor.Reset()
-	i.Sink.RecordMetric(telemetry.Metric{
+	sink := i.Sink
+	if sink == nil {
+		// InstrumentedSuppressor can be constructed as a struct literal
+		// (its fields are exported) without going through
+		// NewInstrumentedSuppressor's nil-to-NoopSink default, unlike
+		// Process (which is protected by telemetry.StartTimer's own nil
+		// check). Mirror that same nil-safety here instead of panicking.
+		sink = telemetry.NoopSink{}
+	}
+	sink.RecordMetric(telemetry.Metric{
 		Name:      telemetry.MetricSuppressorResetsTotal,
 		Value:     1,
 		Unit:      "count",
@@ -49,7 +58,7 @@ func (i *InstrumentedSuppressor) Reset() {
 		Tags:      i.Tags,
 		Timestamp: time.Now(),
 	})
-	i.Sink.RecordEvent(telemetry.Event{
+	sink.RecordEvent(telemetry.Event{
 		Name:      telemetry.EventSuppressorReset,
 		Severity:  telemetry.SeverityInfo,
 		Message:   "suppressor reset",

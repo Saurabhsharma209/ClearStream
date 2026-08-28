@@ -94,6 +94,24 @@ func TestInstrumentedSuppressorResetRecordsMetricAndEvent(t *testing.T) {
 	}
 }
 
+// TestInstrumentedSuppressorResetNilSink verifies Reset does not panic when
+// InstrumentedSuppressor is built as a struct literal with a nil Sink
+// (its fields are exported, so callers can skip NewInstrumentedSuppressor's
+// nil-to-NoopSink default) -- Process is protected by telemetry.StartTimer's
+// own nil check, but Reset called i.Sink.RecordMetric/RecordEvent directly
+// with no equivalent guard, so this used to panic with a nil pointer
+// dereference on the very first Reset call.
+func TestInstrumentedSuppressorResetNilSink(t *testing.T) {
+	mock := NewMockSuppressor()
+	sup := &InstrumentedSuppressor{Suppressor: mock}
+
+	sup.Reset()
+
+	if mock.ResetCalls != 1 {
+		t.Errorf("underlying ResetCalls = %d, want 1", mock.ResetCalls)
+	}
+}
+
 // TestNewSuppressorWithTelemetryInitFailure verifies that a construction
 // failure fires EventSuppressorInitFailed and still returns the underlying
 // error unwrapped.
