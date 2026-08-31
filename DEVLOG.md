@@ -2681,3 +2681,33 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. Refresh the scheduled task's backlog list per workstream now that the old one is exhausted — needs a real look at the repo, not a copy-paste of 08-05-era placeholders.
 2. QA/Testing, RTP/SIP: still nominally due per rotation, but check against the refreshed backlog first.
 3. Decide what to do with feature/exotel-agentstream.
+
+## 2026-08-31 (session 2)
+
+**Focus:** User-directed — QA and land the old `feature/exotel-agentstream` branch (unmerged since 08-05, flagged in every prior DEVLOG entry) plus a stale `stash@{0}` binary docx found while checking for other unpushed work.
+
+### Findings
+- `git stash list` turned up one entry (`WIP on main: 143df0e ...`, dated 08-24) containing only a generated `ClearStream_AudioEnhancement_API_Reference.docx` — no code. Left it stashed rather than guessing whether it's still wanted; flagged below for a human call instead of silently dropping it.
+- `feature/exotel-agentstream` (pushed to origin, 4 commits, last touched 08-05) was 46 commits behind main. Diff against main: two new files in `pkg/agentstream` (`AgentStreamServer`, a WSS protocol adapter, + `ConnectedEvent`/`ReconfigureEvent`), one example, one doc, and a `SetBypass()`/`Bypassed()` addition to `pkg/audio/pipeline.go`. No other file overlapped with main's 46 commits of churn.
+
+### QA performed before merging (in a throwaway `qa/agentstream-merge` branch off main, nothing pushed until all of this passed)
+- `git merge --no-commit --no-ff` auto-merged cleanly, zero conflicts.
+- `go build ./...` and `go vet ./...` clean.
+- Full `CGO_ENABLED=0 go test ./...`: all green on a from-clean-cache rerun. (An earlier run in the same session hit the two long-documented `pkg/file` cancellation-timing tests under parallel full-suite load — confirmed once again, as in every prior entry, that both pass individually in <1s each; not a merge regression, pkg/file is untouched by this branch.)
+- SDK size: built `cmd/clearstream` before and after — binary is byte-identical (17,472,770 bytes). `pkg/agentstream` is not imported by the CLI/SDK entrypoint, so it adds zero footprint unless a caller explicitly imports it.
+- API compatibility: `pkg/audio/pipeline.go` diff is purely additive — new `bypassed int32` field, two new exported methods (`SetBypass`, `Bypassed`), and one `atomic.LoadInt32` read per frame gating the existing AEC/NR/suppressor/AGC/limiter stages. No existing signature changed; behavior is identical to before when bypass is left off (the default).
+- Load handling: ran `BenchmarkProcessFrames{Bypass,Suppress,VADSilence,MultiFrame}` before and after — allocs/op identical in all four cases (344B/2, 664B/3, 344B/2, 49615B/151); ns/op deltas were within normal single-run benchmark noise (a few percent either direction, no consistent regression direction).
+- Caught my own mistake mid-flow: the first merge commit only picked up the 4 new files and missed 2 modified files (`pkg/agentstream/events.go`, `pkg/audio/pipeline.go`) because they were unstaged. Caught it via `git status` before pushing, `git add -A` + `git commit --amend`, rebuilt and re-ran the full suite against the corrected commit before it went anywhere near `origin`.
+
+### Changes
+- Fast-forward merged `feature/exotel-agentstream` into `main` (commit `0e08846`) after the above QA passed clean. Pushed to `origin/main`.
+- Deleted the local `qa/agentstream-merge` throwaway branch. Did not delete the remote `feature/exotel-agentstream` branch — leaving that for a human call since it's now merged and safe to delete whenever convenient.
+
+### Blocked
+- The stashed `ClearStream_AudioEnhancement_API_Reference.docx` (see Findings) — needs a human decision on whether it's still wanted; left in the stash untouched.
+- Everything else from the 08-31 (session 1) entry still stands (backlog refresh, stray `.NNNNNNNNNN` files).
+
+### Tomorrow
+1. Decide on the stashed API reference docx (apply, extract, or drop).
+2. Delete the now-merged `feature/exotel-agentstream` remote branch once confirmed no one still needs it as a reference.
+3. Refresh the scheduled task's backlog list (carried over from session 1).
