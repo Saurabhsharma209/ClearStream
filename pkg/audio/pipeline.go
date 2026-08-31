@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/exotel/clearstream/pkg/model"
@@ -186,6 +187,12 @@ type Pipeline struct {
 	// first use; reset to zero-filled again by Reset().
 	resample48kDownHist []int16
 	resample48kUpHist   []int16
+
+	// bypassed implements the live SetBypass toggle (0=false, 1=true,
+	// accessed via sync/atomic since Go 1.17 has no atomic.Bool). When set,
+	// ProcessFrames/Process48k skip AEC, noise reduction, the AI suppressor,
+	// AGC, and the limiter for every subsequent frame until cleared.
+	bypassed int32
 }
 
 // NewPipeline creates a new Pipeline.
@@ -342,23 +349,31 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 			}
 		}
 
+		// bypassed is read once per frame: SetBypass(true) short-circuits AEC,
+		// noise reduction, the AI suppressor, AGC, and the limiter, leaving
+		// only resampling (already applied above) -- the same shape
+		// IsBypass() reports for a statically-configured passthrough
+		// pipeline, just switchable at runtime (e.g. from a per-call
+		// "disable enhancement" control message).
+		bypassed := atomic.LoadInt32(&p.bypassed) == 1
+
 		// AEC: cancel echo from near-end using far-end reference
-		if p.aec != nil {
+		if !bypassed && p.aec != nil {
 			p.farEndMu.Lock()
 			fe := p.farEnd
 			p.farEndMu.Unlock()
 			processSamples = p.aec.Process(fe, processSamples)
 		}
 
-		// Adaptive noise reduction — runs before suppressor on every frame.
+		// Adaptive noise reduction -- runs before suppressor on every frame.
 		// TieredNR takes priority over the flat AdaptiveNoiseReducer when configured.
-		if p.tieredNR != nil {
+		if !bypassed && p.tieredNR != nil {
 			var err error
 			processSamples, err = p.tieredNR.Process(processSamples)
 			if err != nil {
 				return fmt.Errorf("pipeline: tiered noise reducer: %w", err)
 			}
-		} else if p.noiseReducer != nil {
+		} else if !bypassed && p.noiseReducer != nil {
 			var err error
 			processSamples, err = p.noiseReducer.Process(processSamples)
 			if err != nil {
@@ -373,7 +388,9 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 
 		var cleaned []int16
 		usedSuppressor := false
-		if p.vad != nil && !p.vad.IsSpeech(processSamples) {
+		if bypassed {
+			cleaned = processSamples
+		} else if p.vad != nil && !p.vad.IsSpeech(processSamples) {
 			// silence -- pass through without suppression (saves CPU)
 			cleaned = processSamples
 		} else {
@@ -386,12 +403,12 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 		}
 
 		// AGC: adaptive gain applied after suppression (speech frames only)
-		if p.agc != nil {
+		if !bypassed && p.agc != nil {
 			cleaned = p.agc.Process(cleaned)
 		}
 
 		// Peak limiter: guards against clipping after AGC or burst events.
-		if p.limiter != nil {
+		if !bypassed && p.limiter != nil {
 			cleaned = p.limiter.Process(cleaned)
 		}
 
@@ -726,6 +743,28 @@ func (p *Pipeline) SetAGCTarget(targetRMS float64) {
 	if p.agc != nil {
 		p.agc.SetTargetRMS(targetRMS)
 	}
+}
+
+// SetBypass enables or disables a live pass-through mode: when true,
+// incoming frames skip AEC, noise reduction (adaptive/tiered), the AI
+// suppressor, AGC, and the peak limiter entirely for every frame processed
+// from that point on -- only resampling to/from the processor rate still
+// runs, so the output format contract is unchanged. Safe to call at any
+// point mid-stream (e.g. driven by a per-call "disable enhancement" request
+// arriving over a control channel); takes effect starting with the next
+// frame passed to ProcessFrames. Diarization and TurnEnd tracking still
+// observe frames while bypassed, since those are passive/informational.
+func (p *Pipeline) SetBypass(bypass bool) {
+	v := int32(0)
+	if bypass {
+		v = 1
+	}
+	atomic.StoreInt32(&p.bypassed, v)
+}
+
+// Bypassed reports whether SetBypass(true) is currently in effect.
+func (p *Pipeline) Bypassed() bool {
+	return atomic.LoadInt32(&p.bypassed) == 1
 }
 
 // Reconfigure applies a new PipelineConfig to the running pipeline.

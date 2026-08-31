@@ -7,6 +7,7 @@ type EventType string
 
 const (
 	EventStart         EventType = "start"
+	EventConnected     EventType = "connected"
 	EventMedia         EventType = "media"
 	EventCleanMedia    EventType = "clean_media"
 	EventDTMF          EventType = "dtmf"
@@ -20,6 +21,7 @@ const (
 	EventMark          EventType = "mark"
 	EventStop          EventType = "stop"
 	EventError         EventType = "error"
+	EventReconfigure   EventType = "reconfigure"
 )
 
 // RecommendedAction is the bot action hint in conversation events.
@@ -190,6 +192,31 @@ type ErrorEvent struct {
 	StreamSID string      `json:"stream_sid"`
 	Code      FailureCode `json:"code"`
 	Message   string      `json:"message"`
+}
+
+// ConnectedEvent is sent immediately after the WebSocket handshake
+// completes, before any start/media events.
+type ConnectedEvent struct {
+	Event EventType `json:"event"`
+}
+
+// ReconfigureEvent is a ClearStream-defined message (not part of Exotel's
+// native AgentStream protocol) that a bot backend can send at any point
+// during an active stream to change noise-suppression behavior for that
+// call without restarting it. It only ever travels on the leg between
+// ClearStream and the bot -- Exotel never needs to know it exists.
+//
+// Mode is one of "adaptive" (SNR-based tier selection -- only takes effect
+// if TieredNR was configured at start via ns_mode=adaptive), "aggressive"
+// (bias TieredNR toward the higher-quality tier), "mild" (bias toward the
+// cheap tier), "disabled" (bypass all enhancement -- raw passthrough), or
+// "enabled" (undo "disabled"). Level is an optional 0-3 aggressiveness hint
+// forwarded to Pipeline.SetAggressiveness when > 0.
+type ReconfigureEvent struct {
+	Event     EventType `json:"event"`
+	StreamSID string    `json:"stream_sid"`
+	Mode      string    `json:"mode"`
+	Level     int       `json:"level,omitempty"`
 }
 
 // MarshalEvent serializes any event struct to JSON bytes.
