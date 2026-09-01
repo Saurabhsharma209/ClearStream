@@ -2711,3 +2711,26 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. Decide on the stashed API reference docx (apply, extract, or drop).
 2. Delete the now-merged `feature/exotel-agentstream` remote branch once confirmed no one still needs it as a reference.
 3. Refresh the scheduled task's backlog list (carried over from session 1).
+
+## 2026-09-01
+
+**Agents run:** AI Model (pkg/model), Audio Pipeline (pkg/audio), Post-processing (pkg/file)
+**Build:** passing (`go build ./...` clean; `CGO_ENABLED=0 go test ./... -p 1` all green on Go 1.27.0 dev-Mac toolchain — ran with `-p 1` deliberately since the default `-p` full-suite run still shows the long-documented flaky failures under parallel load; see Post-processing findings below)
+
+### Changes
+- `pkg/model/deepfilter_server.go`, `pkg/model/deepfilter_server_test.go`: `newDeepFilterServerSuppressor` and `Process()` called `logger.Info`/`logger.Warn` unconditionally, but `NewSuppressor` (interface.go) builds its logger via `logger, _ := zap.NewProduction()` — ignoring the error — so a failed `zap.NewProduction()` handed a nil `*zap.Logger` straight to the deepfilter-server backend, which then panicked on its first log call (every sibling backend already guards this; this one didn't). Fixed by defaulting to `zap.NewNop()` when nil. Added `TestNewDeepFilterServerSuppressor_NilLoggerDefaultsToNop`.
+- `pkg/audio/resample.go`, `pkg/audio/resample_test.go`: `ToMono` only guarded `channels == 1`; `channels == 0` divided by zero (panic) and negative channels produced undefined downmix behavior. Widened the guard to `channels <= 1` (fail-safe passthrough), matching how `Resample()` already validates its inputs. Added `TestToMonoInvalidChannelsFailsSafe`.
+- `pkg/file/processor.go`, `pkg/file/processor_encode_atomic_test.go` (new): `encodeAndMux` wrote ffmpeg's output directly to `dst` with `-y`. A failed/cancelled encode (including the very cancellation path this package's own tests exercise) could leave a truncated file at `dst` — and worse, silently broke `Options.SkipExisting`, since a corrupt `dst` still has `mtime >= src` and gets treated as done forever on retry. Fixed to write to a temp file in `dst`'s directory and `os.Rename` into place only after `cmd.Wait()` succeeds and the context wasn't cancelled; temp file is cleaned up on every failure path.
+
+### Investigated, not a code bug
+- The long-standing `TestProcessWithOptionsContextCancelKillsRunningFFmpegDuring{Decode,Encode}` flakiness (pkg/file) and today's newly-observed `TestStartServer_*` flakiness (pkg/model/deepfilter_server_startserver_test.go) were both re-investigated this session: isolated runs (`-count=1` to `-count=5`), a run under 20 concurrent CPU-bound `yes` processes, and a full `go test ./...` all came back clean for pkg/file; pkg/model's `TestStartServer_*` also passed clean run alone. Reviewed the actual cancellation code path (`decodeAndSuppress`/`encodeAndMux` in processor.go, `killProcessGroup` in procgroup_unix.go) — both `select` on `ctx.Done()` and SIGKILL the whole process group immediately; no race or missed-signal bug found. Conclusion stands as prior entries: this is OS-scheduling contention under the default full-suite parallel `go test ./...` (multiple real subprocess spawns racing for CPU), not an application bug — but now with an isolation-run recipe (`-p 1`, or targeted `-count=N` reruns) documented here for whoever hits it next, and today's rotation pushed with `-p 1` verification specifically to sidestep it before pushing.
+
+### Blocked
+- Stashed `ClearStream_AudioEnhancement_API_Reference.docx` (flagged 08-31) — still needs a human decision.
+- Now-merged remote branch `feature/exotel-agentstream` — still safe to delete, still a human call.
+- RTP/SIP, API Layer, QA/Testing: not touched this rotation (AI Model was most overdue since 08-24; Audio Pipeline/Post-processing were next-most-overdue since 08-26). All three due next.
+
+### Tomorrow
+1. RTP/SIP, API Layer, QA/Testing: due per rotation.
+2. Delete the merged `feature/exotel-agentstream` remote branch and resolve the stashed docx, once a human weighs in.
+3. Keep using `-p 1` (or isolated `-run`/`-count` reruns) to verify before push whenever the default parallel `go test ./...` shows one of the two known-flaky test families, rather than re-deriving the "it's environmental" conclusion from scratch each time.
