@@ -493,7 +493,10 @@ func linearResample(samples []int16, srcRate, dstRate int) ([]int16, error) {
 
 // ToMono downmixes interleaved stereo (or multi-channel) PCM to mono.
 func ToMono(samples []int16, channels int) []int16 {
-	if channels == 1 {
+	if channels <= 1 {
+		// channels<=0 is invalid input; treat it as already-mono instead of
+		// dividing by zero (or by a negative number) below. ToMono is exported
+		// and callable directly by SDK consumers, so it must fail safe here.
 		return samples
 	}
 	mono := make([]int16, len(samples)/channels)

@@ -388,6 +388,34 @@ func TestToMonoStereo(t *testing.T) {
 	}
 }
 
+func TestToMonoInvalidChannelsFailsSafe(t *testing.T) {
+	// channels<=0 must not panic (division by zero/negative) -- ToMono is an
+	// exported function callable directly by SDK consumers with arbitrary
+	// (possibly misconfigured) channel counts, so it must fail safe rather
+	// than crash the caller's process.
+	samples := []int16{100, 200, 300}
+
+	zero := ToMono(samples, 0)
+	if len(zero) != len(samples) {
+		t.Fatalf("ToMono(ch=0) length mismatch: got %d, want %d", len(zero), len(samples))
+	}
+	for i, v := range zero {
+		if v != samples[i] {
+			t.Errorf("ToMono(ch=0) sample[%d] = %d, want %d", i, v, samples[i])
+		}
+	}
+
+	neg := ToMono(samples, -2)
+	if len(neg) != len(samples) {
+		t.Fatalf("ToMono(ch=-2) length mismatch: got %d, want %d", len(neg), len(samples))
+	}
+	for i, v := range neg {
+		if v != samples[i] {
+			t.Errorf("ToMono(ch=-2) sample[%d] = %d, want %d", i, v, samples[i])
+		}
+	}
+}
+
 func TestToStereo(t *testing.T) {
 	mono := []int16{100, 200, 300}
 	stereo := ToStereo(mono)
