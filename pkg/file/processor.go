@@ -685,7 +685,24 @@ func (p *Processor) encodeAndMux(pcmPath, originalSrc, dst string, info *audio.M
 		args = append(args, "-c:a", outCodec)
 	}
 
-	args = append(args, dst)
+	// FFmpeg writes to a temp file in dst's directory first, promoted to
+	// dst via os.Rename only on full success. FFmpeg infers the output
+	// container/format from the output filename's extension, so the temp
+	// name is built by prefixing (not suffixing) dst's base name, keeping
+	// the real extension intact at the end.
+	//
+	// Previously ffmpeg's output arg was dst itself: with "-y" forcing
+	// overwrite, ffmpeg opens (and can truncate/partially write) dst
+	// before encoding finishes, so any encode failure -- a bad codec, a
+	// corrupt input, or (this package's own headline feature) a
+	// context-cancellation kill mid-encode -- could leave a truncated or
+	// empty file sitting at dst instead of either the original dst (if
+	// any) or no file at all. That silently-corrupt dst is worse than a
+	// clean error, and it actively defeats Options.SkipExisting: a retry
+	// sees the partial file's mtime >= src's and treats it as
+	// already-processed forever, never re-encoding it.
+	tmpDst := filepath.Join(filepath.Dir(dst), fmt.Sprintf(".clearstream-tmp-%d-%d-%s", os.Getpid(), time.Now().UnixNano(), filepath.Base(dst)))
+	args = append(args, tmpDst)
 
 	// exec.CommandContext ensures the child process is killed if ctx is
 	// cancelled while encoding is in progress.
@@ -697,6 +714,7 @@ func (p *Processor) encodeAndMux(pcmPath, originalSrc, dst string, info *audio.M
 	logger.Debug("ffmpeg encode", zap.Strings("args", args))
 
 	if err := cmd.Start(); err != nil {
+		os.Remove(tmpDst)
 		return fmt.Errorf("ffmpeg start: %w", err)
 	}
 
@@ -716,6 +734,9 @@ func (p *Processor) encodeAndMux(pcmPath, originalSrc, dst string, info *audio.M
 	waitErr := cmd.Wait()
 	close(encodeDone)
 	if waitErr != nil {
+		// Clean up the never-promoted temp file; dst (if it already
+		// existed from a prior run) is left completely untouched.
+		os.Remove(tmpDst)
 		// If ctx was cancelled, surface that directly rather than a generic
 		// "signal: killed" error, mirroring decodeAndSuppress's behaviour.
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -725,6 +746,10 @@ func (p *Processor) encodeAndMux(pcmPath, originalSrc, dst string, info *audio.M
 			return fmt.Errorf("ffmpeg decode: %w", typed)
 		}
 		return fmt.Errorf("ffmpeg encode: %w\nstderr: %s", waitErr, stderrBuf.String())
+	}
+	if err := os.Rename(tmpDst, dst); err != nil {
+		os.Remove(tmpDst)
+		return fmt.Errorf("ffmpeg encode: promote temp output to dst: %w", err)
 	}
 	return nil
 }
