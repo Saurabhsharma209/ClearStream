@@ -372,3 +372,33 @@ func TestDeepFilterServer_Close_WithCmd(t *testing.T) {
 		t.Errorf("second Close() after cmd: %v", err)
 	}
 }
+
+// TestNewDeepFilterServerSuppressor_NilLoggerDefaultsToNop verifies that a nil
+// logger -- reachable in production whenever a caller ignores the error from
+// zap.NewProduction() (as NewSuppressor itself does, see interface.go) -- no
+// longer panics with a nil-pointer dereference. Before the fix, both the
+// constructor ready-log and Process()'s Warn-on-error path called the logger
+// unconditionally; now a nil logger is defaulted to zap.NewNop().
+func TestNewDeepFilterServerSuppressor_NilLoggerDefaultsToNop(t *testing.T) {
+	srv := makeTestServer(t, http.StatusOK, http.StatusInternalServerError, nil)
+	defer srv.Close()
+
+	s, err := newDeepFilterServerSuppressor(srv.URL, "", nil)
+	if err != nil {
+		t.Fatalf("newDeepFilterServerSuppressor with nil logger: %v", err)
+	}
+	if s == nil {
+		t.Fatal("expected non-nil suppressor")
+	}
+
+	// Process hits the non-200 branch, which also calls s.logger.Warn --
+	// exercising the nil-logger default on the request path, not just
+	// construction.
+	out, err := s.Process([]int16{1, 2, 3})
+	if err != nil {
+		t.Fatalf("Process with nil logger: %v", err)
+	}
+	if len(out) != 3 {
+		t.Errorf("expected passthrough output length 3, got %d", len(out))
+	}
+}

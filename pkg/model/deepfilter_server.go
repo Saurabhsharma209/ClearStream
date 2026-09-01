@@ -69,6 +69,16 @@ func newDeepFilterServerSuppressor(serverURL, autoStartPath string, logger *zap.
 	if serverURL == "" {
 		serverURL = "http://127.0.0.1:7878"
 	}
+	// A nil logger reaches here whenever a caller ignores the error from
+	// zap.NewProduction() (as NewSuppressor itself does) or passes nil
+	// directly; every call below (ping/startServer failures, the ready log,
+	// and Process()) would otherwise panic with a nil-pointer dereference on
+	// the first logger.Info/Warn call. Default to a no-op logger instead,
+	// mirroring the same nil-safety already applied to NewRNNoiseONNX and to
+	// InstrumentedSuppressor.Reset() (see telemetry.go).
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 
 	level := 0
 	if len(aggressiveness) > 0 {
