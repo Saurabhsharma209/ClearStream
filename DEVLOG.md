@@ -2734,3 +2734,26 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. RTP/SIP, API Layer, QA/Testing: due per rotation.
 2. Delete the merged `feature/exotel-agentstream` remote branch and resolve the stashed docx, once a human weighs in.
 3. Keep using `-p 1` (or isolated `-run`/`-count` reruns) to verify before push whenever the default parallel `go test ./...` shows one of the two known-flaky test families, rather than re-deriving the "it's environmental" conclusion from scratch each time.
+
+## 2026-09-02
+
+**Agents run:** RTP/SIP (pkg/rtp), API Layer (cmd/clearstream-eval), QA/Testing (pkg/agentstream)
+**Build:** passing (`go build ./...` clean; `CGO_ENABLED=0 go test ./... -p 1` all green, no failures)
+
+### Changes
+- pkg/rtp/rtcp.go, pkg/rtp/session.go, pkg/rtp/rtcp_test.go, pkg/rtp/rtcp_autoport_test.go: `ParseRTCPReceiverReport` only ever read the first reception-report block of an RTCP RR packet, silently discarding the rest. Per RFC 3550 6.4.2 a single RR can carry up to 31 blocks (e.g. a conference bridge, or two SSRCs briefly coexisting across a re-INVITE), and `listenRTCP` blindly trusted whichever block sorted first on the wire even if it described an unrelated SSRC, corrupting quality-report loss/jitter numbers. Added `ParseRTCPReceiverReportBlocks` to parse all RC blocks; `listenRTCP` now selects the block matching the tracked SSRC (falling back to the first block otherwise); `currentSSRC` converted to atomic access since it's now read from the RTCP goroutine too.
+- cmd/clearstream-eval/main.go, cmd/clearstream-eval/main_test.go (new): CLI flag parsing/validation was entangled in `runBatch`/`runRTP` with `flag.ExitOnError`, untestable without subprocesses. In `runRTP`, `--duration` was validated only after printing the startup banner and calling `monitor.Start()`, so an invalid value did that work before failing with no `monitor.Stop()` call, and `--interval`/`--duration` had no positive-value check. Extracted `parseBatchArgs`/`parseRTPArgs` (pure, testable, `flag.ContinueOnError`), moved validation up front, added positivity checks. Coverage 0% -> 20.1% on the testable surface.
+- pkg/agentstream/server_test.go: `aggressivenessToThresholds` (mode->SNR-threshold mapping) was 0% covered, `atoiOr`/`parseFloatParam` had untested fallback paths. Added table-driven tests to the existing test file (no new file, per the 08-26 anti-fragmentation precedent). Package coverage 80.7% -> 85.7%.
+
+### Investigated, no change needed
+- pkg/http/: already 95.4% covered, no genuine gaps found on inspection.
+- Makefile / .github/workflows/ci.yml: reviewed, nothing stale or missing found.
+
+### Blocked
+- Stashed `ClearStream_AudioEnhancement_API_Reference.docx` (flagged 08-31) — still needs a human decision.
+- Now-merged remote branch `feature/exotel-agentstream` — still safe to delete, still a human call.
+- Stray `.NNNNNNNNNN`-suffixed duplicate files under pkg/rtp/, pkg/http/ (flagged 08-26) — still untouched, still needs a human look.
+
+### Tomorrow
+1. Audio Pipeline, Post-processing, AI Model: due per rotation (all three last touched 09-01).
+2. Resolve the three carried-forward blocked items above once a human weighs in.
