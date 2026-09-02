@@ -136,3 +136,61 @@ func TestHandleStartUnknownBackendErrors(t *testing.T) {
 		t.Fatalf("expected error event for unknown ns_model, got %q", env.Event)
 	}
 }
+
+// TestAggressivenessToThresholds locks in the SNR boundary values for each
+// named reconfigure mode, including the "adaptive"/default fallback.
+func TestAggressivenessToThresholds(t *testing.T) {
+	cases := []struct {
+		mode     string
+		wantHigh float64
+		wantLow  float64
+	}{
+		{"mild", 30, 5},
+		{"aggressive", 20, 15},
+		{"adaptive", 25, 10},
+		{"unrecognized-mode", 25, 10}, // falls into default case
+	}
+	for _, c := range cases {
+		high, low := aggressivenessToThresholds(c.mode)
+		if high != c.wantHigh || low != c.wantLow {
+			t.Errorf("aggressivenessToThresholds(%q) = (%v, %v), want (%v, %v)", c.mode, high, low, c.wantHigh, c.wantLow)
+		}
+	}
+}
+
+// TestAtoiOr covers the fallback-to-default paths that TestFullCallLifecycle
+// never exercises: an empty string and a non-numeric string should both
+// return the caller's default rather than propagating a parse error.
+func TestAtoiOr(t *testing.T) {
+	if got := atoiOr("", 8000); got != 8000 {
+		t.Errorf("atoiOr(empty) = %d, want 8000", got)
+	}
+	if got := atoiOr("not-a-number", 42); got != 42 {
+		t.Errorf("atoiOr(invalid) = %d, want 42", got)
+	}
+	if got := atoiOr("16000", 8000); got != 16000 {
+		t.Errorf("atoiOr(valid) = %d, want 16000", got)
+	}
+}
+
+// TestParseFloatParam covers the missing-key, empty-value, and
+// non-numeric-value cases, all of which should report ok=false.
+func TestParseFloatParam(t *testing.T) {
+	params := CustomParameters{
+		"ns_high_snr_db": "27.5",
+		"ns_empty":       "",
+		"ns_invalid":     "not-a-float",
+	}
+	if f, ok := parseFloatParam(params, "ns_high_snr_db"); !ok || f != 27.5 {
+		t.Errorf("parseFloatParam(valid) = (%v, %v), want (27.5, true)", f, ok)
+	}
+	if _, ok := parseFloatParam(params, "ns_missing"); ok {
+		t.Error("parseFloatParam(missing key) should return ok=false")
+	}
+	if _, ok := parseFloatParam(params, "ns_empty"); ok {
+		t.Error("parseFloatParam(empty value) should return ok=false")
+	}
+	if _, ok := parseFloatParam(params, "ns_invalid"); ok {
+		t.Error("parseFloatParam(non-numeric value) should return ok=false")
+	}
+}
