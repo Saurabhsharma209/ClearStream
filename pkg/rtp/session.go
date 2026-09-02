@@ -8,6 +8,7 @@ import (
 	"net"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/exotel/clearstream/pkg/audio"
@@ -448,8 +449,9 @@ func (s *Session) handlePacket(raw []byte) error {
 	// detector's (eventCode, end) dedup state from the OLD leg in place and
 	// reproducing exactly the "first DTMF digit of new call leg silently
 	// dropped" bug this Reset() call was added to fix.
-	if s.ssrcSet && header.SSRC != s.currentSSRC {
-		s.logger.Info(fmt.Sprintf("SSRC changed: %d → %d, pipeline reset", s.currentSSRC, header.SSRC))
+	oldSSRC := atomic.LoadUint32(&s.currentSSRC)
+	if s.ssrcSet && header.SSRC != oldSSRC {
+		s.logger.Info(fmt.Sprintf("SSRC changed: %d → %d, pipeline reset", oldSSRC, header.SSRC))
 		s.telemetry.RecordMetric(telemetry.Metric{
 			Name:      telemetry.MetricRTPSSRCChangeTotal,
 			Value:     1,
@@ -460,7 +462,7 @@ func (s *Session) handlePacket(raw []byte) error {
 			Name:     telemetry.EventRTPSSRCChanged,
 			Severity: telemetry.SeverityInfo,
 			Fields: map[string]interface{}{
-				"old_ssrc": s.currentSSRC,
+				"old_ssrc": oldSSRC,
 				"new_ssrc": header.SSRC,
 			},
 			Timestamp: time.Now(),
@@ -484,7 +486,7 @@ func (s *Session) handlePacket(raw []byte) error {
 		s.LastSRReceivedAt = time.Time{}
 		s.mu.Unlock()
 	}
-	s.currentSSRC = header.SSRC
+	atomic.StoreUint32(&s.currentSSRC, header.SSRC)
 	s.ssrcSet = true
 
 	// Handle DTMF telephone-event packets (RFC4733)
@@ -795,16 +797,35 @@ func (s *Session) listenRTCP() {
 			return
 		}
 
-		rr, err := ParseRTCPReceiverReport(buf[:n])
+		blocks, err := ParseRTCPReceiverReportBlocks(buf[:n])
 		if err != nil {
 			s.logger.Warn("rtcp parse error", zap.Error(err))
 			continue
 		}
-		if rr != nil {
+		if len(blocks) > 0 {
+			// A compound RR can report on more than one SSRC at once (e.g. a
+			// conference bridge/mixer reporting every leg it receives in a
+			// single packet). Previously this always took blocks[0], which
+			// silently picked the wrong source's loss/jitter numbers whenever
+			// the report for the SSRC this session is actually tracking
+			// wasn't first on the wire. Prefer the block whose SSRC matches
+			// the RTP stream we're tracking; fall back to the first block
+			// (pre-existing behaviour) if none match -- e.g. before we've
+			// seen any RTP yet, or for a peer that doesn't echo our SSRC.
+			rr := blocks[0]
+			if want := atomic.LoadUint32(&s.currentSSRC); want != 0 {
+				for i := range blocks {
+					if blocks[i].SSRC == want {
+						rr = blocks[i]
+						break
+					}
+				}
+			}
 			s.mu.Lock()
-			s.RTCPStats = *rr
+			s.RTCPStats = rr
 			s.mu.Unlock()
 			s.logger.Info("RTCP receiver report",
+				zap.Uint32("ssrc", rr.SSRC),
 				zap.Float64("loss_pct", rr.FractionLost*100),
 				zap.Int32("cumulative_lost", rr.CumulativeLost),
 				zap.Uint32("jitter_samples", rr.Jitter),

@@ -1,6 +1,7 @@
 package rtp
 
 import (
+	"encoding/binary"
 	"math"
 	"testing"
 )
@@ -160,5 +161,65 @@ func TestParseRTCPSRWrongType(t *testing.T) {
 	}
 	if sr != nil {
 		t.Error("expected nil for non-SR packet")
+	}
+}
+
+// TestParseRTCPReceiverReportBlocks_MultipleBlocks verifies that a compound
+// RR packet with RC=2 (two reception report blocks, e.g. a mixer/bridge
+// reporting on two different source SSRCs in one packet) yields both blocks
+// intact instead of the previous behavior of silently keeping only the
+// first.
+func TestParseRTCPReceiverReportBlocks_MultipleBlocks(t *testing.T) {
+	pkt := make([]byte, 8+2*24)
+	pkt[0] = 0x82 // V=2, P=0, RC=2
+	pkt[1] = 0xC9 // PT=201 RR
+	binary.BigEndian.PutUint16(pkt[2:4], uint16(len(pkt)/4-1))
+	binary.BigEndian.PutUint32(pkt[4:8], 0xCAFEBABE) // sender SSRC
+
+	// Block 0: SSRC=0x11111111, jitter=111
+	binary.BigEndian.PutUint32(pkt[8:12], 0x11111111)
+	binary.BigEndian.PutUint32(pkt[20:24], 111)
+
+	// Block 1: SSRC=0x22222222, jitter=222
+	binary.BigEndian.PutUint32(pkt[32:36], 0x22222222)
+	binary.BigEndian.PutUint32(pkt[44:48], 222)
+
+	blocks, err := ParseRTCPReceiverReportBlocks(pkt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 report blocks, got %d", len(blocks))
+	}
+	if blocks[0].SSRC != 0x11111111 || blocks[0].Jitter != 111 {
+		t.Errorf("block 0: got SSRC=%08X Jitter=%d, want SSRC=11111111 Jitter=111", blocks[0].SSRC, blocks[0].Jitter)
+	}
+	if blocks[1].SSRC != 0x22222222 || blocks[1].Jitter != 222 {
+		t.Errorf("block 1: got SSRC=%08X Jitter=%d, want SSRC=22222222 Jitter=222", blocks[1].SSRC, blocks[1].Jitter)
+	}
+
+	// ParseRTCPReceiverReport (singular) must still return the first block,
+	// preserving backward compatibility for existing callers.
+	first, err := ParseRTCPReceiverReport(pkt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == nil || first.SSRC != 0x11111111 {
+		t.Fatalf("ParseRTCPReceiverReport should still return the first block")
+	}
+}
+
+// TestParseRTCPReceiverReportBlocks_TruncatedMultiBlock verifies that a
+// packet declaring RC=2 but only carrying one block's worth of data is
+// rejected as malformed rather than silently parsed from out-of-bounds/wrong
+// data.
+func TestParseRTCPReceiverReportBlocks_TruncatedMultiBlock(t *testing.T) {
+	pkt := make([]byte, 8+24) // only 1 block's worth of data
+	pkt[0] = 0x82             // V=2, P=0, RC=2 (claims 2 blocks)
+	pkt[1] = 0xC9             // PT=201 RR
+
+	_, err := ParseRTCPReceiverReportBlocks(pkt)
+	if err == nil {
+		t.Fatal("expected error for RC=2 packet with only 1 block's worth of data")
 	}
 }

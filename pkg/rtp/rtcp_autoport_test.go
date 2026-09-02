@@ -173,3 +173,122 @@ func TestListenRTCP_ExplicitPortUnchanged(t *testing.T) {
 		t.Fatalf("RTCP bound to port %d, want %d", got, rtpPort+1)
 	}
 }
+
+// buildMultiBlockRTCPRR builds a compound RTCP RR packet carrying two
+// reception report blocks (RC=2): one for otherSSRC and one for wantSSRC,
+// each with a distinguishable jitter value so a test can tell which block
+// ended up in Session.RTCPStats.
+func buildMultiBlockRTCPRR(otherSSRC, otherJitter, wantSSRC, wantJitter uint32) []byte {
+	pkt := make([]byte, 8+2*24)
+	pkt[0] = 0x82 // V=2, P=0, RC=2
+	pkt[1] = 201  // PT=RR
+	binary.BigEndian.PutUint16(pkt[2:4], uint16(len(pkt)/4-1))
+	binary.BigEndian.PutUint32(pkt[4:8], 0xCAFEBABE) // sender SSRC
+
+	// Block 0: otherSSRC first on the wire -- this is the block the old
+	// code would have picked unconditionally.
+	binary.BigEndian.PutUint32(pkt[8:12], otherSSRC)
+	binary.BigEndian.PutUint32(pkt[20:24], otherJitter)
+
+	// Block 1: the SSRC this session is actually tracking.
+	binary.BigEndian.PutUint32(pkt[32:36], wantSSRC)
+	binary.BigEndian.PutUint32(pkt[44:48], wantJitter)
+
+	return pkt
+}
+
+// TestListenRTCP_MultiBlockPicksTrackedSSRC is the regression test for the
+// RTCP compound-packet gap fixed alongside ParseRTCPReceiverReportBlocks: a
+// peer (e.g. a conference bridge/mixer) can report on more than one SSRC in
+// a single RR packet. Before this fix, Session.listenRTCP always kept
+// whichever report block happened to be first on the wire, even when it
+// described a completely unrelated source -- silently corrupting
+// RTTMs()/QualityReport() with the wrong source's numbers. This verifies
+// listenRTCP now selects the block matching the RTP SSRC the session is
+// actually receiving, regardless of its position in the packet.
+func TestListenRTCP_MultiBlockPicksTrackedSSRC(t *testing.T) {
+	sinkConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("bind sink: %v", err)
+	}
+	defer sinkConn.Close()
+
+	logger, _ := zap.NewDevelopment()
+	cfg := Config{
+		ListenAddr:  "127.0.0.1:0",
+		ForwardAddr: sinkConn.LocalAddr().String(),
+		PayloadType: 0,
+		JitterDepth: 1,
+		Logger:      logger,
+		Suppressor:  model.NewMockSuppressor(),
+	}
+
+	sess, err := NewSession(cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	sess.Start()
+	defer sess.Stop()
+
+	<-sess.rtcpReady
+
+	const trackedSSRC = 0xDEADBEEF
+	const otherSSRC = 0x11111111
+	const trackedJitter = 999
+	const otherJitter = 111
+
+	// Feed one RTP packet so the session learns trackedSSRC as the stream
+	// it's tracking (mirrors real traffic: RTCP always follows some RTP).
+	rtpSender, err := net.DialUDP("udp", nil, sess.conn.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatalf("dial RTP: %v", err)
+	}
+	defer rtpSender.Close()
+	payload := make([]byte, 160)
+	for i := range payload {
+		payload[i] = 0xFF
+	}
+	if _, err := rtpSender.Write(buildRawRTPPacket(0, 0, trackedSSRC, payload)); err != nil {
+		t.Fatalf("send RTP: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	sess.mu.Lock()
+	rtcpConn := sess.rtcpConn
+	sess.mu.Unlock()
+	if rtcpConn == nil {
+		t.Fatal("rtcpConn is nil")
+	}
+	boundRTCPPort := rtcpConn.LocalAddr().(*net.UDPAddr).Port
+
+	rtcpSender, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: boundRTCPPort})
+	if err != nil {
+		t.Fatalf("dial RTCP port %d: %v", boundRTCPPort, err)
+	}
+	defer rtcpSender.Close()
+
+	// otherSSRC's block comes first on the wire; trackedSSRC's block comes
+	// second. The old code would have kept otherSSRC's numbers.
+	pkt := buildMultiBlockRTCPRR(otherSSRC, otherJitter, trackedSSRC, trackedJitter)
+	if _, err := rtcpSender.Write(pkt); err != nil {
+		t.Fatalf("send RTCP RR: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		sess.mu.Lock()
+		stats := sess.RTCPStats
+		sess.mu.Unlock()
+		if stats.SSRC == trackedSSRC {
+			if stats.Jitter != trackedJitter {
+				t.Fatalf("RTCPStats.Jitter = %d, want %d (tracked SSRC's block)", stats.Jitter, trackedJitter)
+			}
+			return // success
+		}
+		if stats.SSRC == otherSSRC {
+			t.Fatalf("RTCPStats picked the untracked SSRC's block (jitter=%d) instead of the tracked SSRC's block -- compound RR block selection is broken", stats.Jitter)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("RTCPStats.SSRC never became the tracked SSRC")
+}

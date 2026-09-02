@@ -25,9 +25,26 @@ type RTCPReceiverReport struct {
 	DelaySinceLastSR uint32
 }
 
-// ParseRTCPReceiverReport parses a raw RTCP packet.
-// Returns nil if the packet is not a Receiver Report.
-func ParseRTCPReceiverReport(data []byte) (*RTCPReceiverReport, error) {
+// ParseRTCPReceiverReportBlocks parses every reception report block carried
+// by an RTCP Receiver Report packet (RFC 3550 §6.4.2).
+//
+// A single RR packet can report on multiple sources at once: the RC field in
+// the packet header (bits 0-4 of byte 0) gives the number of 24-byte report
+// blocks that follow the 8-byte common+SSRC header, and RFC 3550 allows up to
+// 31 of them in one packet (e.g. a conference bridge/mixer reporting on every
+// leg it is receiving, in a single compound RTCP datagram). The previous
+// implementation only ever read the first block and silently discarded the
+// rest, which is fine for simple 1:1 calls but wrong the moment more than one
+// block is present -- whichever source happens to sort first in the packet
+// would silently win, even if it isn't the SSRC this session actually cares
+// about, and every other source's loss/jitter numbers were dropped on the
+// floor with no way for a caller to ever see them.
+//
+// Returns one RTCPReceiverReport per block, in on-wire order. Returns
+// (nil, nil) if the packet is not a Receiver Report (PT != 201) or carries
+// zero report blocks (RC == 0) -- callers should treat that the same as "no
+// data available", not an error.
+func ParseRTCPReceiverReportBlocks(data []byte) ([]RTCPReceiverReport, error) {
 	if len(data) < 8 {
 		return nil, fmt.Errorf("rtcp: packet too short (%d bytes)", len(data))
 	}
@@ -39,7 +56,7 @@ func ParseRTCPReceiverReport(data []byte) (*RTCPReceiverReport, error) {
 		return nil, fmt.Errorf("rtcp: invalid version %d", version)
 	}
 
-	rc := data[0] & 0x1F // report count
+	rc := int(data[0] & 0x1F) // report count
 	pt := RTCPPacketType(data[1])
 
 	if pt != RTCPTypeReceiverReport {
@@ -49,29 +66,54 @@ func ParseRTCPReceiverReport(data []byte) (*RTCPReceiverReport, error) {
 		return nil, nil // no report blocks
 	}
 
-	// Sender SSRC (bytes 4–7)
-	// First report block starts at byte 8
-	if len(data) < 32 { // 8 header + 24 report block
-		return nil, fmt.Errorf("rtcp: RR too short")
+	// Sender SSRC (bytes 4–7); report blocks start at byte 8, 24 bytes each.
+	need := 8 + rc*24
+	if len(data) < need {
+		return nil, fmt.Errorf("rtcp: RR too short for %d report block(s): have %d bytes, need %d", rc, len(data), need)
 	}
 
-	rr := &RTCPReceiverReport{}
-	rr.SSRC = binary.BigEndian.Uint32(data[8:12])
-	rr.FractionLost = float64(data[12]) / 256.0
+	reports := make([]RTCPReceiverReport, 0, rc)
+	for i := 0; i < rc; i++ {
+		off := 8 + i*24
 
-	// Cumulative lost is 24-bit signed
-	lost := int32(data[13])<<16 | int32(data[14])<<8 | int32(data[15])
-	if lost&0x800000 != 0 {
-		lost |= ^int32(0xFFFFFF) // sign extend
+		rr := RTCPReceiverReport{}
+		rr.SSRC = binary.BigEndian.Uint32(data[off : off+4])
+		rr.FractionLost = float64(data[off+4]) / 256.0
+
+		// Cumulative lost is 24-bit signed
+		lost := int32(data[off+5])<<16 | int32(data[off+6])<<8 | int32(data[off+7])
+		if lost&0x800000 != 0 {
+			lost |= ^int32(0xFFFFFF) // sign extend
+		}
+		rr.CumulativeLost = lost
+
+		rr.HighestSeq = binary.BigEndian.Uint32(data[off+8 : off+12])
+		rr.Jitter = binary.BigEndian.Uint32(data[off+12 : off+16])
+		rr.LastSR = binary.BigEndian.Uint32(data[off+16 : off+20])
+		rr.DelaySinceLastSR = binary.BigEndian.Uint32(data[off+20 : off+24])
+
+		reports = append(reports, rr)
 	}
-	rr.CumulativeLost = lost
 
-	rr.HighestSeq = binary.BigEndian.Uint32(data[16:20])
-	rr.Jitter = binary.BigEndian.Uint32(data[20:24])
-	rr.LastSR = binary.BigEndian.Uint32(data[24:28])
-	rr.DelaySinceLastSR = binary.BigEndian.Uint32(data[28:32])
+	return reports, nil
+}
 
-	return rr, nil
+// ParseRTCPReceiverReport parses a raw RTCP packet and returns its first
+// reception report block, preserving the original single-block API.
+// Returns nil if the packet is not a Receiver Report, or carries no report
+// blocks.
+//
+// Prefer ParseRTCPReceiverReportBlocks (and select the block matching the
+// SSRC you actually care about) whenever the peer might report on more than
+// one source in the same packet -- this function silently keeps only
+// whichever block sorts first on the wire.
+func ParseRTCPReceiverReport(data []byte) (*RTCPReceiverReport, error) {
+	blocks, err := ParseRTCPReceiverReportBlocks(data)
+	if err != nil || len(blocks) == 0 {
+		return nil, err
+	}
+	first := blocks[0]
+	return &first, nil
 }
 
 // RTCPSenderReport holds the sender information fields from an RTCP SR packet.
