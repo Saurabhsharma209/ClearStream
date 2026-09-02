@@ -45,6 +45,7 @@ func main() {
 		usage()
 		os.Exit(1)
 	}
+
 	switch os.Args[1] {
 	case "batch":
 		runBatch(os.Args[2:])
@@ -77,23 +78,50 @@ rtp flags:
   --alert             Print alerts to stderr (always on)`)
 }
 
-// ─── batch ─────────────────────────────────────────────────────────────────
+// ─── batch ────────────────────────────────────────────────────────────
 
-func runBatch(args []string) {
-	fs := flag.NewFlagSet("batch", flag.ExitOnError)
+// batchArgs holds the parsed and validated flags for the "batch" subcommand.
+type batchArgs struct {
+	InputDir  string
+	OutputDir string
+	Workers   int
+	UseAGC    bool
+}
+
+// parseBatchArgs parses and validates the flags for the "batch" subcommand.
+// It is separated from runBatch so the flag-parsing/validation logic can be
+// unit tested without invoking os.Exit or running an actual batch job.
+func parseBatchArgs(args []string) (batchArgs, error) {
+	fs := flag.NewFlagSet("batch", flag.ContinueOnError)
 	inputDir := fs.String("input-dir", "", "Directory containing audio files")
 	outputDir := fs.String("output-dir", "eval-out", "Output directory for reports")
 	workers := fs.Int("workers", runtime.NumCPU(), "Parallel worker count")
 	useAGC := fs.Bool("agc", false, "Enable AGC on each worker pipeline")
-	_ = fs.Parse(args)
 
+	if err := fs.Parse(args); err != nil {
+		return batchArgs{}, err
+	}
 	if *inputDir == "" {
-		fmt.Fprintln(os.Stderr, "error: --input-dir is required")
+		return batchArgs{}, fmt.Errorf("--input-dir is required")
+	}
+
+	return batchArgs{
+		InputDir:  *inputDir,
+		OutputDir: *outputDir,
+		Workers:   *workers,
+		UseAGC:    *useAGC,
+	}, nil
+}
+
+func runBatch(args []string) {
+	ba, err := parseBatchArgs(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
 	var agcCfg *audio.AGCConfig
-	if *useAGC {
+	if ba.UseAGC {
 		dflt := audio.DefaultAGCConfig()
 		agcCfg = &dflt
 	}
@@ -101,9 +129,9 @@ func runBatch(args []string) {
 	suppressor := model.NewPassthrough() // swap for RNNoise/DeepFilter for real quality eval
 
 	cfg := eval.BatchConfig{
-		InputDir:   *inputDir,
-		OutputDir:  *outputDir,
-		Workers:    *workers,
+		InputDir:   ba.InputDir,
+		OutputDir:  ba.OutputDir,
+		Workers:    ba.Workers,
 		Suppressor: suppressor,
 		AGC:        agcCfg,
 		OnProgress: func(done, total int) {
@@ -118,7 +146,7 @@ func runBatch(args []string) {
 	defer cancel()
 
 	fmt.Printf("clearstream-eval batch: processing %s → %s (%d workers)\n",
-		*inputDir, *outputDir, *workers)
+		ba.InputDir, ba.OutputDir, ba.Workers)
 
 	start := time.Now()
 	summary, err := runner.Run(ctx)
@@ -127,8 +155,8 @@ func runBatch(args []string) {
 		fmt.Fprintf(os.Stderr, "batch error: %v\n", err)
 		os.Exit(1)
 	}
-
 	elapsed := time.Since(start)
+
 	fmt.Printf("\n── Batch complete ────────────────────────────────────────────\n")
 	fmt.Printf("  Files:         %d processed, %d failed / %d total\n",
 		summary.ProcessedFiles, summary.FailedFiles, summary.TotalFiles)
@@ -144,11 +172,12 @@ func runBatch(args []string) {
 		summary.AvgSpeechRatio*100, summary.AvgCPUSavedPct)
 	fmt.Printf("──────────────────────────────────────────────────────────────\n")
 
-	csvPath, summPath, filesPath, cfgPath, err := eval.WriteAllReports(*outputDir, summary)
+	csvPath, summPath, filesPath, cfgPath, err := eval.WriteAllReports(ba.OutputDir, summary)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "write reports: %v\n", err)
 		os.Exit(1)
 	}
+
 	fmt.Printf("\nOutputs written:\n")
 	fmt.Printf("  CSV:           %s\n", csvPath)
 	fmt.Printf("  Summary JSON:  %s\n", summPath)
@@ -156,23 +185,68 @@ func runBatch(args []string) {
 	fmt.Printf("  Tuned config:  %s\n", cfgPath)
 }
 
-// ─── rtp ─────────────────────────────────────────────────────────────────────
+// ─── rtp ────────────────────────────────────────────────────────────────────
 
-func runRTP(args []string) {
-	fs := flag.NewFlagSet("rtp", flag.ExitOnError)
+// rtpArgs holds the parsed and validated flags for the "rtp" subcommand.
+// Duration is zero when monitoring should run until Ctrl-C.
+type rtpArgs struct {
+	OutputDir string
+	Duration  time.Duration
+	Interval  time.Duration
+}
+
+// parseRTPArgs parses and validates the flags for the "rtp" subcommand.
+//
+// All flags are validated up front, before any monitoring session is
+// started. Previously --duration was only validated after the monitor had
+// already been started, so a bad --duration value meant work (printing the
+// banner, calling monitor.Start()) happened before failing. Validating
+// everything here means runRTP fails fast without doing any of that work.
+func parseRTPArgs(args []string) (rtpArgs, error) {
+	fs := flag.NewFlagSet("rtp", flag.ContinueOnError)
 	outputDir := fs.String("output-dir", "eval-out", "Output directory for reports")
 	durationStr := fs.String("duration", "", "Monitoring duration (e.g. 60s, 5m). Empty = until Ctrl-C")
 	intervalStr := fs.String("interval", "1s", "Sampling interval")
-	_ = fs.Parse(args)
+
+	if err := fs.Parse(args); err != nil {
+		return rtpArgs{}, err
+	}
 
 	interval, err := time.ParseDuration(*intervalStr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "invalid --interval: %v\n", err)
+		return rtpArgs{}, fmt.Errorf("invalid --interval: %w", err)
+	}
+	if interval <= 0 {
+		return rtpArgs{}, fmt.Errorf("invalid --interval: must be positive, got %s", interval)
+	}
+
+	var duration time.Duration
+	if *durationStr != "" {
+		duration, err = time.ParseDuration(*durationStr)
+		if err != nil {
+			return rtpArgs{}, fmt.Errorf("invalid --duration: %w", err)
+		}
+		if duration <= 0 {
+			return rtpArgs{}, fmt.Errorf("invalid --duration: must be positive, got %s", duration)
+		}
+	}
+
+	return rtpArgs{
+		OutputDir: *outputDir,
+		Duration:  duration,
+		Interval:  interval,
+	}, nil
+}
+
+func runRTP(args []string) {
+	ra, err := parseRTPArgs(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
 	fmt.Printf("clearstream-eval rtp: monitoring → %s (interval %s)\n",
-		*outputDir, interval)
+		ra.OutputDir, ra.Interval)
 	fmt.Println("  Note: wire StatsFn in code to your live rtp.Session.Stats().")
 	fmt.Println("  This CLI mode uses a synthetic no-op provider for demonstration.")
 	fmt.Println("  Press Ctrl-C to stop and write reports.")
@@ -193,8 +267,8 @@ func runRTP(args []string) {
 
 	monitor := eval.NewRTPMonitor(eval.RTPMonitorConfig{
 		StatsFn:        statsFn,
-		OutputDir:      *outputDir,
-		SampleInterval: interval,
+		OutputDir:      ra.OutputDir,
+		SampleInterval: ra.Interval,
 		OnAlert: func(msg string) {
 			fmt.Fprintf(os.Stderr, "  ⚠ ALERT: %s\n", msg)
 		},
@@ -204,15 +278,10 @@ func runRTP(args []string) {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if *durationStr != "" {
-		dur, err := time.ParseDuration(*durationStr)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "invalid --duration: %v\n", err)
-			os.Exit(1)
-		}
+	if ra.Duration > 0 {
 		go func() {
 			select {
-			case <-time.After(dur):
+			case <-time.After(ra.Duration):
 				cancel()
 			case <-ctx.Done():
 			}
@@ -240,5 +309,5 @@ func runRTP(args []string) {
 		fmt.Printf("    • %s\n", r)
 	}
 	fmt.Printf("──────────────────────────────────────────────────────────────\n")
-	fmt.Printf("Reports written to: %s\n", *outputDir)
+	fmt.Printf("Reports written to: %s\n", ra.OutputDir)
 }
