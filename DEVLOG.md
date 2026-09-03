@@ -2757,3 +2757,23 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 ### Tomorrow
 1. Audio Pipeline, Post-processing, AI Model: due per rotation (all three last touched 09-01).
 2. Resolve the three carried-forward blocked items above once a human weighs in.
+
+## 2026-09-03
+
+**Agents run:** Audio Pipeline (pkg/audio), Post-processing (pkg/file), AI Model (pkg/model)
+**Build:** passing (`go build ./...` clean; `go test ./... -p 1` all green, no flaky failures observed today — pkg/file 72.6s, pkg/model 64.9s, no timeouts)
+
+### Changes
+- pkg/audio/pipeline_bypass_test.go (new): `Pipeline.SetBypass`/`Bypassed()` had 0% test coverage despite being a real mid-call control-channel feature (short-circuits AEC/NR/AGC/limiter/suppressor). Added `TestPipelineSetBypass` covering default state, bypass-on passthrough behavior, and bypass-off resumption. Coverage 95.0% -> 95.4%.
+- pkg/file/processor_encode_atomic_test.go: the final `os.Rename(tmpDst, dst)` promote step in `encodeAndMux` had an untested failure branch (temp-file cleanup + wrapped error) — if that cleanup line were ever dropped in a refactor, a failed promote would silently leak a `.clearstream-tmp-*` file. Added `TestEncodeAndMuxRenameFailureCleansUpTempFile`, forcing the rename to fail by pre-creating `dst` as an empty directory. Coverage 93.8% -> 94.2%.
+- pkg/model/batch_test.go: `BatchWrapper.ProcessBatch`'s success-return line had 0% coverage because the existing test (`AsBatch(NewPassthrough())`) returns `Passthrough` unwrapped (it already implements `BatchSuppressor`), never exercising `BatchWrapper` itself. Added `TestBatchWrapper_ProcessBatch_AllSucceed` and a strengthened `TestBatchWrapper_ProcessBatch_PartialSuccess` (exact byte-content assertions, failure at an arbitrary mid-batch index via an extended `minimalSuppressor` test double). `batch.go` coverage 88.9% -> 100%; package 95.5% -> 95.9%.
+
+### Blocked
+- Stashed `ClearStream_AudioEnhancement_API_Reference.docx` (flagged 08-31) — still needs a human decision.
+- Now-merged remote branch `feature/exotel-agentstream` — still safe to delete, still a human call.
+- Stray `.NNNNNNNNNN`-suffixed duplicate files under pkg/audio/, pkg/file/, pkg/http/, pkg/rtp/ — still untouched by every agent per standing instruction, still needs a human look/cleanup pass.
+
+### Tomorrow
+1. RTP/SIP, API Layer, QA/Testing: due next per rotation (all three last touched 09-02).
+2. Resolve the three carried-forward blocked items above once a human weighs in.
+3. Consider a dedicated session to clean up the stray `.NNNNNNNNNN` files instead of continuing to defer them daily.
