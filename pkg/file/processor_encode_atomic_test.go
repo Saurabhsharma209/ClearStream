@@ -9,6 +9,7 @@ package file
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -118,5 +119,63 @@ func TestEncodeAndMuxFailurePreservesExistingDst(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Errorf("expected exactly the original dst file in dst dir, found %d entries", len(entries))
+	}
+}
+
+// TestEncodeAndMuxRenameFailureCleansUpTempFile verifies the previously-
+// untested final-promote error branch in encodeAndMux: when the closing
+// os.Rename(tmpDst, dst) itself fails (here, because dst is a pre-existing
+// directory rather than a plain file -- rename(2) rejects replacing a
+// directory with a non-directory), encodeAndMux must not leak the
+// now-orphaned temp encode output. It should remove the temp file and
+// return a wrapped error, leaving dst completely untouched, exactly like
+// the already-tested "ffmpeg exited non-zero" failure paths above do.
+func TestEncodeAndMuxRenameFailureCleansUpTempFile(t *testing.T) {
+	ffmpeg := makeFakeFFmpegForFile(t)
+	src := makeDummyWAV(t)
+	dstDir := t.TempDir()
+	// dst is a pre-existing, empty directory: the encode phase succeeds
+	// (fake ffmpeg writes a valid WAV to the temp path), but the final
+	// os.Rename(tmpDst, dst) must fail since dst is a directory.
+	dst := filepath.Join(dstDir, "out.wav")
+	if err := os.Mkdir(dst, 0755); err != nil {
+		t.Fatalf("seed dst as directory: %v", err)
+	}
+
+	p := newProcWithPath(ffmpeg)
+	err := p.ProcessWithOptions(src, dst, Options{OutputCodec: "pcm_s16le"})
+	if err == nil {
+		t.Fatal("expected error when promoting temp output to a dst that is a directory, got nil")
+	}
+	if !strings.Contains(err.Error(), "promote temp output to dst") {
+		t.Errorf("expected error to mention promote temp output to dst, got: %v", err)
+	}
+
+	// dst itself must remain an untouched, empty directory -- not replaced,
+	// not deleted, not written into.
+	fi, statErr := os.Stat(dst)
+	if statErr != nil || !fi.IsDir() {
+		t.Fatalf("expected dst to remain a directory, stat: %+v, err: %v", fi, statErr)
+	}
+	dstContents, readErr := os.ReadDir(dst)
+	if readErr != nil {
+		t.Fatalf("read dst: %v", readErr)
+	}
+	if len(dstContents) != 0 {
+		t.Errorf("expected dst directory to remain empty, found %d entries", len(dstContents))
+	}
+
+	// The orphaned temp file must have been cleaned up: dstDir must contain
+	// only the dst directory itself, no leaked ".clearstream-tmp-*" file.
+	entries, readDirErr := os.ReadDir(dstDir)
+	if readDirErr != nil {
+		t.Fatalf("read dst parent dir: %v", readDirErr)
+	}
+	if len(entries) != 1 || entries[0].Name() != "out.wav" {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Errorf("expected dst parent dir to contain only %q (no leaked temp file), found: %v", "out.wav", names)
 	}
 }
