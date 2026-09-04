@@ -2777,3 +2777,21 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. RTP/SIP, API Layer, QA/Testing: due next per rotation (all three last touched 09-02).
 2. Resolve the three carried-forward blocked items above once a human weighs in.
 3. Consider a dedicated session to clean up the stray `.NNNNNNNNNN` files instead of continuing to defer them daily.
+## 2026-09-04
+**Agents run:** RTP/SIP (pkg/rtp), API Layer (clearstream.go), QA/Testing (pkg/agentstream)
+**Build:** passing (`go build ./...` clean; `go test ./... -p 1` all green, no failures)
+
+### Changes
+- pkg/rtp/rtcp.go, pkg/rtp/session.go, pkg/rtp/rtcp_test.go: `listenRTCP` only extracted reception-report blocks via `ParseRTCPReceiverReportBlocks`, which requires PT=201 (pure RR). Per RFC 3550 6.4.1 a Sender Report (PT=200) carries the same 24-byte report-block format after its 20-byte sender-info section, and any two-way SIP endpoint typically reports via SR not RR -- so RTCPStats (loss/jitter) could silently stay zero for an entire call. Added `ParseRTCPReportBlocks` (handles both RR and SR offsets); `listenRTCP` now uses it. 4 new tests (SR-embedded-blocks, RR backward-compat, bare-SR RC=0, truncated-SR rejection). Coverage held at 97.3%.
+- clearstream.go, clearstream_internal_test.go: `New()` zero-value defaulting (SampleRate/Channels/FFmpegPath) and `Config.telemetry()`'s caller-sink branch were uncovered despite being relied on by every built-in Config preset and SDK entry point. Added TestNew_ZeroValueConfigAppliesDefaults and TestConfigTelemetry_ReturnsConfiguredSink. Package coverage 92.3% -> 95.7%.
+- pkg/agentstream/server_test.go: `handleReconfigure` (live mid-call bypass/noise-aggressiveness control) was 66.7% covered. Added 4 tests: before-start error, unknown-mode error, disabled->enabled resume (asserted on actual next-frame output), and aggressive-mode level application. No bug found -- behavior matched docs. `handleReconfigure` coverage 66.7% -> 100%; package 85.7% -> 88.5%.
+
+### Blocked
+- Stashed `ClearStream_AudioEnhancement_API_Reference.docx` (flagged 08-31) -- still needs a human decision.
+- Now-merged remote branch feature/exotel-agentstream -- still safe to delete, still a human call.
+- Stray `.NNNNNNNNNN`-suffixed duplicate files under pkg/audio/, pkg/file/, pkg/http/, pkg/rtp/ -- still untouched, still needs a human look/cleanup pass.
+
+### Tomorrow
+1. Audio Pipeline, Post-processing, AI Model: due next per rotation (all three last touched 09-03).
+2. Resolve the three carried-forward blocked items above once a human weighs in.
+3. The scheduled task's static per-workstream backlog lists are largely exhausted/stale (flagged 08-31, still true today) -- agents are now sourcing real work from coverage gaps and code inspection instead, which is working well -- consider formally replacing the static lists with this approach in the task definition.
