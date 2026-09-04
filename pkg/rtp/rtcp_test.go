@@ -209,6 +209,97 @@ func TestParseRTCPReceiverReportBlocks_MultipleBlocks(t *testing.T) {
 	}
 }
 
+// TestParseRTCPReportBlocks_SenderReportWithEmbeddedBlocks verifies that
+// ParseRTCPReportBlocks extracts reception report blocks carried inside an
+// RTCP Sender Report (PT=200), not just plain Receiver Reports (PT=201).
+// This is the common real-world case: an endpoint that is both sending and
+// receiving audio (true for essentially every two-way SIP call) reports its
+// reception statistics via SR, embedding the same 24-byte report-block
+// format after its 20-byte sender-info section. The RR-only
+// ParseRTCPReceiverReportBlocks would silently return nothing for this
+// packet even though it carries real loss/jitter data.
+func TestParseRTCPReportBlocks_SenderReportWithEmbeddedBlocks(t *testing.T) {
+	pkt := make([]byte, 28+24)
+	pkt[0] = 0x81 // V=2, P=0, RC=1
+	pkt[1] = 0xC8 // PT=200 SR
+	binary.BigEndian.PutUint16(pkt[2:4], uint16(len(pkt)/4-1))
+	binary.BigEndian.PutUint32(pkt[4:8], 0xAAAAAAAA) // sender SSRC
+	// Sender info (NTP MSW/LSW, RTP TS, packet count, octet count) — values
+	// don't matter for this test, leave zeroed.
+
+	// Embedded reception report block, starting at byte 28.
+	binary.BigEndian.PutUint32(pkt[28:32], 0x33333333) // SSRC of source
+	pkt[32] = 0x40                                     // fraction lost = 64/256 = 0.25
+	binary.BigEndian.PutUint32(pkt[40:44], 77)         // jitter = 77
+
+	blocks, err := ParseRTCPReportBlocks(pkt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 embedded report block from SR, got %d", len(blocks))
+	}
+	if blocks[0].SSRC != 0x33333333 {
+		t.Errorf("SSRC: got %08X, want 33333333", blocks[0].SSRC)
+	}
+	if blocks[0].Jitter != 77 {
+		t.Errorf("jitter: got %d, want 77", blocks[0].Jitter)
+	}
+	if math.Abs(blocks[0].FractionLost-0.25) > 0.01 {
+		t.Errorf("fraction lost: got %.2f, want 0.25", blocks[0].FractionLost)
+	}
+}
+
+// TestParseRTCPReportBlocks_PlainReceiverReport verifies ParseRTCPReportBlocks
+// still handles ordinary RR packets (PT=201) identically to
+// ParseRTCPReceiverReportBlocks.
+func TestParseRTCPReportBlocks_PlainReceiverReport(t *testing.T) {
+	pkt := make([]byte, 8+24)
+	pkt[0] = 0x81 // V=2, RC=1
+	pkt[1] = 0xC9 // PT=201 RR
+	binary.BigEndian.PutUint32(pkt[8:12], 0x44444444)
+	binary.BigEndian.PutUint32(pkt[20:24], 55)
+
+	blocks, err := ParseRTCPReportBlocks(pkt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 || blocks[0].SSRC != 0x44444444 || blocks[0].Jitter != 55 {
+		t.Fatalf("unexpected result: %+v", blocks)
+	}
+}
+
+// TestParseRTCPReportBlocks_SenderReportNoBlocks verifies a bare SR (RC=0,
+// no embedded reception blocks -- the common case for a one-way media leg
+// that has nothing to report on yet) returns (nil, nil) rather than an error.
+func TestParseRTCPReportBlocks_SenderReportNoBlocks(t *testing.T) {
+	pkt := make([]byte, 28)
+	pkt[0] = 0x80 // V=2, RC=0
+	pkt[1] = 0xC8 // PT=200 SR
+
+	blocks, err := ParseRTCPReportBlocks(pkt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocks != nil {
+		t.Errorf("expected nil blocks for RC=0 SR, got %+v", blocks)
+	}
+}
+
+// TestParseRTCPReportBlocks_TruncatedSR verifies an SR that declares RC=1 but
+// doesn't actually carry the 24 bytes for that block is rejected as
+// malformed, matching ParseRTCPReceiverReportBlocks' truncation handling.
+func TestParseRTCPReportBlocks_TruncatedSR(t *testing.T) {
+	pkt := make([]byte, 28) // SR fixed header only, no room for the claimed block
+	pkt[0] = 0x81           // V=2, RC=1
+	pkt[1] = 0xC8           // PT=200 SR
+
+	_, err := ParseRTCPReportBlocks(pkt)
+	if err == nil {
+		t.Fatal("expected error for SR declaring RC=1 with no block data")
+	}
+}
+
 // TestParseRTCPReceiverReportBlocks_TruncatedMultiBlock verifies that a
 // packet declaring RC=2 but only carrying one block's worth of data is
 // rejected as malformed rather than silently parsed from out-of-bounds/wrong

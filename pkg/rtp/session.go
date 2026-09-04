@@ -797,7 +797,12 @@ func (s *Session) listenRTCP() {
 			return
 		}
 
-		blocks, err := ParseRTCPReceiverReportBlocks(buf[:n])
+		// Use ParseRTCPReportBlocks (not the RR-only ParseRTCPReceiverReportBlocks)
+		// so reception report blocks embedded in an SR are picked up too -- an
+		// endpoint that both sends and receives audio (true for essentially every
+		// two-way SIP call) reports its own reception stats via SR, not RR; only
+		// looking at PT=201 packets left RTCPStats permanently zero for such peers.
+		blocks, err := ParseRTCPReportBlocks(buf[:n])
 		if err != nil {
 			s.logger.Warn("rtcp parse error", zap.Error(err))
 			continue

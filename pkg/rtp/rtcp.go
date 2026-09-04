@@ -116,6 +116,80 @@ func ParseRTCPReceiverReport(data []byte) (*RTCPReceiverReport, error) {
 	return &first, nil
 }
 
+// ParseRTCPReportBlocks parses the reception report blocks carried by either
+// an RTCP Sender Report (PT=200) or Receiver Report (PT=201) packet (RFC 3550
+// SS6.4.1/6.4.2). Both packet types share an identical 24-byte report-block
+// format; they differ only in where the blocks start -- an SR has a 20-byte
+// sender-info section between the 4-byte SSRC and the report blocks that an
+// RR doesn't.
+//
+// This matters because ParseRTCPReceiverReportBlocks only recognizes PT=201
+// packets. In practice, an endpoint that is both sending and receiving audio
+// (true for essentially every two-way SIP call) reports its own reception
+// statistics via SR, not RR -- pure RR packets are only sent by receive-only
+// participants. A session that only inspected PT=201 packets would silently
+// see zero loss/jitter data for the entire call from any peer that reports
+// via SR-with-embedded-blocks (the common case), even though that peer sends
+// real reception report blocks every few seconds.
+//
+// Returns (nil, nil) if the packet is neither an SR nor an RR, or carries
+// zero report blocks (RC == 0).
+func ParseRTCPReportBlocks(data []byte) ([]RTCPReceiverReport, error) {
+	if len(data) < 8 {
+		return nil, fmt.Errorf("rtcp: packet too short (%d bytes)", len(data))
+	}
+
+	version := (data[0] >> 6) & 0x3
+	if version != 2 {
+		return nil, fmt.Errorf("rtcp: invalid version %d", version)
+	}
+
+	rc := int(data[0] & 0x1F)
+	pt := RTCPPacketType(data[1])
+
+	var base int
+	switch pt {
+	case RTCPTypeReceiverReport:
+		base = 8 // 4-byte common header + 4-byte SSRC
+	case RTCPTypeSenderReport:
+		base = 28 // 4-byte common header + 4-byte SSRC + 20-byte sender info
+	default:
+		return nil, nil // neither SR nor RR, silently ignore
+	}
+	if rc == 0 {
+		return nil, nil // no report blocks
+	}
+
+	need := base + rc*24
+	if len(data) < need {
+		return nil, fmt.Errorf("rtcp: packet too short for %d report block(s): have %d bytes, need %d", rc, len(data), need)
+	}
+
+	reports := make([]RTCPReceiverReport, 0, rc)
+	for i := 0; i < rc; i++ {
+		off := base + i*24
+
+		rr := RTCPReceiverReport{}
+		rr.SSRC = binary.BigEndian.Uint32(data[off : off+4])
+		rr.FractionLost = float64(data[off+4]) / 256.0
+
+		lost := int32(data[off+5])<<16 | int32(data[off+6])<<8 | int32(data[off+7])
+		if lost&0x800000 != 0 {
+			lost |= ^int32(0xFFFFFF) // sign extend
+		}
+		rr.CumulativeLost = lost
+
+		rr.HighestSeq = binary.BigEndian.Uint32(data[off+8 : off+12])
+		rr.Jitter = binary.BigEndian.Uint32(data[off+12 : off+16])
+		rr.LastSR = binary.BigEndian.Uint32(data[off+16 : off+20])
+		rr.DelaySinceLastSR = binary.BigEndian.Uint32(data[off+20 : off+24])
+
+		reports = append(reports, rr)
+	}
+
+	return reports, nil
+}
+
 // RTCPSenderReport holds the sender information fields from an RTCP SR packet.
 // RFC 3550 §6.4.1
 type RTCPSenderReport struct {
