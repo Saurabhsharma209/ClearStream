@@ -194,3 +194,154 @@ func TestParseFloatParam(t *testing.T) {
 		t.Error("parseFloatParam(non-numeric value) should return ok=false")
 	}
 }
+
+// TestHandleReconfigureBeforeStartErrors verifies a reconfigure event that
+// arrives before the call's pipeline has been built via a start event
+// surfaces as an error event rather than panicking on a nil pipeline.
+func TestHandleReconfigureBeforeStartErrors(t *testing.T) {
+	conn, cleanup := dialTestServer(t, ServerConfig{})
+	defer cleanup()
+
+	if env := readEnvelope(t, conn); env.Event != EventConnected {
+		t.Fatalf("expected connected event first, got %q", env.Event)
+	}
+
+	writeEvent(t, conn, ReconfigureEvent{Event: EventReconfigure, StreamSID: "ST3", Mode: "disabled"})
+
+	env := readEnvelope(t, conn)
+	if env.Event != EventError {
+		t.Fatalf("expected error event for reconfigure before start, got %q", env.Event)
+	}
+}
+
+// TestHandleReconfigureUnknownModeErrors verifies an unrecognised Mode value
+// surfaces as an error event instead of silently doing nothing.
+func TestHandleReconfigureUnknownModeErrors(t *testing.T) {
+	conn, cleanup := dialTestServer(t, ServerConfig{})
+	defer cleanup()
+
+	if env := readEnvelope(t, conn); env.Event != EventConnected {
+		t.Fatalf("expected connected event first, got %q", env.Event)
+	}
+
+	writeEvent(t, conn, StartEvent{
+		Event:      EventStart,
+		StreamSID:  "ST4",
+		CallSID:    "CA4",
+		SampleRate: 8000,
+		CustomParameters: CustomParameters{
+			"ns_model": "passthrough",
+		},
+	})
+
+	writeEvent(t, conn, ReconfigureEvent{Event: EventReconfigure, StreamSID: "ST4", Mode: "bogus-mode"})
+
+	env := readEnvelope(t, conn)
+	if env.Event != EventError {
+		t.Fatalf("expected error event for unknown reconfigure mode, got %q", env.Event)
+	}
+}
+
+// TestHandleReconfigureEnabledResumesAfterDisabled drives disabled -> enabled
+// through the live reconfigure path and confirms the effect is visible on
+// the next media frame's EnhancementInfo, not just that no error occurred.
+func TestHandleReconfigureEnabledResumesAfterDisabled(t *testing.T) {
+	conn, cleanup := dialTestServer(t, ServerConfig{})
+	defer cleanup()
+
+	if env := readEnvelope(t, conn); env.Event != EventConnected {
+		t.Fatalf("expected connected event first, got %q", env.Event)
+	}
+
+	writeEvent(t, conn, StartEvent{
+		Event:      EventStart,
+		StreamSID:  "ST5",
+		CallSID:    "CA5",
+		SampleRate: 8000,
+		CustomParameters: CustomParameters{
+			"ns_model": "passthrough",
+		},
+	})
+
+	frame := make([]byte, 320)
+	payload := base64.StdEncoding.EncodeToString(frame)
+
+	sendMediaAndReadCleanMedia := func() CleanMediaEvent {
+		writeEvent(t, conn, MediaEvent{
+			Event:       EventMedia,
+			StreamSID:   "ST5",
+			Payload:     payload,
+			SampleRate:  8000,
+			TimestampMs: 0,
+		})
+		t.Helper()
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read clean_media: %v", err)
+		}
+		var out CleanMediaEvent
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatalf("unmarshal clean_media: %v (raw=%s)", err, data)
+		}
+		if out.Event != EventCleanMedia {
+			t.Fatalf("expected clean_media event, got %q", out.Event)
+		}
+		return out
+	}
+
+	if out := sendMediaAndReadCleanMedia(); !out.Enhancement.NoiseSuppression {
+		t.Fatal("expected NoiseSuppression true before any reconfigure")
+	}
+
+	writeEvent(t, conn, ReconfigureEvent{Event: EventReconfigure, StreamSID: "ST5", Mode: "disabled"})
+	if out := sendMediaAndReadCleanMedia(); out.Enhancement.NoiseSuppression {
+		t.Fatal("expected NoiseSuppression false after mode=disabled reconfigure")
+	}
+
+	writeEvent(t, conn, ReconfigureEvent{Event: EventReconfigure, StreamSID: "ST5", Mode: "enabled"})
+	if out := sendMediaAndReadCleanMedia(); !out.Enhancement.NoiseSuppression {
+		t.Fatal("expected NoiseSuppression true again after mode=enabled reconfigure")
+	}
+}
+
+// TestHandleReconfigureAggressiveModeAppliesLevel exercises the
+// adaptive/aggressive/mild branch, including the Level>0 SetAggressiveness
+// call, against a call started with ns_mode=adaptive so TieredNR is actually
+// configured (Reconfigure is documented as a no-op otherwise).
+func TestHandleReconfigureAggressiveModeAppliesLevel(t *testing.T) {
+	conn, cleanup := dialTestServer(t, ServerConfig{})
+	defer cleanup()
+
+	if env := readEnvelope(t, conn); env.Event != EventConnected {
+		t.Fatalf("expected connected event first, got %q", env.Event)
+	}
+
+	writeEvent(t, conn, StartEvent{
+		Event:      EventStart,
+		StreamSID:  "ST6",
+		CallSID:    "CA6",
+		SampleRate: 8000,
+		CustomParameters: CustomParameters{
+			"ns_model": "passthrough",
+			"ns_mode":  "adaptive",
+		},
+	})
+
+	writeEvent(t, conn, ReconfigureEvent{Event: EventReconfigure, StreamSID: "ST6", Mode: "aggressive", Level: 2})
+
+	frame := make([]byte, 320)
+	payload := base64.StdEncoding.EncodeToString(frame)
+	writeEvent(t, conn, MediaEvent{
+		Event:       EventMedia,
+		StreamSID:   "ST6",
+		Payload:     payload,
+		SampleRate:  8000,
+		TimestampMs: 0,
+	})
+
+	env := readEnvelope(t, conn)
+	if env.Event != EventCleanMedia {
+		t.Fatalf("expected clean_media after aggressive reconfigure with level, got %q (event=%v)", env.Event, env)
+	}
+}
