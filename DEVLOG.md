@@ -2795,3 +2795,30 @@ Remaining allocations are jitter buffer, UDP packet construction, zap logger int
 1. Audio Pipeline, Post-processing, AI Model: due next per rotation (all three last touched 09-03).
 2. Resolve the three carried-forward blocked items above once a human weighs in.
 3. The scheduled task's static per-workstream backlog lists are largely exhausted/stale (flagged 08-31, still true today) -- agents are now sourcing real work from coverage gaps and code inspection instead, which is working well -- consider formally replacing the static lists with this approach in the task definition.
+
+## 2026-09-06
+
+**Agents run:** Audio Pipeline (pkg/audio), Post-processing (pkg/file), AI Model (pkg/model) -- per rotation, flagged as due in 09-04's "Tomorrow" section
+**Build:** passing (`go build ./...` clean; `go test ./... -p 1` all green, no failures across all packages)
+
+### Changes
+- pkg/file/processor_encode_start_test.go (new): encodeAndMux's cmd.Start() failure branch (ffmpeg binary missing/unexecutable at the encode stage) had no direct coverage -- the existing bad-path test (TestEncodeAndMuxBadFFmpegPath) drives failure through ProcessWithOptions, which fails earlier in decodeAndSuppress's own ffmpeg call and never reaches encodeAndMux's cmd.Start() at all. Added a test calling the unexported encodeAndMux method directly with a valid PCM fixture but a broken FFmpegPath, isolating that branch and asserting no temp file leaks and dst is never created.
+- pkg/audio/tiered_nr_reset_test.go (new): TestTieredNR_Reset only exercised DefaultTieredNRConfig (RNNoise/DeepFilter both nil), so Reset's two nil-guarded delegation branches were never covered. Added a test using model.MockSuppressor for both, asserting Reset() is actually forwarded to each configured sub-suppressor.
+- pkg/model/telemetry_nilsink_test.go (new): NewInstrumentedSuppressor's nil-to-NoopSink defaulting (the same fallback Reset relies on for struct literals built without this constructor) had no direct test. Added a test asserting Sink defaults to telemetry.NoopSink{} and that Process/Reset both run without panicking through it.
+
+### Process note
+Today's run hit an infra hiccup: the three workstream subagents were spawned in parallel as usual, but the host machine went to sleep mid-run and two came back with partial/interrupted state (no session-resume capability available this run), and the third's launch was itself cancelled before starting. None had committed anything at the point of interruption. Recovered by running the coverage-gap analysis and fixes directly in this session instead of via subagents -- same rotation, same workstreams, same one-real-improvement-per-package approach as any other day.
+
+### Investigated, not used
+- pkg/model Reset() 0%-coverage no-ops in deepfilter_server.go and passthrough.go, and pkg/audio's pipeline.go Reset (78.1%) -- looked at but chose the three items above as higher-value (they cover branches with actual conditional logic, not trivial no-op bodies).
+
+### Blocked
+- Stashed `ClearStream_AudioEnhancement_API_Reference.docx` (flagged 08-31) -- still needs a human decision.
+- Now-merged remote branch `feature/exotel-agentstream` -- still safe to delete, still a human call.
+- Stray `.NNNNNNNNNN`-suffixed duplicate files under pkg/audio/, pkg/file/, pkg/http/, pkg/rtp/ -- still untouched, still needs a human look/cleanup pass.
+- Two untracked repo-root files, `COMPETITOR_COMPARISON.md` and `QA_MEASUREMENT_FRAMEWORK.md` (dated 2026-09-04 in their own headers, owner Saurabh Sharma), sit uncommitted in the working tree -- not part of any of the 6 workstreams, left untouched rather than guessing whether to commit, move, or discard them.
+
+### Tomorrow
+1. RTP/SIP, API Layer, QA/Testing: due next per rotation (all three last touched 09-04).
+2. Resolve the carried-forward blocked items above once a human weighs in, including the two untracked root-level markdown files newly noticed today.
+3. Consider whether subagent parallelism for the daily build needs a resume/checkpoint mechanism, given today's mid-run interruption.
