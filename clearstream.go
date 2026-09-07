@@ -18,6 +18,7 @@
 package clearstream
 
 import (
+	"errors"
 	"fmt"
 
 	"net/http"
@@ -38,9 +39,18 @@ const Version = "0.1.0"
 type ClearStream struct {
 	cfg         Config
 	model       model.Suppressor
-	pool        *model.SuppressorPool
+	pool        suppressorPool
 	logger      *zap.Logger
 	maxSessions int
+}
+
+// suppressorPool is the subset of *model.SuppressorPool that ClearStream
+// depends on. It exists so tests in this package can substitute a fake
+// pool (e.g. one whose Close returns an error) without reaching into
+// pkg/model, which owns *model.SuppressorPool.
+type suppressorPool interface {
+	Acquire() model.Suppressor
+	Close() error
 }
 
 // Config holds top-level SDK configuration.
@@ -380,8 +390,8 @@ func (cs *ClearStream) PoolSize() int {
 func (cs *ClearStream) Close() error {
 	err := cs.model.Close()
 	if cs.pool != nil {
-		if perr := cs.pool.Close(); perr != nil && err == nil {
-			err = perr
+		if perr := cs.pool.Close(); perr != nil {
+			err = errors.Join(err, perr)
 		}
 	}
 	return err
