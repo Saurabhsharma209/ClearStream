@@ -44,3 +44,7 @@ eval_out/
 # Python virtualenvs (e.g. voice-qa/browser-lab/orchestrator/.venv)
 .venv/
 venv/
+
+# User work-in-progress docs (intentionally local-only, not pushed)
+COMPETITOR_COMPARISON.md
+QA_MEASUREMENT_FRAMEWORK.md
