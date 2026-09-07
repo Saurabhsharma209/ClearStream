@@ -2822,3 +2822,24 @@ Today's run hit an infra hiccup: the three workstream subagents were spawned in 
 1. RTP/SIP, API Layer, QA/Testing: due next per rotation (all three last touched 09-04).
 2. Resolve the carried-forward blocked items above once a human weighs in, including the two untracked root-level markdown files newly noticed today.
 3. Consider whether subagent parallelism for the daily build needs a resume/checkpoint mechanism, given today's mid-run interruption.
+
+## 2026-09-07
+
+**Agents run:** RTP/SIP (pkg/rtp), API Layer (clearstream.go), QA/Testing (pkg/agentstream) -- per rotation, due since 09-04
+**Build:** passing (go build ./... clean; go test ./... -p 1 all green, no failures)
+
+### Changes
+- pkg/rtp/session_test.go: handlePacket's propagation of parseRTPHeader errors (CSRC count pushing header offset past packet length) was never exercised through handlePacket itself, only via a direct call to parseRTPHeader. Added TestHandlePacketHeaderParseError. No bug -- correct pass-through, now covered. handlePacket 93.2% -> 93.8%; package 97.4% -> 97.5%.
+- clearstream.go, clearstream_internal_test.go: bug fix -- Close() discarded the pool's close error whenever model.Close() had already failed (perr != nil && err == nil gate), so a pool-close failure was silently dropped even though pool.Close() still ran. Fixed with errors.Join(err, perr) to aggregate both. Introduced a small suppressorPool interface so a fake pool could inject close errors for testing without touching pkg/model. Added 3 tests (model-only failure, pool-only failure, both-aggregate via errors.Is). Close 80.0% -> 100.0%; package 95.7% -> 96.6%. New (86.7%) not addressed this pass -- no bug found, just unexercised defaulting branch.
+- pkg/agentstream/coverage_boost_test.go (new): handleMessage was the package's lowest-covered function at 64.0% (JSON-decode-error branches for every event sub-type, DTMF/Clear/Mark no-ops, and the default/unknown-event path were all untested). Added table-driven coverage for all of it, plus send/firstNonEmpty error branches, NewAgentStreamServer defaulting, handleMedia guard/decode/partial-frame paths, handleStart ns_vad variants, and serveWS non-text-frame handling. No bugs found -- pure coverage. Package 88.5% -> 96.3%; handleMessage/send/firstNonEmpty/NewAgentStreamServer all now 100%. serveWS stayed at 81.8% -- its remaining gaps (handshake-upgrade failure, send-failure racing a conn close) aren't reachable from a normal test client.
+
+### Blocked
+- Stashed ClearStream_AudioEnhancement_API_Reference.docx (flagged 08-31) -- still needs a human decision.
+- Now-merged remote branch feature/exotel-agentstream -- still safe to delete, still a human call.
+- Stray .NNNNNNNNNN-suffixed duplicate files under pkg/audio/, pkg/file/, pkg/http/, pkg/rtp/ -- still untouched, still needs a human look/cleanup pass.
+- Two untracked repo-root files, COMPETITOR_COMPARISON.md and QA_MEASUREMENT_FRAMEWORK.md (dated 09-04) -- still uncommitted, still not part of any workstream, left untouched again.
+
+### Tomorrow
+1. Audio Pipeline, Post-processing, AI Model: due next per rotation (all three last touched 09-06).
+2. Resolve the four carried-forward blocked items above once a human weighs in.
+3. clearstream.go's New() (86.7%) is the next-lowest gap in the API Layer workstream if no better lead turns up.
