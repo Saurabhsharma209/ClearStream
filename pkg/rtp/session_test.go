@@ -606,6 +606,48 @@ func TestHandlePacketTooShort(t *testing.T) {
 	}
 }
 
+// TestHandlePacketHeaderParseError verifies that handlePacket propagates the
+// error returned by parseRTPHeader for a packet that passes handlePacket's
+// own 12-byte minimum-length check but whose CSRC count pushes the header
+// past the end of the packet ("rtp: header exceeds packet length"). This
+// exercises the `if err != nil { return err }` branch right after the
+// parseRTPHeader call in handlePacket, which was previously only exercised
+// by calling parseRTPHeader directly rather than through handlePacket.
+func TestHandlePacketHeaderParseError(t *testing.T) {
+	sinkConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("bind sink: %v", err)
+	}
+	defer sinkConn.Close()
+
+	logger, _ := zap.NewDevelopment()
+	cfg := Config{
+		ListenAddr:  "127.0.0.1:0",
+		ForwardAddr: sinkConn.LocalAddr().String(),
+		PayloadType: 0,
+		Logger:      logger,
+		Suppressor:  model.NewMockSuppressor(),
+	}
+	sess, err := NewSession(cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.conn.Close()
+
+	// Exactly 12 bytes (passes handlePacket's own length check) but CSRCCount=1
+	// (low nibble of byte 0), pushing parseRTPHeader's offset to 16, past the
+	// 12-byte packet -- parseRTPHeader must return an error and handlePacket
+	// must propagate it rather than swallowing it.
+	pkt := make([]byte, 12)
+	pkt[0] = 0x81 // V=2, P=0, X=0, CC=1
+	pkt[1] = 0x00 // M=0, PT=0
+
+	err = sess.handlePacket(pkt)
+	if err == nil {
+		t.Error("expected error propagated from parseRTPHeader, got nil")
+	}
+}
+
 // TestPassthroughBypassMode verifies that when the session uses a Passthrough
 // suppressor with no extra pipeline stages, the fast-bypass path forwards
 // packets without any PCM decode/suppress/encode cycle.
