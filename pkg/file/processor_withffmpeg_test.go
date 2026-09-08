@@ -476,3 +476,94 @@ func TestProcessDirMaxConcurrencyDefaultsWhenUnset(t *testing.T) {
 }
 
 var _ = runtime.NumCPU // keep runtime import used regardless of branch changes above
+
+// ---------------------------------------------------------------------------
+// encodeAndMux -- video passthrough branch (info.HasVideo && !opts.AudioOnly)
+// ---------------------------------------------------------------------------
+
+// makeFakeFFmpegWithVideo builds a fake ffmpeg+ffprobe pair whose ffprobe
+// output describes a file with BOTH an audio and a video stream, and whose
+// encode-phase invocation records its full argument list to argsLog so the
+// test can inspect exactly what encodeAndMux built. Before this test, the
+// "-map 0:a -map 1:v -c:v copy" muxing branch in encodeAndMux (processor.go's
+// `if info.HasVideo && !opts.AudioOnly`) had zero test coverage: every other
+// fake-ffmpeg fixture in this file only ever probes a plain audio-only WAV,
+// so info.HasVideo was always false and this branch never ran.
+func makeFakeFFmpegWithVideo(t *testing.T, argsLog string) (ffmpegPath string) {
+	t.Helper()
+	skipOnWindows(t)
+	dir := t.TempDir()
+
+	probeJSON := `{"streams":[{"codec_type":"audio","codec_name":"pcm_s16le","sample_rate":"16000","channels":1,"duration":"0.020000","bit_rate":"256000"},{"codec_type":"video","codec_name":"h264"}],"format":{"format_name":"mp4","duration":"0.020000","bit_rate":"256000"}}`
+
+	pyWAV := `import sys,struct;` +
+		`dst=sys.argv[-1];` +
+		`d=b'\x00'*320;` +
+		`h=b'RIFF'+struct.pack('<I',36+len(d))+b'WAVEfmt ';` +
+		`h+=struct.pack('<IHHIIHH',16,1,1,16000,32000,2,16);` +
+		`h+=b'data'+struct.pack('<I',len(d));` +
+		`open(dst,'wb').write(h+d)`
+
+	script := "#!/bin/sh\n" +
+		"case \"$0\" in\n" +
+		"  *ffprobe*)\n" +
+		"    echo '" + probeJSON + "'\n" +
+		"    exit 0\n" +
+		"    ;;\n" +
+		"esac\n" +
+		"for a in \"$@\"; do LAST=\"$a\"; done\n" +
+		"if [ \"$LAST\" = \"-\" ]; then\n" +
+		"    dd if=/dev/zero bs=320 count=1 2>/dev/null\n" +
+		"    exit 0\n" +
+		"fi\n" +
+		"echo \"$@\" > \"" + argsLog + "\"\n" +
+		"python3 -c \"" + pyWAV + "\" \"$LAST\" 2>/dev/null\n" +
+		"if [ $? -ne 0 ]; then\n" +
+		"    dd if=/dev/zero of=\"$LAST\" bs=364 count=1 2>/dev/null\n" +
+		"fi\n" +
+		"exit 0\n"
+
+	ffmpegPath = filepath.Join(dir, "ffmpeg")
+	ffprobePath := filepath.Join(dir, "ffprobe")
+	if err := os.WriteFile(ffmpegPath, []byte(script), 0755); err != nil {
+		t.Fatalf("makeFakeFFmpegWithVideo: write ffmpeg: %v", err)
+	}
+	if err := os.WriteFile(ffprobePath, []byte(script), 0755); err != nil {
+		t.Fatalf("makeFakeFFmpegWithVideo: write ffprobe: %v", err)
+	}
+	return ffmpegPath
+}
+
+// TestProcessWithOptionsFakeFFmpegVideoMux proves that when the probed
+// source has a video stream and AudioOnly is left false, encodeAndMux takes
+// the video-passthrough branch: it adds the original src as a second ffmpeg
+// input and emits "-map 0:a -map 1:v -c:v copy" so the video track is
+// copied through untouched instead of being dropped or re-encoded.
+func TestProcessWithOptionsFakeFFmpegVideoMux(t *testing.T) {
+	skipOnWindows(t)
+	argsLog := filepath.Join(t.TempDir(), "encode_args.log")
+	ffmpeg := makeFakeFFmpegWithVideo(t, argsLog)
+	src := makeDummyWAV(t)
+	dst := filepath.Join(t.TempDir(), "out.mp4")
+
+	p := newProcWithPath(ffmpeg)
+	if err := p.ProcessWithOptions(src, dst, Options{OutputCodec: "aac"}); err != nil {
+		t.Fatalf("expected success muxing video, got: %v", err)
+	}
+
+	logBytes, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("read encode args log (encode phase may not have run): %v", err)
+	}
+	args := string(logBytes)
+
+	if !strings.Contains(args, src) {
+		t.Errorf("expected encode args to include original src %q as a second input, got: %s", src, args)
+	}
+	if !strings.Contains(args, "-map 0:a") || !strings.Contains(args, "-map 1:v") {
+		t.Errorf("expected encode args to map audio from input 0 and video from input 1, got: %s", args)
+	}
+	if !strings.Contains(args, "-c:v copy") {
+		t.Errorf("expected encode args to copy the video codec untouched, got: %s", args)
+	}
+}
