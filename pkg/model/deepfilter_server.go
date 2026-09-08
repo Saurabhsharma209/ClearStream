@@ -239,6 +239,14 @@ func (s *deepFilterServerSuppressor) Process(frame []int16) ([]int16, error) {
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		// Graceful degradation: return original frame if the response body
+		// can't be fully read (e.g. truncated/mismatched Content-Length,
+		// connection reset mid-body). Log it like the sibling passthrough
+		// branches above (request failure, non-200 response) so a malformed
+		// response from the server is observable instead of silently
+		// discarded.
+		s.logger.Warn("deepfilter-server response body read failed, passing through",
+			zap.Error(err))
 		return frame, nil
 	}
 

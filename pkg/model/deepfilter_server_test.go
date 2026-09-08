@@ -248,6 +248,51 @@ func TestDeepFilterServerSuppressor_Process_ShorterResponse(t *testing.T) {
 	}
 }
 
+// TestDeepFilterServerSuppressor_Process_ReadBodyError verifies graceful
+// degradation when the /enhance response body cannot be fully read (e.g. a
+// truncated response whose actual bytes fall short of a declared
+// Content-Length, causing io.ReadAll to return io.ErrUnexpectedEOF). Process
+// must still return the original frame with no error, and (per the fix) log
+// a Warn like its sibling passthrough branches instead of silently
+// swallowing the read error.
+func TestDeepFilterServerSuppressor_Process_ReadBodyError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/enhance", func(w http.ResponseWriter, r *http.Request) {
+		// Declare far more bytes than are actually written. The Go server
+		// closes the connection once the handler returns without satisfying
+		// the declared length, so the client's io.ReadAll(resp.Body) fails
+		// with io.ErrUnexpectedEOF instead of returning a full body.
+		w.Header().Set("Content-Length", "1000000")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte{1, 2, 3, 4}) //nolint:errcheck
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	s, err := newDeepFilterServerSuppressor(srv.URL, "", makeTestLogger())
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	defer s.Close()
+
+	frame := []int16{10, 20, 30}
+	out, err := s.Process(frame)
+	if err != nil {
+		t.Fatalf("Process should not error on a body read failure (graceful degradation): %v", err)
+	}
+	if len(out) != len(frame) {
+		t.Errorf("got %d samples, want %d", len(out), len(frame))
+	}
+	for i := range frame {
+		if out[i] != frame[i] {
+			t.Errorf("index %d: got %d, want original frame value %d (passthrough)", i, out[i], frame[i])
+		}
+	}
+}
+
 // TestDeepFilterServerSuppressor_Process_LongerResponse verifies trimming when
 // the server returns more samples than the input frame.
 func TestDeepFilterServerSuppressor_Process_LongerResponse(t *testing.T) {
