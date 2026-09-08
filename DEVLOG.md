@@ -2843,3 +2843,24 @@ Today's run hit an infra hiccup: the three workstream subagents were spawned in 
 1. Audio Pipeline, Post-processing, AI Model: due next per rotation (all three last touched 09-06).
 2. Resolve the four carried-forward blocked items above once a human weighs in.
 3. clearstream.go's New() (86.7%) is the next-lowest gap in the API Layer workstream if no better lead turns up.
+
+## 2026-09-08
+
+**Agents run:** Audio Pipeline (pkg/audio), Post-processing (pkg/file), AI Model (pkg/model) -- per rotation, due since 09-06
+**Build:** passing (go build ./... clean; go test ./... -p 1 all green, no failures)
+
+### Changes
+- pkg/audio/agc.go, pkg/audio/agc_negative_config_test.go (new): bug fix -- NewAGC only defaulted TargetRMS/MaxGain/AttackMs/ReleaseMs on `== 0`, so a negative AttackMs/ReleaseMs flipped the sign of the exponential-smoothing time constant, producing a coefficient >= 1 and an unbounded gain runaway instead of falling back to sane defaults. Widened all four guards to `<= 0`. Added TestNewAGCRejectsNonPositiveTimeConstants (asserts fallback defaults, bounded/finite CurrentGain over 200 frames). Coverage held at 95.5% (correctness fix, NewAGC was already fully covered).
+- pkg/file/processor_withffmpeg_test.go: encodeAndMux's video-passthrough branch (`-map 0:a` / `-map 1:v` / `-c:v copy` when info.HasVideo) had never been exercised -- every fixture in the suite only used audio-only WAV inputs. Added makeFakeFFmpegWithVideo + TestProcessWithOptionsFakeFFmpegVideoMux asserting the correct encode argv. No bug found; behavior matched docs. encodeAndMux coverage 90.4% -> 97.6%; package 95.1% -> 96.3%.
+- pkg/model/deepfilter_server.go, pkg/model/deepfilter_server_test.go: Process()'s io.ReadAll(resp.Body) failure branch silently fell back to passthrough with no logging, unlike its two sibling failure branches which both Warn. Added matching logger.Warn. Added TestDeepFilterServerSuppressor_Process_ReadBodyError forcing a real io.ErrUnexpectedEOF via a truncated Content-Length response. Package coverage 96.3% -> 96.7%.
+
+### Blocked
+- Stashed ClearStream_AudioEnhancement_API_Reference.docx (flagged 08-31) -- still needs a human decision.
+- Now-merged remote branch feature/exotel-agentstream -- still safe to delete, still a human call.
+- Stray .NNNNNNNNNN-suffixed duplicate files under pkg/audio/, pkg/file/, pkg/http/, pkg/rtp/ -- still untouched, still needs a human look/cleanup pass.
+- Two untracked repo-root files, COMPETITOR_COMPARISON.md and QA_MEASUREMENT_FRAMEWORK.md (dated 09-04) -- still uncommitted, not part of any workstream.
+
+### Tomorrow
+1. RTP/SIP, API Layer, QA/Testing: due next per rotation (all three last touched 09-07).
+2. Resolve the four carried-forward blocked items above once a human weighs in.
+3. The AGC negative-config bug (fixed today) suggests a broader audit: check other Config structs across pkg/audio and pkg/model for the same `== 0` vs `<= 0` defaulting gap.
