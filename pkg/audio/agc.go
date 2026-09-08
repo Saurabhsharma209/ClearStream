@@ -104,20 +104,28 @@ type AGC struct {
 
 // NewAGC creates an AGC processor with the given config.
 // SampleRate must be set (done automatically when attached to a Pipeline).
+//
+// Non-positive TargetRMS, MaxGain, AttackMs, or ReleaseMs are replaced with
+// their DefaultAGCConfig values rather than used as-is: AttackMs/ReleaseMs
+// feed directly into the per-sample exponential smoothing coefficient
+// (coef = e^(-1/(timeMs*sampleRate/1000))), and a zero or negative time
+// constant there produces a coefficient >= 1, which makes currentGain diverge
+// geometrically every sample instead of settling -- an unbounded gain runaway
+// rather than a graceful fallback.
 func NewAGC(cfg AGCConfig) *AGC {
 	if cfg.SampleRate == 0 {
 		cfg.SampleRate = 16000
 	}
-	if cfg.TargetRMS == 0 {
+	if cfg.TargetRMS <= 0 {
 		cfg.TargetRMS = 3000
 	}
-	if cfg.MaxGain == 0 {
+	if cfg.MaxGain <= 0 {
 		cfg.MaxGain = 4.0
 	}
-	if cfg.AttackMs == 0 {
+	if cfg.AttackMs <= 0 {
 		cfg.AttackMs = 20
 	}
-	if cfg.ReleaseMs == 0 {
+	if cfg.ReleaseMs <= 0 {
 		cfg.ReleaseMs = 200
 	}
 	if cfg.SoftLimitThreshold == 0 {
