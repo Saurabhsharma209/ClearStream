@@ -333,3 +333,102 @@ func TestServeWSIgnoresNonTextFrames(t *testing.T) {
 		t.Fatalf("expected clean_media after ignored binary frame, got %q", env.Event)
 	}
 }
+
+// TestHandleStartNilCustomParameters covers handleStart's params==nil
+// defaulting branch: a start event that omits custom_parameters entirely
+// (as opposed to sending an empty object) decodes to a nil
+// CustomParameters map, and handleStart must still build a working default
+// (passthrough) pipeline rather than panicking on a nil map read.
+func TestHandleStartNilCustomParameters(t *testing.T) {
+	conn, cleanup := dialTestServer(t, ServerConfig{})
+	defer cleanup()
+	if env := readEnvelope(t, conn); env.Event != EventConnected {
+		t.Fatalf("expected connected event first, got %q", env.Event)
+	}
+
+	// No CustomParameters field set at all -- json:",omitempty" means it is
+	// omitted from the wire and decodes back to a nil map, not an empty one.
+	writeEvent(t, conn, StartEvent{
+		Event:      EventStart,
+		StreamSID:  "STNIL",
+		CallSID:    "CANIL",
+		SampleRate: 8000,
+	})
+
+	frame := make([]byte, 320)
+	writeEvent(t, conn, MediaEvent{
+		Event:      EventMedia,
+		StreamSID:  "STNIL",
+		Payload:    base64.StdEncoding.EncodeToString(frame),
+		SampleRate: 8000,
+	})
+	env := readEnvelope(t, conn)
+	if env.Event != EventCleanMedia {
+		t.Fatalf("expected clean_media with nil custom_parameters, got %q", env.Event)
+	}
+}
+
+// TestHandleStartNumericParameterOverrides covers the three parseFloatParam
+// "ok" branches in handleStart that were previously only ever exercised via
+// their fallback (unset/invalid) path: ns_agc_target_rms, ns_high_snr_db,
+// and ns_low_snr_db each assign into their respective config struct only
+// when parseFloatParam succeeds, and no existing test supplied a valid
+// numeric value for any of them.
+func TestHandleStartNumericParameterOverrides(t *testing.T) {
+	cases := []struct {
+		name   string
+		sid    string
+		params CustomParameters
+	}{
+		{
+			name: "ns_agc_target_rms override",
+			sid:  "STAGC",
+			params: CustomParameters{
+				"ns_model":          "passthrough",
+				"ns_agc":            "true",
+				"ns_agc_target_rms": "0.05",
+			},
+		},
+		{
+			name: "ns_high_snr_db and ns_low_snr_db override",
+			sid:  "STTNR",
+			params: CustomParameters{
+				"ns_model":       "passthrough",
+				"ns_mode":        "adaptive",
+				"ns_high_snr_db": "28",
+				"ns_low_snr_db":  "12",
+			},
+		},
+	}
+
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			conn, cleanup := dialTestServer(t, ServerConfig{})
+			defer cleanup()
+			if env := readEnvelope(t, conn); env.Event != EventConnected {
+				t.Fatalf("expected connected event first, got %q", env.Event)
+			}
+
+			writeEvent(t, conn, StartEvent{
+				Event:            EventStart,
+				StreamSID:        c.sid,
+				CallSID:          c.sid,
+				SampleRate:       8000,
+				CustomParameters: c.params,
+			})
+
+			frame := make([]byte, 320)
+			writeEvent(t, conn, MediaEvent{
+				Event:      EventMedia,
+				StreamSID:  c.sid,
+				Payload:    base64.StdEncoding.EncodeToString(frame),
+				SampleRate: 8000,
+			})
+			env := readEnvelope(t, conn)
+			if env.Event != EventCleanMedia {
+				t.Fatalf("expected clean_media after numeric param override, got %q", env.Event)
+			}
+		})
+	}
+}
