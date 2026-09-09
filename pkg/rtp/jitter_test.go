@@ -586,3 +586,48 @@ func TestJitterBufferPitchStateIsolatedPerInstance(t *testing.T) {
 		}
 	}
 }
+
+// TestJitterPLCPitchClampWhenFrameShrinks is a regression test for the
+// period > frameLen guard in GeneratePLC (jitter.go). detectPitch's
+// octave-jump continuity guard can reuse a stale j.prevPitch computed from
+// an earlier, LONGER good frame. If a subsequent good frame on the same
+// JitterBuffer is shorter (e.g. a mid-call ptime change, or an RTP sender
+// emitting variable-length G.711 payloads), the reused stale period can
+// exceed the new frame's length. Without GeneratePLC's own
+// "period > frameLen" clamp, `j.lastGoodFrame[frameLen-period:]` would
+// index with a negative offset and panic. This test forces exactly that
+// state and asserts GeneratePLC degrades gracefully (full-frame repeat)
+// instead of panicking.
+func TestJitterPLCPitchClampWhenFrameShrinks(t *testing.T) {
+	jb := NewJitterBuffer(2)
+
+	// Simulate leftover pitch state from an earlier, much longer good frame
+	// (e.g. detected period ~200 samples from a 320-sample frame).
+	jb.prevPitch = 200
+
+	// A short good frame (80 samples -- the minimum length that still
+	// reaches detectPitch's autocorrelation loop instead of its n<80
+	// early-return path) with real energy, so the octave-jump guard inside
+	// detectPitch actually runs and reuses the stale prevPitch=200, which
+	// is greater than this frame's length.
+	frameLen := 80
+	shortFrame := make([]int16, frameLen)
+	for i := range shortFrame {
+		shortFrame[i] = int16(500 + i*3)
+	}
+	jb.OnGoodPacket(shortFrame)
+
+	got := jb.GeneratePLC()
+	if len(got) != frameLen {
+		t.Fatalf("GeneratePLC length = %d, want %d", len(got), frameLen)
+	}
+	// period > frameLen must be clamped to frameLen, which makes
+	// tail == shortFrame in full and every result[i] == tail[i%frameLen],
+	// i.e. an exact repeat of the good frame -- the expected graceful
+	// degradation when the pitch estimate can't be trusted at this length.
+	for i := range shortFrame {
+		if got[i] != shortFrame[i] {
+			t.Fatalf("GeneratePLC sample %d = %d, want %d (clamped period should reproduce the good frame verbatim)", i, got[i], shortFrame[i])
+		}
+	}
+}
