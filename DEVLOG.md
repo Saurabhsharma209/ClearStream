@@ -2864,3 +2864,30 @@ Today's run hit an infra hiccup: the three workstream subagents were spawned in 
 1. RTP/SIP, API Layer, QA/Testing: due next per rotation (all three last touched 09-07).
 2. Resolve the four carried-forward blocked items above once a human weighs in.
 3. The AGC negative-config bug (fixed today) suggests a broader audit: check other Config structs across pkg/audio and pkg/model for the same `== 0` vs `<= 0` defaulting gap.
+
+
+## 2026-09-09
+
+**Agents run:** RTP/SIP (pkg/rtp), API Layer (clearstream.go), QA/Testing (pkg/agentstream) -- per rotation, due since 09-07
+**Build:** passing (go build ./... clean; go test ./... -p 1 all green, no failures)
+
+### Changes
+- pkg/rtp/jitter_test.go: GeneratePLC's period>frameLen clamp (jitter.go) had 0% coverage. Traced a real reachable path: detectPitch's octave-jump continuity guard can reuse a stale prevPitch from an earlier, longer good frame; if a later good frame on the same JitterBuffer shrinks (mid-call ptime change, variable-length G.711 payload), the reused period can exceed the new frame length. Without the clamp, the slice into lastGoodFrame would panic. Added TestJitterPLCPitchClampWhenFrameShrinks. Coverage held at 97.5%, previously-dead clamp branch now exercised.
+- clearstream.go, clearstream_internal_test.go: bug fix -- following 09-08's AGC == 0 vs <= 0 defaulting-bug audit lead, found Pipeline()'s VAD threshold defaulting had the same class of bug: a negative Config.VADThreshold bypassed the == 0 default, and since RMS energy is never negative, IsSpeech always returned true -- VAD silently never detected silence, defeating the ~30% CPU-savings feature. Widened guard to <= 0, updated doc comment. Added TestPipeline_NegativeVADThresholdDefaultsToSane.
+- pkg/agentstream/coverage_boost_test.go: handleStart sat at 92.2% with three real, reachable untested branches (nil CustomParameters defaulting, ns_agc_target_rms override, ns_high_snr_db/ns_low_snr_db override paths). Added TestHandleStartNilCustomParameters and TestHandleStartNumericParameterOverrides (table-driven, existing file per anti-fragmentation precedent). No bug found. handleStart 92.2% -> 100%; package 96.3% -> 98.0%.
+
+### Investigated, not used
+- pkg/agentstream handleMedia's pipeline.ProcessFrames error branch traced to Pipeline.inputRate()'s <=0 fallback -- unreachable via normal AgentStream client input, left alone rather than padding coverage artificially.
+- Makefile / .github/workflows/ci.yml re-reviewed for drift since 09-02: still fine; CI's Go 1.25/1.26 matrix intentionally predates the dev-Mac's newer 1.27 toolchain, not staleness.
+
+### Blocked
+- Stashed ClearStream_AudioEnhancement_API_Reference.docx (flagged 08-31) -- still needs a human decision.
+- Now-merged remote branch feature/exotel-agentstream -- still safe to delete, still a human call.
+- Stray .NNNNNNNNNN-suffixed duplicate files under pkg/audio/, pkg/file/, pkg/http/, pkg/rtp/ -- still untouched, still needs a human look/cleanup pass.
+- Two untracked repo-root files, COMPETITOR_COMPARISON.md and QA_MEASUREMENT_FRAMEWORK.md (dated 09-04) -- still uncommitted, not part of any workstream.
+- New untracked file noticed today: BLOG_clearstream.md -- left untouched, out of scope for all three agents.
+
+### Tomorrow
+1. Audio Pipeline, Post-processing, AI Model: due next per rotation (all three last touched 09-08).
+2. Resolve the five carried-forward blocked items above once a human weighs in.
+3. serveWS in pkg/agentstream remains at 87.9% -- its handshake-upgrade-failure and send-failure-racing-close gaps still aren't reachable from a normal test client; revisit only if a real client-side reproduction is found.
