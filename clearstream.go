@@ -94,6 +94,9 @@ type Config struct {
 
 	// VADThreshold is the RMS energy threshold for static VAD (EnableVAD=true,
 	// AdaptiveVAD=false). Default: 300 (good for 16-bit telephony PCM).
+	// Any non-positive value (zero or negative) falls back to this default,
+	// since RMS energy is never negative -- a negative threshold would make
+	// IsSpeech always return true and silently defeat VAD.
 	VADThreshold float64
 
 	// Codec hints the expected RTP codec for this config. Used by Validate() to
@@ -359,7 +362,7 @@ func (cs *ClearStream) Pipeline() *audio.Pipeline {
 			vad = audio.DefaultAdaptiveVAD()
 		} else {
 			threshold := cs.cfg.VADThreshold
-			if threshold == 0 {
+			if threshold <= 0 {
 				threshold = 300
 			}
 			vad = &audio.VAD{ThresholdRMS: threshold, HangoverFrames: 8}

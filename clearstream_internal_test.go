@@ -6,6 +6,7 @@ import (
 	"io"
 	"testing"
 
+	"github.com/exotel/clearstream/pkg/audio"
 	"github.com/exotel/clearstream/pkg/model"
 	"github.com/exotel/clearstream/pkg/telemetry"
 	"go.uber.org/zap"
@@ -146,5 +147,35 @@ func TestClose_BothCloseErrorsAggregate(t *testing.T) {
 	}
 	if !errors.Is(err, poolErr) {
 		t.Errorf("Close() = %v, want error wrapping pool error %v", err, poolErr)
+	}
+}
+
+// TestPipeline_NegativeVADThresholdDefaultsToSane verifies that a negative
+// Config.VADThreshold falls back to the sane default (300) instead of being
+// used as-is. RMS energy is never negative, so a negative threshold used
+// directly would make VAD.IsSpeech always return true, silently defeating
+// VAD (every frame, including pure silence, gets routed through the
+// suppressor -- exactly the CPU-saving bypass VAD exists to provide). This
+// mirrors the AGC zero vs non-positive defaulting-guard bug fixed in pkg/audio/agc.go.
+func TestPipeline_NegativeVADThresholdDefaultsToSane(t *testing.T) {
+	cs := &ClearStream{
+		cfg: Config{
+			SampleRate:   16000,
+			Channels:     1,
+			EnableVAD:    true,
+			VADThreshold: -50,
+		},
+		model: model.NewPassthrough(),
+	}
+	p := cs.Pipeline()
+	defer p.Close()
+
+	silence := make([]byte, audio.FrameSizeBytes)
+	if err := p.ProcessFrames(silence, io.Discard); err != nil {
+		t.Fatalf("ProcessFrames error: %v", err)
+	}
+	stats := p.Stats()
+	if stats.FramesSilent != 1 {
+		t.Errorf("FramesSilent = %d, want 1 (negative VADThreshold should default to 300)", stats.FramesSilent)
 	}
 }
