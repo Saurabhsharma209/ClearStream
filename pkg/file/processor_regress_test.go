@@ -544,6 +544,44 @@ func TestParseFFmpegErrorPermissionDenied(t *testing.T) {
 	_ = err
 }
 
+// TestProcessWithOptionsStatPermissionDenied covers the os.IsPermission(statErr)
+// branch in ProcessWithOptions' upfront os.Stat check (previously 0% covered,
+// per go tool cover). TestParseFFmpegErrorPermissionDenied above chmods the
+// *file* to 0000, but os.Stat only requires search (+x) permission on the
+// containing directory, not read permission on the file itself -- so that
+// test never actually reaches this branch; it falls through all the way to
+// ffmpeg's own permission-denied stderr message instead. Locking the
+// *directory* down to 0000 makes os.Stat itself fail with EACCES, which is
+// what actually exercises this early, ffmpeg-subprocess-avoiding fast path
+// and its ErrPermission wrapping.
+func TestProcessWithOptionsStatPermissionDenied(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root — permission checks are bypassed")
+	}
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	if err := os.Mkdir(locked, 0755); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(locked, "in.wav")
+	if err := os.WriteFile(src, []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0000); err != nil {
+		t.Skip("cannot change directory permissions")
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0755) }) //nolint:errcheck
+
+	p := newProc("ffmpeg")
+	err := p.Process(src, filepath.Join(dir, "out.wav"))
+	if err == nil {
+		t.Skip("stat succeeded despite locked directory — permission test not applicable on this filesystem")
+	}
+	if !errors.Is(err, file.ErrPermission) {
+		t.Errorf("expected ErrPermission, got: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // StreamProcess — failSuppressor path
 // ---------------------------------------------------------------------------
