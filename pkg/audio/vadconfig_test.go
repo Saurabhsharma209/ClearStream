@@ -156,3 +156,49 @@ func TestVADConfigDefaults(t *testing.T) {
 		t.Error("frame after hangover expiry (8 frames) should be classified as silence")
 	}
 }
+
+// TestVADConfigNegativeEnergyThresholdDefaultsToSane verifies the bug fix for
+// a negative VADConfig.EnergyThreshold: prior to the fix, NewPipeline only
+// defaulted EnergyThreshold on == 0, so a negative value passed straight
+// through to VAD.ThresholdRMS. Since VAD.IsSpeech compares a never-negative
+// RMS energy against threshold(), a negative threshold made IsSpeech always
+// return true -- VAD silently never detected silence, defeating the
+// suppression-bypass gate and any CPU-savings that rely on silence detection.
+// Same bug class as the AGC (agc.go) and clearstream.go Pipeline() VADThreshold
+// fixes: == 0 must be <= 0 wherever a zero-value default guards a field that
+// is only meaningful when positive.
+func TestVADConfigNegativeEnergyThresholdDefaultsToSane(t *testing.T) {
+	sup := &noopSuppressor{}
+	cfg := PipelineConfig{
+		SampleRate: 16000,
+		Suppressor: sup,
+		VADConfig: &VADConfig{
+			EnergyThreshold: -50,
+			HangoverFrames:  -1,
+		},
+	}
+	p := NewPipeline(cfg)
+	if p.vad == nil {
+		t.Fatal("expected NewPipeline to create a VAD from VADConfig, got nil")
+	}
+	staticVAD, ok := p.vad.(*VAD)
+	if !ok {
+		t.Fatalf("expected p.vad to be *VAD, got %T", p.vad)
+	}
+
+	if staticVAD.ThresholdRMS != 300.0 {
+		t.Errorf("negative EnergyThreshold should default to 300.0, got %.2f", staticVAD.ThresholdRMS)
+	}
+	if staticVAD.HangoverFrames != 8 {
+		t.Errorf("negative HangoverFrames should default to 8, got %d", staticVAD.HangoverFrames)
+	}
+
+	// The regression this guards against: with the bug, IsSpeech always
+	// returned true regardless of input, because rms (never negative) >=
+	// threshold (negative) is always satisfied.
+	silenceFrame := make([]int16, FrameSizeSamples) // all zeros, RMS=0
+	if staticVAD.IsSpeech(silenceFrame) {
+		t.Error("expected IsSpeech=false for a zero-RMS frame with defaulted threshold=300; " +
+			"a negative EnergyThreshold must not bypass defaulting")
+	}
+}

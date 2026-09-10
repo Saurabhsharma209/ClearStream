@@ -37,6 +37,9 @@ type VADer interface {
 type VADConfig struct {
 	// EnergyThreshold is the RMS amplitude below which a frame is treated as silence.
 	// Typical range: 100–800 for 16-bit telephony PCM. Default: 300.
+	// Non-positive values (including negative) fall back to the default: RMS
+	// energy is never negative, so a negative threshold here would make
+	// VAD.IsSpeech always return true, silently defeating silence detection.
 	EnergyThreshold float64
 	// HangoverFrames is how many consecutive silent frames to keep treating as speech
 	// after the last speech frame (prevents clipping at word ends). Default: 8 (~80ms).
@@ -73,7 +76,7 @@ type PipelineConfig struct {
 	// When set, the pipeline adaptively adjusts output level toward AGC.TargetRMS.
 	// Use DefaultAGCConfig() as a starting point for telephony calls.
 	// Use ASRConfig() when the output is consumed by a Voice AI / ASR engine
-	// — it targets -18 dBFS with a hard -3 dBFS peak ceiling to prevent clipping.
+	// â it targets -18 dBFS with a hard -3 dBFS peak ceiling to prevent clipping.
 	// Set to nil to disable (default).
 	AGC *AGCConfig
 
@@ -105,9 +108,9 @@ type PipelineConfig struct {
 	// tones, or AGC overshoot on sudden loud frames. Set true to enable.
 	UseLimiter bool
 
-	// ForwardOnly marks this pipeline as processing only the forward (caller→bot)
+	// ForwardOnly marks this pipeline as processing only the forward (callerâbot)
 	// path. This is a hint to pool-aware callers (e.g. clearstream.go) to size
-	// the suppressor pool at 1× MaxConcurrentSessions instead of 2×.
+	// the suppressor pool at 1Ã MaxConcurrentSessions instead of 2Ã.
 	// The pipeline itself behaves identically regardless of this flag.
 	ForwardOnly bool
 
@@ -208,10 +211,10 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 	}
 	if vad == nil && cfg.VADConfig != nil {
 		// Apply zero-value defaults before constructing the VAD.
-		if cfg.VADConfig.EnergyThreshold == 0 {
+		if cfg.VADConfig.EnergyThreshold <= 0 {
 			cfg.VADConfig.EnergyThreshold = 300.0
 		}
-		if cfg.VADConfig.HangoverFrames == 0 {
+		if cfg.VADConfig.HangoverFrames <= 0 {
 			cfg.VADConfig.HangoverFrames = 8
 		}
 		vad = &VAD{
@@ -290,7 +293,7 @@ func (p *Pipeline) inputRate() int {
 	if p.cfg.SampleRate > 0 {
 		return p.cfg.SampleRate
 	}
-	return 8000 // safe narrowband fallback (Indian PSTN: G.711 µ-law/A-law)
+	return 8000 // safe narrowband fallback (Indian PSTN: G.711 Âµ-law/A-law)
 }
 
 // ProcessFrames reads all available complete frames from in, runs suppression,
@@ -301,16 +304,16 @@ func (p *Pipeline) inputRate() int {
 //  1. Resample to 16kHz (if needed)
 //  2. AEC (if configured)
 //  3. AdaptiveNoiseReducer (if UseNoiseReducer)
-//  4. VAD gate → Suppressor (if speech) or passthrough (if silence)
+//  4. VAD gate â Suppressor (if speech) or passthrough (if silence)
 //  5. AGC (if configured)
 //  6. PeakLimiter (if UseLimiter)
 //  7. Resample back to input rate (if needed)
 //  8. Diarizer (if configured)
 //
 // Resampling behaviour (governed by InputSampleRate):
-//   - 0 or 8000  → upsample 8kHz→16kHz before suppression, downsample back after
-//   - 16000      → no resampling (suppressor native rate)
-//   - >16000     → downsample to 16kHz before suppression, upsample back after
+//   - 0 or 8000  â upsample 8kHzâ16kHz before suppression, downsample back after
+//   - 16000      â no resampling (suppressor native rate)
+//   - >16000     â downsample to 16kHz before suppression, upsample back after
 func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 	inRate := p.inputRate()
 
@@ -345,7 +348,7 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 			var err error
 			processSamples, err = Resample(samples, inRate, ProcessorSampleRate)
 			if err != nil {
-				return fmt.Errorf("pipeline: resample input %d→%d: %w", inRate, ProcessorSampleRate, err)
+				return fmt.Errorf("pipeline: resample input %dâ%d: %w", inRate, ProcessorSampleRate, err)
 			}
 		}
 
@@ -418,7 +421,7 @@ func (p *Pipeline) ProcessFrames(in []byte, out io.Writer) error {
 			var err error
 			outSamples, err = Resample(cleaned, ProcessorSampleRate, inRate)
 			if err != nil {
-				return fmt.Errorf("pipeline: resample output %d→%d: %w", ProcessorSampleRate, inRate, err)
+				return fmt.Errorf("pipeline: resample output %dâ%d: %w", ProcessorSampleRate, inRate, err)
 			}
 		}
 
@@ -857,7 +860,7 @@ func (p *Pipeline) Process48k(frame []int16) ([]int16, error) {
 	// (the default).
 	p.turnEnd.observe(processSamples)
 
-	// Step 2: VAD gate — skip suppressor on silence.
+	// Step 2: VAD gate â skip suppressor on silence.
 	isSpeech := true
 	if p.vad != nil {
 		isSpeech = p.vad.IsSpeech(processSamples)
@@ -906,10 +909,10 @@ func (p *Pipeline) Process48k(frame []int16) ([]int16, error) {
 	return out, nil
 }
 
-// IsBypass returns true when the pipeline is a pure passthrough — suppressor is
+// IsBypass returns true when the pipeline is a pure passthrough â suppressor is
 // *model.Passthrough and no additional processing stages (AEC, AGC, noise
 // reducer, tiered NR, diarizer) are configured.  When true, the RTP session can
-// skip the entire PCM decode → suppress → encode cycle and forward the raw
+// skip the entire PCM decode â suppress â encode cycle and forward the raw
 // payload bytes directly, saving significant CPU and latency.
 func (p *Pipeline) IsBypass() bool {
 	_, ok := p.cfg.Suppressor.(*model.Passthrough)
