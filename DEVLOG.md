@@ -2891,3 +2891,27 @@ Today's run hit an infra hiccup: the three workstream subagents were spawned in 
 1. Audio Pipeline, Post-processing, AI Model: due next per rotation (all three last touched 09-08).
 2. Resolve the five carried-forward blocked items above once a human weighs in.
 3. serveWS in pkg/agentstream remains at 87.9% -- its handshake-upgrade-failure and send-failure-racing-close gaps still aren't reachable from a normal test client; revisit only if a real client-side reproduction is found.
+
+## 2026-09-10
+
+**Agents run:** Audio Pipeline (pkg/audio), Post-processing (pkg/file), AI Model (pkg/model) -- per rotation, due since 09-08
+**Build:** passing (go build ./... clean; go test ./... -p 1 all green, no failures)
+
+### Changes
+- pkg/audio/pipeline.go, pkg/audio/vadconfig_test.go (new): bug fix -- NewPipeline's VADConfig.EnergyThreshold/HangoverFrames defaulting only guarded `== 0`, so a negative EnergyThreshold bypassed the 300.0 default; since rmsEnergy() is never negative, IsSpeech would always return true, silently disabling silence detection. This is the third instance of the == 0 vs <= 0 defaulting bug class this week (AGC 09-08, clearstream.go VADThreshold 09-09). Widened both guards to <= 0, updated doc comment, added TestVADConfigNegativeEnergyThresholdDefaultsToSane.
+- pkg/file/processor_regress_test.go: added TestProcessWithOptionsStatPermissionDenied -- ProcessWithOptions's os.IsPermission(statErr) branch sat at 0% coverage because the existing permission test chmods the source file (0000), which doesn't trigger a stat-level EACCES (only directory search permission matters for stat). New test locks the containing directory instead, genuinely exercising the fast ffmpeg-avoiding ErrPermission path. ProcessWithOptions 87.3% -> 90.9%; package 96.3% -> 96.7%.
+- pkg/model/pool_warmpool_midfailure_test.go (new): WarmPool's mid-loop NewSuppressor failure branch (pool.go 156-158) was 0% covered despite backing a documented guarantee that a failed topup must not discard/corrupt already-held suppressors. Added a regression test draining a pool to a shortfall, forcing a guaranteed-fail config, and asserting survivors + pool usability post-failure. Package 96.7% -> 97.0%; WarmPool 94.4% -> 100%.
+
+### Investigated, not used
+- pkg/model Reset() no-ops in deepfilter_server.go/passthrough.go -- still deprioritized as trivial, no genuine gap found.
+
+### Blocked
+- Stashed ClearStream_AudioEnhancement_API_Reference.docx (flagged 08-31) -- still needs a human decision.
+- Now-merged remote branch feature/exotel-agentstream -- still safe to delete, still a human call.
+- Stray .NNNNNNNNNN-suffixed duplicate files under pkg/audio/, pkg/file/, pkg/http/, pkg/rtp/ -- still untouched, still needs a human look/cleanup pass.
+- Untracked repo-root files COMPETITOR_COMPARISON.md, QA_MEASUREMENT_FRAMEWORK.md (09-04), BLOG_clearstream.md (09-09) -- still uncommitted, not part of any workstream.
+
+### Tomorrow
+1. RTP/SIP, API Layer, QA/Testing: due next per rotation (all three last touched 09-09).
+2. Resolve the carried-forward blocked items above once a human weighs in.
+3. Given three == 0 vs <= 0 defaulting bugs found this week alone (AGC, VADThreshold, VADConfig), consider a dedicated audit pass across all remaining Config structs in pkg/audio, pkg/model, pkg/rtp for the same class of bug rather than finding them one at a time via rotation.
