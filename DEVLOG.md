@@ -2915,3 +2915,31 @@ Today's run hit an infra hiccup: the three workstream subagents were spawned in 
 1. RTP/SIP, API Layer, QA/Testing: due next per rotation (all three last touched 09-09).
 2. Resolve the carried-forward blocked items above once a human weighs in.
 3. Given three == 0 vs <= 0 defaulting bugs found this week alone (AGC, VADThreshold, VADConfig), consider a dedicated audit pass across all remaining Config structs in pkg/audio, pkg/model, pkg/rtp for the same class of bug rather than finding them one at a time via rotation.
+
+## 2026-09-11
+
+**Agents run:** RTP/SIP (pkg/rtp), API Layer (clearstream.go), QA/Testing (pkg/agentstream) -- per rotation, due since 09-09
+
+**Build:** passing (go build ./... clean; go test ./... -p 1 all green, no failures across all packages)
+
+### Changes
+- pkg/rtp/jitter_adapt_test.go (new): adaptDepth()'s upper/lower clamp branches and getJitterPayload()'s cap(b) < n reallocation branch had 0% coverage -- none of the existing 100 realistic-jitter test calls ever pushed arrivalVarMs far enough to hit either clamp, and the pool always held large-enough buffers. Added three tests calling the unexported functions directly (same package): clamp-to-max, clamp-to-min, and pool-growth-beyond-capacity. No bug found -- both clamps behave correctly, just previously unverified. Coverage 97.5% -> 97.7%. Investigated but confirmed as genuine dead code (not a gap): linearToAlaw's exp<1/exp>7 clamps, unreachable given t's bounded [32,4095] input range.
+- clearstream.go, clearstream_internal_test.go: bug fix -- Config.Validate()'s codec/rate cross-check was guarded by `c.SampleRate != 0 && c.Codec != ""`, so setting Codec: "PCMU" while leaving SampleRate at its zero value skipped validation entirely, and New() would then silently default SampleRate to 16000 -- a live PCMU-at-16kHz mismatch Validate() was supposed to catch and never did. Fixed by computing an effectiveRate (mirrors New()'s own 16000 default) and validating against that instead of the raw field. Added TestConfig_Validate, a 20-case table-driven test covering every Validate() branch, including two explicit regression cases for the fixed bug. Validate() coverage 47.6% -> full; package 46.2% -> 56.7% (this run's `go tool cover -func` scope -- differs from the 96.6% figure in prior DEVLOG entries, worth reconciling; see Blocked).
+- pkg/agentstream/coverage_boost_test.go: serveWS's handshake-upgrade-failure branch had been flagged in three prior DEVLOG entries (09-07, 09-09) as "not reachable from a normal test client" -- that was wrong. A plain http.Get() against the handler (no WebSocket upgrade headers) makes upgrader.Upgrade() return an error, exactly the flagged branch, trivially reachable via httptest.NewServer + stdlib http.Get. Added TestServeWSUpgradeFailure. serveWS coverage 87.9% -> 93.9%; package 98.0% -> 98.8%.
+
+### Investigated, not used
+- serveWS's remaining gap (send-failure racing a concurrent connection close) still looks genuinely hard to trigger deterministically through a real websocket.Conn/DefaultDialer client without a fake net.Conn/injectable writer -- left as "investigated, not reachable" rather than force a flaky test. Likely path if revisited: wrap the connection with a custom net.Conn that errors on write, injected via a custom net.Listener.
+- pkg/rtp G.711 mu-law/A-law full roundtrip tests and SSRC-change pipeline reset (both listed in the static RTP/SIP backlog) were already implemented and tested in a prior session -- confirmed present, no action needed.
+- clearstream.go and cmd/clearstream/main.go were checked for the "== 0 vs <= 0" defaulting bug class (three instances found this week in AGC, VADThreshold, VADConfig) -- none found; New()'s and Validate()'s guards already use correct comparisons.
+
+### Blocked
+- Stashed ClearStream_AudioEnhancement_API_Reference.docx (flagged 08-31) -- still needs a human decision.
+- Now-merged remote branch feature/exotel-agentstream -- still safe to delete, still a human call.
+- Stray .NNNNNNNNNN-suffixed duplicate files under pkg/audio/, pkg/file/, pkg/http/, pkg/rtp/ -- still untouched, still needs a human look/cleanup pass.
+- Untracked repo-root files COMPETITOR_COMPARISON.md, QA_MEASUREMENT_FRAMEWORK.md (09-04), BLOG_clearstream.md (09-09) -- still uncommitted, not part of any workstream.
+- New discrepancy: clearstream.go's coverage measured today at 46.2% (pre-fix) via `go tool cover -func`, vs. 96.6% cited in the 09-07 DEVLOG entry for the same file -- likely a scope/measurement difference (e.g., whole-package vs. single-file, or CGo-gated code excluded in one run), not necessarily regression. Needs a human or a dedicated session to reconcile which figure is trustworthy going forward.
+
+### Tomorrow
+1. Audio Pipeline, Post-processing, AI Model: due next per rotation (all three last touched 09-10).
+2. Resolve the carried-forward blocked items above once a human weighs in, including the new clearstream.go coverage-measurement discrepancy.
+3. serveWS's send-failure-racing-close path remains the one real known gap in pkg/agentstream -- revisit with an injectable net.Conn if someone wants to close it.
