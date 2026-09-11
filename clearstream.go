@@ -176,20 +176,32 @@ func (c *Config) Validate() error {
 	// Codec-rate mismatch checks.
 	// G.711 µ-law and A-law are fixed at 8 kHz per ITU-T G.711.
 	// G.722 is fixed at 16 kHz per ITU-T G.722.
-	if c.SampleRate != 0 && c.Codec != "" {
+	//
+	// Validate against the effective sample rate, not the raw field: when
+	// SampleRate is left at its zero value, New() defaults it to 16000
+	// before the codec is ever consulted. A caller who sets Codec without
+	// an explicit SampleRate previously sailed through Validate() with no
+	// diagnostic, then silently ended up with a codec/rate mismatch (e.g.
+	// Codec "PCMU" defaulting to 16kHz instead of the 8kHz PCMU requires)
+	// the moment New() applied its own default.
+	if c.Codec != "" {
+		effectiveRate := c.SampleRate
+		if effectiveRate == 0 {
+			effectiveRate = 16000
+		}
 		switch c.Codec {
 		case "PCMU", "PCMA":
-			if c.SampleRate != 8000 {
+			if effectiveRate != 8000 {
 				return fmt.Errorf(
 					"clearstream: Codec %q requires SampleRate 8000, got %d",
-					c.Codec, c.SampleRate,
+					c.Codec, effectiveRate,
 				)
 			}
 		case "G722":
-			if c.SampleRate != 16000 {
+			if effectiveRate != 16000 {
 				return fmt.Errorf(
 					"clearstream: Codec %q requires SampleRate 16000, got %d",
-					c.Codec, c.SampleRate,
+					c.Codec, effectiveRate,
 				)
 			}
 		}

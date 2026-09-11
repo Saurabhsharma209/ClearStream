@@ -179,3 +179,65 @@ func TestPipeline_NegativeVADThresholdDefaultsToSane(t *testing.T) {
 		t.Errorf("FramesSilent = %d, want 1 (negative VADThreshold should default to 300)", stats.FramesSilent)
 	}
 }
+
+// TestConfig_Validate exercises Config.Validate()'s error branches end to
+// end, most of which had zero test coverage before this test existed
+// (go tool cover reported Validate() at 47.6% statement coverage).
+func TestConfig_Validate(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr bool
+	}{
+		{"zero value config", Config{}, false},
+		{"valid sample rate", Config{SampleRate: 48000}, false},
+		{"invalid sample rate", Config{SampleRate: 22050}, true},
+		{"valid channels mono", Config{Channels: 1}, false},
+		{"valid channels stereo", Config{Channels: 2}, false},
+		{"invalid channels zero-negative-like", Config{Channels: 3}, true},
+		{"negative max concurrent sessions", Config{MaxConcurrentSessions: -1}, true},
+		{"zero max concurrent sessions means default", Config{MaxConcurrentSessions: 0}, false},
+		{"unknown model", Config{Model: "not-a-real-model"}, true},
+		{"deepfilter without model path", Config{Model: "deepfilter"}, true},
+		{"deepfilter with model path", Config{Model: "deepfilter", ModelPath: "/tmp/model.onnx"}, false},
+		{"rnnoise-onnx without model path", Config{Model: "rnnoise-onnx"}, true},
+		{"rnnoise-onnx with model path", Config{Model: "rnnoise-onnx", ModelPath: "/tmp/model.onnx"}, false},
+		{"PCMU at 8000 ok", Config{Codec: "PCMU", SampleRate: 8000}, false},
+		{"PCMA at 8000 ok", Config{Codec: "PCMA", SampleRate: 8000}, false},
+		{"PCMU at 16000 mismatch", Config{Codec: "PCMU", SampleRate: 16000}, true},
+		{"G722 at 16000 ok", Config{Codec: "G722", SampleRate: 16000}, false},
+		{"G722 at 8000 mismatch", Config{Codec: "G722", SampleRate: 8000}, true},
+		{
+			// Regression test: Codec set with SampleRate left unset used to
+			// skip the codec/rate cross-check entirely (the old guard was
+			// `c.SampleRate != 0 && c.Codec != ""`), so this Config passed
+			// Validate() with no error and then silently broke once New()
+			// defaulted SampleRate to 16000 -- a mismatch for PCMU, which
+			// requires 8000. Validate() must now catch this at the
+			// zero-value config stage by checking against the same default
+			// New() applies.
+			name:    "PCMU with unset SampleRate defaults to 16000 and mismatches",
+			cfg:     Config{Codec: "PCMU"},
+			wantErr: true,
+		},
+		{
+			// G722 requires 16000, which is exactly the default New()
+			// applies when SampleRate is left unset, so this must pass.
+			name:    "G722 with unset SampleRate matches the 16000 default",
+			cfg:     Config{Codec: "G722"},
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if tc.wantErr && err == nil {
+				t.Errorf("Validate() = nil, want error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Validate() = %v, want nil", err)
+			}
+		})
+	}
+}
