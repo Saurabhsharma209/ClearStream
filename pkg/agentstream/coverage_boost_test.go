@@ -432,3 +432,25 @@ func TestHandleStartNumericParameterOverrides(t *testing.T) {
 		})
 	}
 }
+
+// TestServeWSUpgradeFailure covers serveWS's upgrade-failure branch: a
+// plain HTTP request that never sends the WebSocket handshake headers
+// (Connection: Upgrade / Upgrade: websocket) makes gorilla's
+// upgrader.Upgrade return an error, which serveWS must log and return
+// from cleanly (no panic, no hijack attempt) rather than proceeding into
+// the read loop.
+func TestServeWSUpgradeFailure(t *testing.T) {
+	srv := NewAgentStreamServer(ServerConfig{DefaultBackend: "passthrough"})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL)
+	if err != nil {
+		t.Fatalf("plain GET to websocket handler: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		t.Fatalf("expected upgrade to fail for a plain HTTP GET, got 101 Switching Protocols")
+	}
+}
