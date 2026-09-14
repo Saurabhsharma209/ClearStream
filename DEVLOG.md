@@ -2943,3 +2943,29 @@ Today's run hit an infra hiccup: the three workstream subagents were spawned in 
 1. Audio Pipeline, Post-processing, AI Model: due next per rotation (all three last touched 09-10).
 2. Resolve the carried-forward blocked items above once a human weighs in, including the new clearstream.go coverage-measurement discrepancy.
 3. serveWS's send-failure-racing-close path remains the one real known gap in pkg/agentstream -- revisit with an injectable net.Conn if someone wants to close it.
+
+## 2026-09-14
+
+**Agents run:** Audio Pipeline (pkg/audio), Post-processing (pkg/file), AI Model (pkg/model) -- per rotation, due since 09-10
+
+**Build:** passing (go build ./... clean; go test ./... -p 1 all green, no failures across all packages)
+
+### Changes
+- pkg/audio/pipeline_currentspeaker_test.go (new): Pipeline.CurrentSpeaker()s seg == nil branch (handling a Diarizer whose CurrentSegment() returns nil) was untested since the only real implementation, EnergyDiarizer, never returns nil. Added a mock nilSegmentDiarizer to verify graceful degradation to SpeakerUnknown instead of a panic. CurrentSpeaker 83.3% -> 100%. No bug found; the AGC/VAD/AEC ==0 vs <=0 defaulting bug class was re-checked and confirmed already fixed in this package.
+- pkg/file/processor_normalizepeak_cancel_test.go (new): ProcessWithOptionss ctx.Err() check guarding the NormalizePeak step (a third cancellation check between decodeAndSuppress and normalizePeakPCM) was uncovered -- too narrow a race window to hit with a real cancel(). Added a cancelAfterNErrCalls context wrapper to deterministically trigger cancellation exactly at that check. Confirms the short-circuit is live, not dead code. Package 96.7% -> 96.9%.
+- pkg/model/procgroup_unix_test.go (new): killProcessGroup (66.7% coverage, no dedicated test file) sends SIGKILL to a process group to prevent orphaned DeepFilterNet subprocesses after shutdown -- safety-relevant, previously only incidentally exercised. Added tests for nil cmd, unstarted cmd, and a real subprocess kill verified via cmd.Wait(). Package 97.0% -> 97.4%.
+
+### Investigated, not used
+- pkg/model: re-checked pool.go, deepfilter_server.go, resample.go Config structs for the ==0 vs <=0 defaulting bug class found earlier in the week (AGC, VADThreshold, VADConfig) -- none found, all comparisons already correct.
+
+### Blocked
+- Stashed ClearStream_AudioEnhancement_API_Reference.docx (flagged 08-31) -- still needs a human decision.
+- Now-merged remote branch feature/exotel-agentstream -- still safe to delete, still a human call.
+- Stray .NNNNNNNNNN-suffixed duplicate files under pkg/audio/, pkg/file/, pkg/http/, pkg/rtp/ -- still untouched; two new stray files noticed today in pkg/file/ (processor.go.7748239147439018391, processor_regress_test.go.2605221512928319956), likely leftovers from a prior agents interrupted edit -- needs a human cleanup pass.
+- Untracked repo-root files COMPETITOR_COMPARISON.md, QA_MEASUREMENT_FRAMEWORK.md (09-04), BLOG_clearstream.md (09-09) -- still uncommitted, not part of any workstream.
+- clearstream.go coverage-measurement discrepancy (flagged 09-11, 46.2%% vs 96.6%% depending on scope) -- still unreconciled.
+
+### Tomorrow
+1. RTP/SIP, API Layer, QA/Testing: due next per rotation (all three last touched 09-11).
+2. Resolve the carried-forward blocked items above once a human weighs in, including the two new stray files in pkg/file/.
+3. Consider a repo-wide cleanup pass for the accumulating stray .NNNNNNNNNN duplicate files and untracked root-level markdown files, since the list keeps growing week over week without a human decision.
