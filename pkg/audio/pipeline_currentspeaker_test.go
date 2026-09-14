@@ -2,6 +2,23 @@ package audio
 
 import "testing"
 
+// nilSegmentDiarizer is a minimal Diarizer whose CurrentSegment() returns nil,
+// unlike EnergyDiarizer (which always returns a non-nil open segment, even a
+// synthetic SpeakerSilence one). The Diarizer interface only documents
+// CurrentSegment as returning "the active (ongoing) segment" without
+// guaranteeing non-nil, so a future implementation (e.g. one with no concept
+// of an open segment until speech is confirmed) returning nil is a
+// legitimate contract case Pipeline.CurrentSpeaker must handle without
+// panicking.
+type nilSegmentDiarizer struct{}
+
+func (nilSegmentDiarizer) ProcessFrame(samples []int16, frameMs int64) SpeakerLabel {
+	return SpeakerSilence
+}
+func (nilSegmentDiarizer) Segments() []DiarizedSegment      { return nil }
+func (nilSegmentDiarizer) CurrentSegment() *DiarizedSegment { return nil }
+func (nilSegmentDiarizer) Reset()                           {}
+
 // TestPipelineCurrentSpeaker exercises Pipeline.CurrentSpeaker (0% covered
 // as of the 2026-08-26 daily build), the live per-frame counterpart to
 // DiarizationSegments added alongside it on 08-17 for pkg/rtp.Session to
@@ -44,6 +61,13 @@ func TestPipelineCurrentSpeaker(t *testing.T) {
 			if seg.Speaker == SpeakerNearEnd && seg.EndMs == -1 {
 				t.Fatalf("open segment leaked into DiarizationSegments(): %+v", seg)
 			}
+		}
+	})
+
+	t.Run("diarizer whose CurrentSegment returns nil yields SpeakerUnknown", func(t *testing.T) {
+		p := NewPipeline(PipelineConfig{SampleRate: 16000, Diarizer: nilSegmentDiarizer{}})
+		if got := p.CurrentSpeaker(); got != SpeakerUnknown {
+			t.Fatalf("CurrentSpeaker() with nil CurrentSegment = %q, want %q", got, SpeakerUnknown)
 		}
 	})
 }
