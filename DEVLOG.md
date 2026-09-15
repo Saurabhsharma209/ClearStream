@@ -2969,3 +2969,29 @@ Today's run hit an infra hiccup: the three workstream subagents were spawned in 
 1. RTP/SIP, API Layer, QA/Testing: due next per rotation (all three last touched 09-11).
 2. Resolve the carried-forward blocked items above once a human weighs in, including the two new stray files in pkg/file/.
 3. Consider a repo-wide cleanup pass for the accumulating stray .NNNNNNNNNN duplicate files and untracked root-level markdown files, since the list keeps growing week over week without a human decision.
+
+## 2026-09-15
+
+**Agents run:** RTP/SIP (pkg/rtp), API Layer (clearstream.go), QA/Testing (pkg/agentstream) -- per rotation, due since 09-11
+
+**Build:** passing (go build ./... clean; go test ./... -p 1 all green, no failures across all packages)
+
+### Changes
+- pkg/rtp/codec_test.go: NewSessions ForwardAddrs resolve-error branch (session.go, forked-address setup loop) was reachable via a malformed ForwardAddrs entry but had zero coverage -- existing TestNewSessionErrors only covered ListenAddr/ForwardAddr. Added a subtest asserting the error is returned and the primary UDP conn is cleaned up. No bug found (DTMFPayloadTypes ==0 guard is safe -- it is a uint8, no negative case exists). pkg/rtp coverage 97.7%% -> 97.9%%.
+- clearstream.go, clearstream_internal_test.go: PoolSizeForPeakTracks (peak-track pool sizing helper, referenced in its own doc comment as having caused a real prior misconfiguration) was at 0%% coverage. Added TestPoolSizeForPeakTracks covering forward-only/bidirectional/zero-call cases. Re-confirmed (per 09-11) that Config/New()/Validate() have no ==0 vs <=0 defaulting bugs. Root package coverage 56.7%% -> 59.2%%.
+- pkg/agentstream/handle_media_error_test.go (new): handleMedias pipeline.ProcessFrames error branch was unexercised -- no current suppressor backend fails Process in practice, but a real backend (ONNX crash, deepfilter-server RPC failure) could. Added TestHandleMediaPipelineProcessError with a fake erroring model.Suppressor wired into a real audio.Pipeline, confirming the error is wrapped (pipeline process: ...) rather than panicking or silently dropping the frame. No bug found. Package coverage 98.8%% -> 99.2%%.
+
+### Investigated, not used
+- pkg/agentstream serveWSs known send-failure-racing-concurrent-close gap (flagged 09-07, 09-09, 09-11) remains open -- would need a custom net.Conn/Listener that errors on write; judged too involved to attempt safely in this pass without risking flakiness.
+
+### Blocked
+- Stashed ClearStream_AudioEnhancement_API_Reference.docx (flagged 08-31) -- still needs a human decision.
+- Now-merged remote branch feature/exotel-agentstream -- still safe to delete, still a human call.
+- Stray .NNNNNNNNNN-suffixed duplicate files under pkg/audio/, pkg/file/, pkg/http/, pkg/rtp/, plus two new ones in pkg/file/ noticed 09-14 -- still untouched, still needs a human cleanup pass.
+- Untracked repo-root files COMPETITOR_COMPARISON.md, QA_MEASUREMENT_FRAMEWORK.md (09-04), BLOG_clearstream.md (09-09) -- still uncommitted, not part of any workstream.
+- clearstream.go coverage-measurement discrepancy (flagged 09-11, 46.2%% vs 96.6%% depending on scope) -- still unreconciled.
+
+### Tomorrow
+1. Audio Pipeline, Post-processing, AI Model: due next per rotation (all three last touched 09-14).
+2. Resolve the carried-forward blocked items above once a human weighs in -- the stray-file and untracked-markdown list keeps growing week over week without a decision.
+3. serveWSs send-failure-racing-close path remains the one real known gap in pkg/agentstream -- revisit with an injectable net.Conn if someone wants to close it.
