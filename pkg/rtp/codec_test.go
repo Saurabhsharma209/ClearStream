@@ -629,6 +629,18 @@ func TestNewSessionErrors(t *testing.T) {
 			t.Error("expected error for invalid ListenAddr")
 		}
 	})
+
+	t.Run("invalid ForwardAddrs entry", func(t *testing.T) {
+		_, err := NewSession(Config{
+			ListenAddr:   "127.0.0.1:0",
+			ForwardAddr:  "127.0.0.1:9999",
+			ForwardAddrs: []string{"not-a-valid:::addr"},
+			Logger:       logger,
+		})
+		if err == nil {
+			t.Error("expected error for invalid ForwardAddrs entry")
+		}
+	})
 }
 
 // ---- encodeFromPCM with PCM codec -------------------------------------------
