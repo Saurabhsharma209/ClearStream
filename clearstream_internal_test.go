@@ -241,3 +241,32 @@ func TestConfig_Validate(t *testing.T) {
 		})
 	}
 }
+
+// TestPoolSizeForPeakTracks exercises PoolSizeForPeakTracks, a pure sizing
+// helper that had zero test coverage. Its logic mirrors the pool-sizing
+// arithmetic inside New() (2x for bidirectional, 1x for forward-only), and
+// its own doc comment recounts a real misconfiguration (server-164) caused
+// by callers doing this math by hand instead of calling the helper.
+func TestPoolSizeForPeakTracks(t *testing.T) {
+	cases := []struct {
+		name        string
+		peakCalls   int
+		forwardOnly bool
+		want        int
+	}{
+		{"forward-only single call", 1, true, 1},
+		{"forward-only four calls", 4, true, 4},
+		{"bidirectional single call", 1, false, 2},
+		{"bidirectional four calls matches server-164 regression", 4, false, 8},
+		{"zero calls forward-only", 0, true, 0},
+		{"zero calls bidirectional", 0, false, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := PoolSizeForPeakTracks(tc.peakCalls, tc.forwardOnly)
+			if got != tc.want {
+				t.Errorf("PoolSizeForPeakTracks(%d, %v) = %d, want %d", tc.peakCalls, tc.forwardOnly, got, tc.want)
+			}
+		})
+	}
+}
