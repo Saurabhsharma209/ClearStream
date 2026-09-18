@@ -2995,3 +2995,28 @@ Today's run hit an infra hiccup: the three workstream subagents were spawned in 
 1. Audio Pipeline, Post-processing, AI Model: due next per rotation (all three last touched 09-14).
 2. Resolve the carried-forward blocked items above once a human weighs in -- the stray-file and untracked-markdown list keeps growing week over week without a decision.
 3. serveWSs send-failure-racing-close path remains the one real known gap in pkg/agentstream -- revisit with an injectable net.Conn if someone wants to close it.
+
+## 2026-09-18
+
+**Agents run:** Audio Pipeline (pkg/audio), Post-processing (pkg/file), AI Model (pkg/model) -- per rotation, due since 09-14 (RTP/SIP, API Layer, QA/Testing last touched 09-15)
+**Build:** passing (go build ./... clean; go test ./... -p 1 all green, no failures across all packages)
+
+### Changes
+- pkg/audio/pipeline_reset_full_test.go (new): audited the full Audio Pipeline backlog (sinc/FIR resampling, VAD, ffprobe JSON parsing, Pipeline.Stats()) and found all four already fully implemented. Instead closed a real coverage gap: Pipeline.Reset() was only 78.1% covered -- its noiseReducer.Reset()/tieredNR.Reset()/limiter.Reset() calls and resample48k history zero-fill loops had never been exercised, since no existing test built a Pipeline with those optional stages plus real prior state to clear. A dropped Reset() call here would leak noise-floor/peak-envelope/resampler-history state across streams. Added TestPipelineResetClearsNoiseReducerAndLimiter and TestPipelineResetClearsTieredNR. No bug found -- all Reset() calls behave correctly. Coverage 95.6% -> 96.0%.
+- pkg/file/processor_decode_orphan_kill_test.go (new): audited the full Post-processing backlog (OnProgress callback, ProcessDir, typed errors) and found all already implemented. Found a genuine gap: decodeAndSuppress's cancellation-watcher goroutine calls killProcessGroup(decodeCmd) when ctx.Done() fires, to handle FFmpeg forking a subprocess that outlives the direct child and keeps the stdout pipe open -- every existing cancellation test used a fake ffmpeg that sleeps itself, so this path was never reached. Added a fake-ffmpeg fixture that backgrounds a long-sleeping grandchild inheriting the stdout pipe, then orphans it; verified (via temporary debug instrumentation, since reverted) that killProcessGroup genuinely fires and unblocks the pipe -- without it the test would hang 20s instead of returning in ~150-200ms. TestProcessWithOptionsContextCancelKillsOrphanedDecodeGrandchild asserts context.Canceled and sub-5s completion.
+- pkg/model/resample_bench_test.go (new): audited the full AI Model backlog (cgo build tag + nocgo fallback for rnnoise, linear-interpolation fix for upsample3x/downsample3x, DeepFilterNet ONNX session behind onnx tag, BenchmarkRNNoise) and found all already implemented -- upsample/downsample already use Catmull-Rom cubic interpolation and a 15-tap Kaiser-sinc FIR, well beyond the requested linear-interpolation fix. Added BenchmarkUpsample3x/BenchmarkDownsample3x/BenchmarkUpsampleDownsampleRoundtrip for the shared 16kHz<->48kHz resampling hot path used by both RNNoise and ONNX backends on every 10ms frame, which had zero dedicated benchmarks despite being the DSP code most likely to silently regress in cost or allocations.
+
+### Investigated, not used
+- All three chosen workstreams' static backlog items (from the skill's task file) were re-checked against current code and found already complete in every case -- this is now a recurring pattern (also seen 09-09, 09-11, 09-14). The static backlog list itself may be stale and worth a human refresh rather than continuing to re-derive coverage-gap work each rotation.
+
+### Blocked
+- Stashed ClearStream_AudioEnhancement_API_Reference.docx (flagged 08-31) -- still needs a human decision.
+- Now-merged remote branch feature/exotel-agentstream -- still safe to delete, still a human call.
+- Stray .NNNNNNNNNN-suffixed duplicate files under pkg/audio/, pkg/file/, pkg/http/, pkg/rtp/, plus two more in pkg/file/ (noticed 09-14) -- still untouched, still needs a human cleanup pass.
+- Untracked repo-root files COMPETITOR_COMPARISON.md, QA_MEASUREMENT_FRAMEWORK.md (09-04), BLOG_clearstream.md (09-09) -- still uncommitted, not part of any workstream.
+- clearstream.go coverage-measurement discrepancy (flagged 09-11, 46.2% vs 96.6% depending on scope) -- still unreconciled.
+
+### Tomorrow
+1. RTP/SIP, API Layer, QA/Testing: due next per rotation (all three last touched 09-15).
+2. Consider refreshing the six workstreams' static backlog lists in the skill task file -- every item across all six has now been independently re-verified as already implemented at least once, and agents are spending their session budget re-deriving this rather than being pointed straight at genuinely open work.
+3. Resolve the carried-forward blocked items above once a human weighs in -- the stray-file and untracked-markdown list keeps growing week over week without a decision.
