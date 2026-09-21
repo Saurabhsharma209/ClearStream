@@ -314,3 +314,40 @@ func TestParseRTCPReceiverReportBlocks_TruncatedMultiBlock(t *testing.T) {
 		t.Fatal("expected error for RC=2 packet with only 1 block's worth of data")
 	}
 }
+
+// TestParseRTCPSRPacketTooShortForHeader verifies that a packet shorter than
+// the 8-byte common-header-plus-SSRC minimum is rejected with an error
+// instead of panicking on an out-of-bounds slice read. This is reachable in
+// practice: listenRTCP passes whatever bytes arrive on the RTCP UDP socket
+// straight to ParseRTCPSenderReport (session.go), and a truncated or
+// garbage UDP datagram (e.g. a misdirected packet, a NAT keepalive, or a
+// mid-stream network glitch) can be arbitrarily short.
+func TestParseRTCPSRPacketTooShortForHeader(t *testing.T) {
+	pkt := []byte{0x80, 0xC8, 0x00} // only 3 bytes, below the 8-byte minimum
+	sr, err := ParseRTCPSenderReport(pkt)
+	if err == nil {
+		t.Fatal("expected error for packet shorter than 8 bytes")
+	}
+	if sr != nil {
+		t.Error("expected nil report on error")
+	}
+}
+
+// TestParseRTCPSRInvalidVersion verifies that a packet with RTCP version
+// bits other than 2 is rejected rather than parsed as if it were a valid
+// SR. Real-world trigger: corrupted UDP payloads or non-RTCP traffic
+// arriving on the RTCP port (the version check runs before the packet-type
+// check, so this must be tested independently of the PT=200 wrong-type
+// case already covered by TestParseRTCPSRWrongType).
+func TestParseRTCPSRInvalidVersion(t *testing.T) {
+	pkt := make([]byte, 28)
+	pkt[0] = 0x40 // version=1 (top 2 bits), P=0, RC=0
+	pkt[1] = 0xC8 // PT=200 SR
+	sr, err := ParseRTCPSenderReport(pkt)
+	if err == nil {
+		t.Fatal("expected error for RTCP version != 2")
+	}
+	if sr != nil {
+		t.Error("expected nil report on error")
+	}
+}
