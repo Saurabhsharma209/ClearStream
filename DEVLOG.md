@@ -3020,3 +3020,27 @@ Today's run hit an infra hiccup: the three workstream subagents were spawned in 
 1. RTP/SIP, API Layer, QA/Testing: due next per rotation (all three last touched 09-15).
 2. Consider refreshing the six workstreams' static backlog lists in the skill task file -- every item across all six has now been independently re-verified as already implemented at least once, and agents are spending their session budget re-deriving this rather than being pointed straight at genuinely open work.
 3. Resolve the carried-forward blocked items above once a human weighs in -- the stray-file and untracked-markdown list keeps growing week over week without a decision.
+
+## 2026-09-21
+
+**Agents run:** RTP/SIP (pkg/rtp), API Layer (clearstream.go), QA/Testing (pkg/agentstream) -- per rotation, due since 09-15
+**Build:** passing (go build ./... clean; go test ./... -p 1 all green, no failures across all packages)
+
+### Changes
+- pkg/rtp/rtcp_test.go (new): ParseRTCPSenderReport's two guard branches (len(data) < 8 truncated-packet check, version != 2 bad-version check) had zero coverage despite listenRTCP feeding it raw, unvalidated bytes straight off the RTCP UDP socket -- a truncated datagram, NAT keepalive, or misdirected traffic would hit exactly these paths in production. Added TestParseRTCPSRPacketTooShortForHeader and TestParseRTCPSRInvalidVersion. No bug found; both checks already correct. ParseRTCPSenderReport 92.3% -> 100%; package 97.9% -> 98.1%. Re-confirmed (per 09-11) no ==0 vs <=0 defaulting bug present in pkg/rtp config paths.
+- clearstream_internal_test.go: resolved the 09-11 open item (clearstream.go coverage measured at 46.2% vs 96.6% depending on scope) -- traced to a measurement-scope artifact, not a regression: clearstream.go's exported API is heavily exercised by the external tests/ package, but plain go test ./... only attributes coverage to the package under test, so tests package exercise never counted toward clearstream.go's own figure. Re-running with -coverpkg=github.com/exotel/clearstream shows the true figure (~90-100% per function), consistent with historical numbers. Recommend using -coverpkg=github.com/exotel/clearstream for future clearstream.go coverage checks. Also added TestNew_ModelInitFailureIsWrapped covering New()'s previously-uncovered model.NewSuppressor() failure-wrap branch (deterministic via the !onnx build-tag stub, no real ONNX runtime needed). No bug found. New() coverage 86.7% -> 90.0%.
+- pkg/agentstream/serve_ws_send_failure_test.go (new): finally closed the serveWS send-failure-racing-close gap flagged in four straight DEVLOG entries (09-07, 09-09, 09-11, 09-15) as too involved to attempt safely. Built an injectable net.Conn/net.Listener pair that lets the real HTTP 101 handshake write through (so a genuine websocket client connects normally) then fails every subsequent Write, deterministically breaking the server's next write -- the ConnectedEvent send -- with no timing dependency. TestServeWSConnectedEventSendFailure asserts the exact failure-to-send warning fires via a zaptest observer and that the client sees the connection close cleanly. serveWS 93.9% -> 100%; package 99.2% -> 100%. Verified non-flaky with -count=10 and -race, all passing.
+
+### Investigated, not used
+- None beyond the above -- all three agents found genuine, real gaps this rotation rather than re-deriving already-complete backlog items.
+
+### Blocked
+- Stashed ClearStream_AudioEnhancement_API_Reference.docx (flagged 08-31) -- still needs a human decision.
+- Now-merged remote branch feature/exotel-agentstream -- still safe to delete, still a human call.
+- Stray .NNNNNNNNNN-suffixed duplicate files under pkg/audio/, pkg/file/, pkg/http/, pkg/rtp/, plus two more in pkg/file/ (noticed 09-14) -- still untouched, still needs a human cleanup pass.
+- Untracked repo-root files COMPETITOR_COMPARISON.md, QA_MEASUREMENT_FRAMEWORK.md (09-04), BLOG_clearstream.md (09-09) -- still uncommitted, not part of any workstream.
+
+### Tomorrow
+1. Audio Pipeline, Post-processing, AI Model: due next per rotation (all three last touched 09-18).
+2. pkg/agentstream/serveWS is now at 100% coverage -- the one long-standing known gap in QA/Testing is closed; future QA rotations should look repo-wide for the next genuine gap rather than assuming agentstream has more low-hanging fruit.
+3. Resolve the carried-forward blocked items above once a human weighs in -- the stray-file and untracked-markdown list keeps growing week over week without a decision.
