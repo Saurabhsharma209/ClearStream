@@ -4,6 +4,7 @@ package clearstream
 import (
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/exotel/clearstream/pkg/audio"
@@ -268,5 +269,31 @@ func TestPoolSizeForPeakTracks(t *testing.T) {
 				t.Errorf("PoolSizeForPeakTracks(%d, %v) = %d, want %d", tc.peakCalls, tc.forwardOnly, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestNew_ModelInitFailureIsWrapped exercises New()'s "init model" error path
+// (clearstream.go's model.NewSuppressor failure branch), which had zero test
+// coverage despite being the only place New() surfaces a broken suppressor
+// backend to the caller. Config{Model: "deepfilter", ModelPath: <non-empty>}
+// passes Validate() (which only requires ModelPath to be non-empty) but this
+// test binary is built without the onnx build tag, so model.NewSuppressor's
+// deepfilter backend deterministically returns an error here regardless of
+// whether the path exists. New() must wrap and propagate that error rather
+// than panicking or returning a half-built *ClearStream.
+func TestNew_ModelInitFailureIsWrapped(t *testing.T) {
+	cfg := Config{Model: "deepfilter", ModelPath: "/nonexistent/model.onnx"}
+	cs, err := New(cfg)
+	if err == nil {
+		t.Fatal("New() with a failing suppressor backend = nil error, want error")
+	}
+	if cs != nil {
+		t.Errorf("New() returned non-nil *ClearStream alongside an error: %+v", cs)
+	}
+	if !strings.Contains(err.Error(), "clearstream: init model:") {
+		t.Errorf("err = %q, want it wrapped with %q prefix", err.Error(), "clearstream: init model:")
+	}
+	if !strings.Contains(err.Error(), "deepfilter") {
+		t.Errorf("err = %q, want it to mention the failing backend", err.Error())
 	}
 }
