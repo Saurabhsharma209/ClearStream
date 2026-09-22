@@ -3044,3 +3044,29 @@ Today's run hit an infra hiccup: the three workstream subagents were spawned in 
 1. Audio Pipeline, Post-processing, AI Model: due next per rotation (all three last touched 09-18).
 2. pkg/agentstream/serveWS is now at 100% coverage -- the one long-standing known gap in QA/Testing is closed; future QA rotations should look repo-wide for the next genuine gap rather than assuming agentstream has more low-hanging fruit.
 3. Resolve the carried-forward blocked items above once a human weighs in -- the stray-file and untracked-markdown list keeps growing week over week without a decision.
+
+## 2026-09-22
+
+**Agents run:** Audio Pipeline (pkg/audio), Post-processing (pkg/file), AI Model (pkg/model) -- per rotation, due since 09-18 (RTP/SIP, API Layer, QA/Testing last touched 09-21)
+
+**Build:** passing (go build ./... clean; go test ./... -p 1 all green, no failures across all packages)
+
+### Changes
+- pkg/audio/agc.go, pkg/audio/pipeline.go, pkg/audio/agc_negative_config_test.go: bug fix -- NewAGC still had two surviving instances of the ==0 vs <=0 defaulting bug class (cfg.SampleRate == 0, cfg.SoftLimitThreshold == 0), meaning a negative SampleRate flipped the sign of the attack/release time constant (unbounded gain runaway risk) and a negative SoftLimitThreshold silently disabled clip protection. Fixed both to <=0, plus two analogous instances in pipeline.go (agcCfg.SampleRate, aecCfg.SampleRate) found in a sanity sweep. Added TestNewAGCRejectsNonPositiveSampleRate and TestNewAGCRejectsNonPositiveSoftLimitThreshold. This is at least the 4th instance of this bug class found this month (AGC AttackMs/ReleaseMs/TargetRMS/MaxGain, VADThreshold, VADConfig, now AGC SampleRate/SoftLimitThreshold) -- the audit-pass idea flagged 09-10 has not yet been done and should be prioritized.
+- pkg/file/processor.go, pkg/file/processor_regress_test.go: closed a real coverage gap -- ProcessWithOptions's generic os.Stat error fallback (neither IsNotExist nor IsPermission, e.g. ENOTDIR) had 0% coverage. Added TestProcessWithOptionsStatGenericError. No bug found; already handled correctly. Also deleted two confirmed-stale stray duplicate files (processor.go.7748239147439018391, processor_regress_test.go.2605221512928319956) flagged since 09-14 -- diffed against current versions, confirmed superseded and untracked, safe to remove.
+- pkg/model/deepfilter_server_startserver_test.go (new): startServer()'s cmd.Start() failure branch (python3 unresolvable via PATH) had zero coverage despite being a real host/container misconfiguration scenario. Added TestStartServer_PythonExecutableNotFound. No bug found; error is surfaced correctly and s.cmd stays nil.
+
+### Investigated, not used
+- pkg/model: re-checked startServer's timeout/pollInterval defaulting for the ==0 vs <=0 bug class -- both already correct.
+
+### Blocked
+- Stashed ClearStream_AudioEnhancement_API_Reference.docx (flagged 08-31) -- still needs a human decision.
+- Now-merged remote branch feature/exotel-agentstream -- still safe to delete, still a human call.
+- Remaining stray .NNNNNNNNNN-suffixed duplicate files under pkg/audio/, pkg/http/, pkg/rtp/ (pkg/file/'s two were cleaned up today) -- still needs a human look.
+- Untracked repo-root files (COMPETITOR_COMPARISON.md, QA_MEASUREMENT_FRAMEWORK.md, BLOG_clearstream.md, SESSION_SUMMARY.md and similar) -- still uncommitted, not part of any workstream.
+- A stale .git/index.lock (dated 09-21, no owning process) was found and cleared by one agent today -- worth a human check on whether a prior session was interrupted mid-commit.
+
+### Tomorrow
+1. RTP/SIP, API Layer, QA/Testing: due next per rotation (all three last touched 09-21).
+2. Prioritize the repo-wide ==0 vs <=0 Config-defaulting audit across pkg/audio, pkg/model, pkg/rtp -- 4 instances found piecemeal this month, likely more remain.
+3. Resolve the carried-forward blocked items above once a human weighs in.
