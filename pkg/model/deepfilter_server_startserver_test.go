@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -312,5 +313,37 @@ func TestStartServer_ProcessExitsEarly(t *testing.T) {
 	}
 	if s.cmd.ProcessState == nil {
 		t.Error("startServer: expected s.cmd.ProcessState to be set once the crashed process is reaped, got nil")
+	}
+}
+
+// TestStartServer_PythonExecutableNotFound exercises the cmd.Start() failure
+// branch: when the "python3" binary cannot be resolved on PATH at all (e.g.
+// a container/host missing a Python install), exec.Command(...).Start()
+// fails immediately with an "executable file not found" error, and
+// startServer must surface that as a wrapped, actionable error instead of
+// panicking or leaving s.cmd in an inconsistent state.
+func TestStartServer_PythonExecutableNotFound(t *testing.T) {
+	skipOnWindowsStartServer(t)
+
+	// Point PATH at an empty directory so exec.LookPath("python3") fails
+	// for both our test process and startServer's exec.Command call.
+	emptyDir := t.TempDir()
+	t.Setenv("PATH", emptyDir)
+
+	s := &deepFilterServerSuppressor{
+		serverURL: "http://127.0.0.1:" + strconv.Itoa(freeTCPPort(t)),
+		client:    &http.Client{Timeout: 100 * time.Millisecond},
+		logger:    makeTestLogger(),
+	}
+
+	err := s.startServer(dummyScriptPath(t))
+	if err == nil {
+		t.Fatal("startServer: expected an error when python3 is not on PATH, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to start python3") {
+		t.Errorf("startServer: expected error to mention 'failed to start python3', got: %v", err)
+	}
+	if s.cmd != nil {
+		t.Error("startServer: s.cmd should remain nil when cmd.Start() itself fails")
 	}
 }
