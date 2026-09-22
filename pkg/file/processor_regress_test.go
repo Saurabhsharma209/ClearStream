@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/exotel/clearstream/pkg/audio"
@@ -639,5 +640,49 @@ func TestProcessDirConcurrentFiles(t *testing.T) {
 		if e != nil {
 			t.Errorf("ProcessDir error: %v", e)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ProcessWithOptions -- generic (non-ENOENT, non-EACCES) os.Stat error
+// ---------------------------------------------------------------------------
+
+// TestProcessWithOptionsStatGenericError covers the fallback branch in
+// ProcessWithOptions' upfront os.Stat check: a stat error that is neither
+// os.IsNotExist nor os.IsPermission. This is a real production scenario --
+// it happens whenever a path component that should be a directory is
+// actually a regular file (ENOTDIR), e.g. a caller mistakenly appends a
+// filename onto another file's path, or a race replaces a directory with a
+// file between path construction and processing. Before this test, that
+// branch (processor.go's `return fmt.Errorf("file: stat %q: %w", src,
+// statErr)` fallback) was never exercised by any test and its wrapped error
+// was unverified: it must NOT be misreported as ErrFileNotFound or
+// ErrPermission, since callers may branch on those sentinels to decide
+// whether to retry or prompt for different credentials.
+func TestProcessWithOptionsStatGenericError(t *testing.T) {
+	dir := t.TempDir()
+	regular := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(regular, []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// src treats a regular file as though it were a directory component,
+	// producing ENOTDIR from the stat syscall -- neither "not exist" nor
+	// "permission denied".
+	src := filepath.Join(regular, "in.wav")
+
+	p := newProc("ffmpeg")
+	err := p.Process(src, filepath.Join(dir, "out.wav"))
+	if err == nil {
+		t.Fatal("expected an error when src has a non-directory path component")
+	}
+	if errors.Is(err, file.ErrFileNotFound) {
+		t.Errorf("generic stat error must not be reported as ErrFileNotFound: %v", err)
+	}
+	if errors.Is(err, file.ErrPermission) {
+		t.Errorf("generic stat error must not be reported as ErrPermission: %v", err)
+	}
+	if !strings.Contains(err.Error(), "stat") {
+		t.Errorf("expected error to reference the failed stat, got: %v", err)
 	}
 }
