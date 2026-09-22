@@ -113,7 +113,7 @@ type AGC struct {
 // geometrically every sample instead of settling -- an unbounded gain runaway
 // rather than a graceful fallback.
 func NewAGC(cfg AGCConfig) *AGC {
-	if cfg.SampleRate == 0 {
+	if cfg.SampleRate <= 0 {
 		cfg.SampleRate = 16000
 	}
 	if cfg.TargetRMS <= 0 {
@@ -128,7 +128,7 @@ func NewAGC(cfg AGCConfig) *AGC {
 	if cfg.ReleaseMs <= 0 {
 		cfg.ReleaseMs = 200
 	}
-	if cfg.SoftLimitThreshold == 0 {
+	if cfg.SoftLimitThreshold <= 0 {
 		cfg.SoftLimitThreshold = 28000
 	}
 

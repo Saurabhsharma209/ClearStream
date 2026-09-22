@@ -228,7 +228,7 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 	if cfg.AGC != nil {
 		agcCfg := *cfg.AGC
 		agcCfg.SampleRate = cfg.SampleRate
-		if agcCfg.SampleRate == 0 {
+		if agcCfg.SampleRate <= 0 {
 			agcCfg.SampleRate = 16000
 		}
 		agc = NewAGC(agcCfg)
@@ -236,7 +236,7 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 	var aec *AEC
 	if cfg.AEC != nil {
 		aecCfg := *cfg.AEC
-		if aecCfg.SampleRate == 0 {
+		if aecCfg.SampleRate <= 0 {
 			aecCfg.SampleRate = cfg.SampleRate
 		}
 		aec = NewAEC(aecCfg)
